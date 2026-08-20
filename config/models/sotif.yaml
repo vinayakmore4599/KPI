@@ -1,0 +1,7 @@
+model_id: sotif
+kind: physical
+required_aliases: [sotif]
+sources:
+  sotif:
+    alias: sotif
+joins: []

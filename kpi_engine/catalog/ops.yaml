@@ -1,0 +1,8 @@
+# Reusable op kinds. Implementations live in kpi_engine.core.calc_engine.
+version: 1
+kinds:
+  - point
+  - window
+  - arithmetic
+  - trend
+  - dimension

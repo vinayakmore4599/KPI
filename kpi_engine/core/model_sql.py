@@ -1,4 +1,23 @@
-"""Compile and run the DuckDB extract. Identifiers are quoted; values parameterized."""
+"""Compile and run the DuckDB extract.
+
+What this file provides
+    compile_extract — parameterized SQL (scan, time range, IN filters, GROUP BY).
+    extract — execute and return a Pandas frame plus the SQL string.
+
+Where it is used
+    orchestrator.compute (execute) and validate (compile only). Tests assert
+    the selected month is not IN-filtered.
+
+Capabilities
+    - Physical models: read_parquet / delta_scan from context paths.
+    - SQL models: wrap CTE as a subquery (paths as $alias_path → ?).
+    - Additive aggs in DuckDB (sum/count/min/max; avg as sum+count).
+    - Identifiers quoted; values bound as parameters.
+
+When to use
+    Change this for new scan types or join YAML. Do not put YoY/MTD here —
+    those belong in calc_engine after the monthly extract.
+"""
 
 from __future__ import annotations
 
@@ -32,6 +51,7 @@ def extract(
     grain: tuple[str, ...],
     connection: duckdb.DuckDBPyConnection | None = None,
 ) -> ExtractResult:
+    """Compile and execute the DuckDB extract. Opens a connection if none is passed."""
     sql, params = compile_extract(
         model=model,
         kpi=kpi,
@@ -61,6 +81,7 @@ def compile_extract(
     plan: TimePlan,
     grain: tuple[str, ...],
 ) -> tuple[str, tuple[Any, ...]]:
+    """Build parameterized SELECT ... GROUP BY SQL. Does not execute."""
     params: list[Any] = []
     from_sql = _from_clause(model, datasets, params)
     where_sql, where_params = _where_clause(
@@ -84,6 +105,7 @@ def _from_clause(
     datasets: dict[str, DatasetBinding],
     params: list[Any],
 ) -> str:
+    """FROM clause: parquet/delta scan or a wrapped SQL model. Paths go into params."""
     if model.kind == "sql":
         if not model.sql:
             raise BindError("SQL model is missing sql.")
@@ -127,6 +149,7 @@ def _from_clause(
 
 
 def _scan_fn(dataset: DatasetBinding) -> str:
+    """DuckDB scan function: delta_scan for Delta, read_parquet otherwise (including tests)."""
     table_type = dataset.table_type.upper()
     path = dataset.path.lower()
     if table_type == "DELTA" and not path.endswith(".parquet"):
@@ -139,6 +162,7 @@ def _where_clause(
     time_column: str,
     plan: TimePlan,
 ) -> tuple[str, list[Any]]:
+    """Time range (>= span_start, < span_end) plus source IN filters. Empty IN is FALSE."""
     parts: list[str] = []
     params: list[Any] = []
     time_expr = f"date_trunc('month', CAST({quote_ident(time_column)} AS DATE))"
@@ -158,6 +182,7 @@ def _where_clause(
 
 
 def _select_clause(kpi: KpiSpec, grain: tuple[str, ...]) -> str:
+    """SELECT grain columns (time truncated to month) plus aggregated base measures."""
     time_col = kpi.time.column
     select_parts: list[str] = []
     for col in grain:
@@ -174,6 +199,7 @@ def _select_clause(kpi: KpiSpec, grain: tuple[str, ...]) -> str:
 
 
 def _measure_select(measure: BaseMeasure) -> list[str]:
+    """SQL fragments for one additive agg. avg is carried as SUM and COUNT."""
     if measure.agg not in _ADDITIVE:
         raise BindError(f"agg {measure.agg!r} cannot use the shared GROUP BY.")
     expr = quote_ident(require_ident(measure.sql, what="measure sql"))

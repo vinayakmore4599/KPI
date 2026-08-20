@@ -1,4 +1,22 @@
-"""Request lifecycle: adapt → bind → plan → extract → calculate → JSON."""
+"""Request lifecycle: adapt → bind → plan → extract → calculate → JSON.
+
+What this file provides
+    compute(context) — full pipeline, returns the JSON contract (rows, axes,
+    applied/ignored filters, compiled sql, pagination).
+    validate(context) — same through compile_extract; no file scan.
+
+Where it is used
+    kpi_engine.compute / validate re-export these. udfs.sotif.main calls compute.
+
+Capabilities
+    Owns one DuckDB session per compute. Builds extract column set, splits
+    filters, densifies the monthly frame, sorts and paginates (null page_size
+    = all rows).
+
+When to use
+    Change step order only with an architecture decision. Do not add KPI-specific
+    if kpi_id == 3004 branches — that belongs in YAML.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +48,7 @@ def compute(
     *,
     config_dir: str | Path | None = None,
 ) -> dict[str, Any]:
+    """Run the full KPI request: bind YAML, extract in DuckDB, calculate in Pandas, return JSON."""
     root = Path(config_dir) if config_dir else default_config_dir()
     request = adapt(context)
     kpi = load_kpi(request.kpi_id, root)
@@ -53,7 +72,7 @@ def compute(
         grain=grain,
     )
     monthly = _to_monthly(extracted.frame, kpi, grain, time_plan)
-    requested = request.measure_keys or tuple(o.key for o in kpi.outputs)
+    requested = request.measure_keys or tuple(m.key for m in kpi.measures)
     rows, trend_axes = compute_cuts(
         monthly,
         kpi=kpi,
@@ -124,6 +143,7 @@ def validate(
 def _to_monthly(
     frame: pd.DataFrame, kpi: KpiSpec, grain: tuple[str, ...], plan: TimePlan
 ) -> pd.DataFrame:
+    """Place the DuckDB extract on a dense month spine from span_start through the anchor."""
     time_col = kpi.time.column
     keys = [c for c in grain if c != time_col]
     value_cols = [m.name for m in kpi.base_measures]
@@ -153,9 +173,11 @@ def _to_monthly(
 
 
 def _sort_rows(rows: list[dict[str, Any]], kpi: KpiSpec) -> list[dict[str, Any]]:
+    """Stable sort: output_cut, then each dimension in YAML order."""
     dim_order = list(kpi.dimensions)
 
     def key(row: dict[str, Any]) -> tuple:
+        """Sort key for one result row."""
         return (str(row.get("output_cut") or ""), *[str(row.get(d) or "") for d in dim_order])
 
     return sorted(rows, key=key)
@@ -164,6 +186,7 @@ def _sort_rows(rows: list[dict[str, Any]], kpi: KpiSpec) -> list[dict[str, Any]]
 def _paginate(
     rows: list[dict[str, Any]], request: AdaptedRequest
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Slice rows after calculation. Null page_size returns the full list."""
     page_size = request.pagination.page_size or request.pagination.limit
     total = len(rows)
     if page_size is None:
@@ -188,6 +211,7 @@ def _paginate(
 
 
 def _applied(source_filters, deferred, emitted) -> list[dict[str, Any]]:
+    """Metadata: filters applied in DuckDB (source) or on a cut in Pandas."""
     rows = [
         {
             "filter_code": f.code,
@@ -212,6 +236,7 @@ def _applied(source_filters, deferred, emitted) -> list[dict[str, Any]]:
 
 
 def _ignored(deferred, emitted) -> list[dict[str, Any]]:
+    """Metadata: filters skipped on a cut because of ignore_filters (e.g. region on G)."""
     rows: list[dict[str, Any]] = []
     for cut in emitted:
         for item in deferred:

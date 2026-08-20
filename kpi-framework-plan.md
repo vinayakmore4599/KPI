@@ -92,7 +92,7 @@ Catalog ops ──────────────────────�
 2. **Load KPI YAML** by `execution.kpi_id` (e.g. `kpis/3004.yaml`).
 3. **Bind datasets.** Map model aliases to `context.datasets` (bind on `alias`, fall back to datasets key).
 4. **Claim the month filter.** Remove it from the generic filter list. Its value is the **anchor**.
-5. **Compute `required_span`.** Anchor minus the largest lookback among requested outputs.
+5. **Compute `required_span`.** Anchor minus the largest lookback among requested measures.
 6. **Split remaining filters.** Source vs target using `filter_column_mappings` (and optional YAML `filter_map`).
 7. **DuckDB extract.** Run the physical model or wrap the SQL model as a subquery. Apply source `IN` filters and the time **range**. Project needed columns. **GROUP BY** to the finest grain any cut needs (time grain + union of cut keys) for additive measures.
 8. **Pandas spine.** Reindex each partition onto a dense calendar at `time_grain` from span min to anchor.
@@ -211,7 +211,7 @@ The engine does not change the context schema. It maps the existing envelope.
 - Empty IN list → match nothing (empty result), not invalid SQL.
 - Unmapped filter that cannot bind to a column → hard error, listing the filter name.
 - `view_details` with 0 or 2+ entries → hard error.
-- Unknown `measure_key` → hard error, listing valid keys from the KPI YAML `outputs` block.
+- Unknown `measure_key` → hard error, listing valid keys from the KPI YAML `measures` block.
 
 ### 4.4 Month filter (critical)
 
@@ -344,7 +344,7 @@ cuts:
 
 default_cut: G                 # used when context has no cut/level filter
 
-outputs:
+measures:
   reason_code:
     kind: dimension
 
@@ -390,7 +390,7 @@ outputs:
     cuts: [G]                  # which cuts carry the array; default G
 ```
 
-`measures_required` in context is a **projection**: only those `outputs` keys (plus required dimensions / `output_cut`) appear in the JSON.
+`measures_required` in context is a **projection**: only those `measures` keys (plus required dimensions / `output_cut`) appear in the JSON.
 
 ### 6.2 Multi-model relation
 
@@ -551,7 +551,7 @@ Trend `measure_key` → ordered array of numbers/`null`, aligned to a **shared p
 }
 ```
 
-Trend arrays are omitted on cuts not listed in `outputs.*.cuts` (default: global / `G` only). Do not send a null array on every supplier row unless the KPI asks for that.
+Trend arrays are omitted on cuts not listed in `measures.*.cuts` (default: global / `G` only). Do not send a null array on every supplier row unless the KPI asks for that.
 
 **Missing months in a trend:** the array always has a slot for every period on the axis. A gap must not shorten the array (that would shift the graph). Fill: zero vs null per measure policy.
 
@@ -671,7 +671,7 @@ Key: `kpi_id`, KPI version, catalog version, resolved filters, cuts, requested o
 
 1. Copy a template (`single_model_agg`, `ratio_two_models`, `with_trend`).
 2. Point `model` at aliases that exist in context.
-3. Declare `time`, `base_measures`, `cuts`, `outputs` (every `measure_key` the UI can request).
+3. Declare `time`, `base_measures`, `cuts`, `measures` (every `measure_key` the UI can request).
 4. If two models: `model_relations.on` + `how`.
 5. Run `validate(kpi_yaml, sample_context)` — bind errors without ADLS when `output_schema` / column lists exist.
 6. Add a named hook only if catalog ops cannot express the metric.
@@ -746,7 +746,7 @@ These do not block the first slice. They should be confirmed before many KPIs ar
 | DuckDB as loader only (`SELECT *` then all agg in Pandas) | Rejected for base agg; Pandas still owns KPI math |
 | Anchor = `max(time_column)` in the extract | Rejected; user-selected month |
 | Anchor = clock / `business_date` | Rejected |
-| Infer `measure_key` from catalog op id | Rejected; authored `outputs` |
+| Infer `measure_key` from catalog op id | Rejected; authored `measures` |
 | Standalone API / Databricks job | Out of scope |
 | Rewriting context to remove paths | Out of scope |
 | Replacing YAML with Python classes | Deferred; YAML + JSON Schema + `validate` |
@@ -766,7 +766,7 @@ These do not block the first slice. They should be confirmed before many KPIs ar
 | Point | One month on the spine |
 | Window | Aggregate over months ending at (or exclusive of) the anchor |
 | Trend | Array of monthly values for graphs |
-| Measure key | Column name in JSON; must exist in KPI `outputs` |
+| Measure key | Column name in JSON; must exist in KPI `measures` |
 
 ---
 

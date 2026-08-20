@@ -1,4 +1,21 @@
-"""Shared fixtures: local parquet only, no ADLS."""
+"""Shared test fixtures (local parquet only — no ADLS).
+
+What this file provides
+    config_dir — path to repo config/kpis and config/models.
+    parquet_path — tiny Sotif-like fact table with a deliberate missing month.
+    make_context — metadata-shaped JSON pointing at that parquet.
+
+Where it is used
+    All tests under tests/ import make_context / fixtures from here.
+
+Capabilities
+    NA/LATE_SUPPLIER skips 2025-03 so calendar shift vs row shift can be proven.
+    Filters use reporting_month as the selected month (time.filter_code).
+
+When to use
+    Extend make_context when a test needs another context field. Keep data
+    local; do not read production Delta in unit tests.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +30,7 @@ from kpi_engine.dates import month_range_inclusive
 
 @pytest.fixture
 def config_dir() -> Path:
+    """Repo-root config/ (kpis and models YAML)."""
     return Path(__file__).resolve().parents[1] / "config"
 
 
@@ -59,6 +77,7 @@ def make_context(
     supplier: list[str] | None = None,
     month: str = "2026-03",
 ) -> dict:
+    """Build a metadata-shaped context pointing at a local parquet path."""
     filters = {
         "reporting_month": {"value": [month], "input_text": "simple"},
     }

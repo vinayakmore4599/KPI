@@ -1,4 +1,22 @@
-"""Anchor and required_span. The month filter never becomes a generic IN."""
+"""Anchor month and required_span. The month filter never becomes a generic IN.
+
+What this file provides
+    plan_time, claim_month_filter, max_lookback_months, lookback_for.
+
+Where it is used
+    orchestrator after YAML bind. validate() uses it to report span_start
+    without scanning. Tests in test_span.py and test_month_filter.py.
+
+Capabilities
+    - Finds time.filter_code on the context (e.g. reporting_month).
+    - Missing or multi-value month filter → TimePlanError (no silent default).
+    - Lookback from requested measures only (3m vs previous year vs trend).
+    - Returns remaining filters for IN binding (month removed).
+
+When to use
+    Change lookback formulas when adding a new measure op. Do not apply the
+    selected month as WHERE col IN ('2026-03') — that is a correctness bug.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +32,7 @@ from kpi_engine.exceptions import TimePlanError
 
 
 def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan, tuple[IncomingFilter, ...]]:
+    """Claim the month filter as anchor, compute required_span, return remaining filters."""
     claimed, rest = claim_month_filter(request.filters, kpi.time.filter_code)
     if claimed is None:
         raise TimePlanError(
@@ -44,6 +63,7 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan, tuple[In
 def claim_month_filter(
     filters: tuple[IncomingFilter, ...], filter_code: str
 ) -> tuple[IncomingFilter | None, tuple[IncomingFilter, ...]]:
+    """Pull the selected-month filter out of the generic IN list so it becomes a range."""
     wanted = _norm(filter_code)
     claimed: IncomingFilter | None = None
     rest: list[IncomingFilter] = []
@@ -56,12 +76,14 @@ def claim_month_filter(
 
 
 def max_lookback_months(kpi: KpiSpec, requested: tuple[str, ...]) -> int:
-    by_key = {o.key: o for o in kpi.outputs}
+    """Deepest lookback among requested measures only (unrequested keys do not widen the scan)."""
+    by_key = {m.key: m for m in kpi.measures}
     keys = requested or tuple(by_key)
     return max((lookback_for(by_key[k], by_key) for k in keys), default=0)
 
 
 def lookback_for(output: OutputSpec, by_key: dict[str, OutputSpec]) -> int:
+    """How many months before the anchor this measure needs (calendar, not row count)."""
     if output.kind == "dimension":
         return 0
     if output.kind == "point":
@@ -82,10 +104,12 @@ def lookback_for(output: OutputSpec, by_key: dict[str, OutputSpec]) -> int:
 
 
 def _matches_time_filter(item: IncomingFilter, wanted: str) -> bool:
+    """True if this context filter is the KPI's time.filter_code."""
     if not wanted:
         return False
     return _norm(item.code) == wanted or _norm(item.raw_key) == wanted
 
 
 def _norm(value: str) -> str:
+    """Case-insensitive compare key (spaces become underscores)."""
     return value.strip().lower().replace(" ", "_")

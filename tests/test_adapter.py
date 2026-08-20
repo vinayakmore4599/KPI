@@ -1,9 +1,21 @@
+"""Adapter tests: context parsing rules.
+
+What this file provides
+    Tests for value vs values, single-view assertion, heir rejection.
+
+Where it is used
+    pytest tests/test_adapter.py — no DuckDB.
+
+When to use
+    Add a case here when the context envelope changes.
+"""
 from kpi_engine.core.adapter import adapt
 from kpi_engine.exceptions import ContextError, FilterError
 from tests.conftest import make_context
 
 
 def test_accepts_value_and_values(parquet_path):
+    """Filters may send `value` or `values`; both become IN lists."""
     ctx = make_context(parquet_path, measures=["current_value"], region=["NA"], supplier=["ABC"])
     request = adapt(ctx)
     codes = {f.code: f.values for f in request.filters}
@@ -13,6 +25,7 @@ def test_accepts_value_and_values(parquet_path):
 
 
 def test_rejects_multiple_views(parquet_path):
+    """One KPI maps to one view; extra view_details entries fail."""
     ctx = make_context(parquet_path, measures=["current_value"])
     ctx["execution"]["view_details"].append({"view_id": 2, "view_name": "x", "measures_required": []})
     try:
@@ -24,6 +37,7 @@ def test_rejects_multiple_views(parquet_path):
 
 
 def test_rejects_hierarchy_filters(parquet_path):
+    """heir filters must be expanded upstream, not treated as a simple IN."""
     ctx = make_context(
         parquet_path,
         measures=["current_value"],

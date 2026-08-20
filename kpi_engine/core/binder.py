@@ -1,4 +1,22 @@
-"""Load KPI and model YAML and bind context datasets by alias."""
+"""Load KPI/model YAML and bind context datasets by alias.
+
+What this file provides
+    default_config_dir, load_kpi, load_model, bind_datasets, assert_measure_keys.
+    Parsers for cuts, measures, physical/SQL models.
+
+Where it is used
+    orchestrator after adapt(). Tests load KPI 3004 via load_kpi.
+
+Capabilities
+    - Reads config/kpis/<kpi_id>.yaml and config/models/<model_id>.yaml.
+    - Validates identifiers, aggs, default_cut, measure keys.
+    - Binds model.required_aliases to context.datasets by alias, then key.
+    - Unknown measure_key is a hard error listing valid YAML keys.
+
+When to use
+    Change parsing when YAML schema changes (new measure op, new cut field).
+    To onboard a KPI, add a YAML file — do not edit this module.
+"""
 
 from __future__ import annotations
 
@@ -34,6 +52,7 @@ def default_config_dir() -> Path:
 
 
 def load_kpi(kpi_id: int | str, config_dir: Path | None = None) -> KpiSpec:
+    """Load and parse config/kpis/<kpi_id>.yaml."""
     root = config_dir or default_config_dir()
     path = root / "kpis" / f"{kpi_id}.yaml"
     if not path.exists():
@@ -43,6 +62,7 @@ def load_kpi(kpi_id: int | str, config_dir: Path | None = None) -> KpiSpec:
 
 
 def load_model(model_id: str, config_dir: Path | None = None) -> ModelSpec:
+    """Load and parse config/models/<model_id>.yaml."""
     root = config_dir or default_config_dir()
     path = root / "models" / f"{model_id}.yaml"
     if not path.exists():
@@ -53,6 +73,7 @@ def load_model(model_id: str, config_dir: Path | None = None) -> ModelSpec:
 def bind_datasets(
     model: ModelSpec, request: AdaptedRequest
 ) -> dict[str, DatasetBinding]:
+    """Match model required_aliases to context datasets (alias, then datasets key)."""
     by_alias = {d.alias.lower(): d for d in request.datasets}
     by_key = {d.key.lower(): d for d in request.datasets}
     bound: dict[str, DatasetBinding] = {}
@@ -69,7 +90,8 @@ def bind_datasets(
 
 
 def assert_measure_keys(kpi: KpiSpec, requested: tuple[str, ...]) -> None:
-    known = {o.key for o in kpi.outputs}
+    """Fail if the context asked for a measure_key not declared in KPI YAML."""
+    known = {m.key for m in kpi.measures}
     unknown = [k for k in requested if k not in known]
     if unknown:
         raise BindError(
@@ -78,6 +100,7 @@ def assert_measure_keys(kpi: KpiSpec, requested: tuple[str, ...]) -> None:
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
+    """Read a YAML object from disk using safe_load (no arbitrary Python)."""
     with path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
     if not isinstance(raw, dict):
@@ -86,6 +109,7 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 
 
 def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
+    """Turn a KPI YAML dict into KpiSpec. First slice supports month grain only."""
     kpi_id = raw.get("kpi_id", expected_id)
     time_raw = raw.get("time") or {}
     if not isinstance(time_raw, dict):
@@ -126,9 +150,9 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     if default_cut not in {c.name for c in cuts}:
         raise BindError(f"default_cut {default_cut!r} is not a declared cut.")
 
-    outputs = tuple(_parse_output(k, v) for k, v in (raw.get("outputs") or {}).items())
-    if not outputs:
-        raise BindError("outputs cannot be empty.")
+    measures = tuple(_parse_measure(k, v) for k, v in (raw.get("measures") or {}).items())
+    if not measures:
+        raise BindError("measures cannot be empty.")
 
     filter_map = {
         str(k): require_ident(str(v), what="filter_map column")
@@ -153,13 +177,14 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         base_measures=tuple(bases),
         cuts=cuts,
         default_cut=default_cut,
-        outputs=outputs,
+        measures=measures,
         filter_map=filter_map,
         row_set=row_set,  # type: ignore[arg-type]
     )
 
 
 def _parse_cut(raw: Any) -> CutSpec:
+    """Parse one cut: name, group_by dimensions, ignore_filters, also_emit."""
     if not isinstance(raw, dict):
         raise BindError("Each cut must be an object.")
     name = str(raw.get("name") or "")
@@ -173,12 +198,13 @@ def _parse_cut(raw: Any) -> CutSpec:
     return CutSpec(name=name, group_by=group_by, ignore_filters=ignore, also_emit=also)
 
 
-def _parse_output(key: str, raw: Any) -> OutputSpec:
+def _parse_measure(key: str, raw: Any) -> OutputSpec:
+    """Parse one requestable measure (point / window / trend / arithmetic / dimension)."""
     if not isinstance(raw, dict):
-        raise BindError(f"outputs.{key} must be an object.")
+        raise BindError(f"measures.{key} must be an object.")
     kind = raw.get("kind") or raw.get("op")
     if kind not in {"point", "window", "arithmetic", "trend", "dimension"}:
-        raise BindError(f"outputs.{key} has unknown op/kind {kind!r}.")
+        raise BindError(f"measures.{key} has unknown op/kind {kind!r}.")
     offset = None
     if raw.get("offset"):
         off = raw["offset"]
@@ -202,6 +228,7 @@ def _parse_output(key: str, raw: Any) -> OutputSpec:
 
 
 def _parse_model(raw: dict[str, Any], expected_id: str) -> ModelSpec:
+    """Parse a physical (sources/joins) or sql model YAML."""
     model_id = str(raw.get("model_id") or expected_id)
     kind = raw.get("kind") or "physical"
     if kind not in {"physical", "sql"}:

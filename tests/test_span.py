@@ -1,3 +1,16 @@
+"""Time-planner tests: lookback months and month-filter claim.
+
+What this file provides
+    Asserts 3m vs previous_year vs trend lookbacks, and that reporting_month
+    becomes the anchor and is removed from remaining filters.
+
+Where it is used
+    pytest tests/test_span.py.
+
+When to use
+    Add cases when a new measure op changes required_span.
+"""
+
 from datetime import date
 
 from kpi_engine.core.binder import load_kpi
@@ -7,8 +20,9 @@ from tests.conftest import make_context
 
 
 def test_lookback_window_and_previous_year(config_dir):
+    """Lookback is calendar months from requested measures only."""
     kpi = load_kpi(3004, config_dir)
-    by_key = {o.key: o for o in kpi.outputs}
+    by_key = {o.key: o for o in kpi.measures}
     assert lookback_for(by_key["value_3m"], by_key) == 2
     assert lookback_for(by_key["previous_year_value"], by_key) == 12
     assert lookback_for(by_key["trend_12m"], by_key) == 11
@@ -18,6 +32,7 @@ def test_lookback_window_and_previous_year(config_dir):
 
 
 def test_anchor_from_month_filter(parquet_path, config_dir):
+    """reporting_month is claimed as the anchor and removed from remaining filters."""
     ctx = make_context(parquet_path, measures=["value_3m"], month="2026-03")
     request = adapt(ctx)
     kpi = load_kpi(3004, config_dir)

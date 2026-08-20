@@ -1,3 +1,15 @@
+"""End-to-end slice tests: scan width, errors, UDF shim.
+
+What this file provides
+    Unrequested measures do not widen lookback; missing month filter errors;
+    unknown measure_key errors; udfs.sotif.main matches compute.
+
+Where it is used
+    pytest tests/test_compute_slice.py.
+
+When to use
+    Add a test here for a new request-level rule (pagination, extra view, etc.).
+"""
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError, TimePlanError
 from tests.conftest import make_context
@@ -5,6 +17,7 @@ from udfs.sotif import main
 
 
 def test_unrequested_measures_do_not_widen_scan(parquet_path, config_dir):
+    """Asking only for 3m must not scan 13 months just because previous_year exists in YAML."""
     three = validate(
         make_context(parquet_path, measures=["value_3m"], supplier=["ABC"]),
         config_dir=config_dir,
@@ -27,6 +40,7 @@ def test_unrequested_measures_do_not_widen_scan(parquet_path, config_dir):
 
 
 def test_missing_month_filter_is_an_error(parquet_path, config_dir):
+    """No selected month → TimePlanError; we do not default to latest data."""
     ctx = make_context(parquet_path, measures=["value_3m"])
     del ctx["filters"]["reporting_month"]
     try:
@@ -38,6 +52,7 @@ def test_missing_month_filter_is_an_error(parquet_path, config_dir):
 
 
 def test_unknown_measure_key(parquet_path, config_dir):
+    """Context measure_key must exist in KPI YAML measures."""
     ctx = make_context(parquet_path, measures=["not_a_real_measure"])
     try:
         validate(ctx, config_dir=config_dir)
@@ -48,5 +63,6 @@ def test_unknown_measure_key(parquet_path, config_dir):
 
 
 def test_udf_shim_matches_compute(parquet_path, config_dir):
+    """udfs.sotif.main is a thin wrapper around kpi_engine.compute."""
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
     assert main(ctx, config_dir=str(config_dir))["rows"] == compute(ctx, config_dir=config_dir)["rows"]

@@ -1,4 +1,22 @@
-"""Typed contracts for a single compute request. No I/O."""
+"""Typed data contracts for one compute request.
+
+What this file provides
+    Frozen dataclasses: AdaptedRequest, KpiSpec, ModelSpec, TimePlan, BoundFilter,
+    OutputSpec (one YAML measure), CutSpec, ExtractResult, and related types.
+    No I/O. No DuckDB. No Pandas logic.
+
+Where it is used
+    Every core module imports these types. Binder produces KpiSpec/ModelSpec;
+    adapter produces AdaptedRequest; time_planner produces TimePlan.
+
+Capabilities
+    A single vocabulary so SQL compilation and Pandas calc share the same names
+    (grain, cuts, measures, span).
+
+When to use
+    Add a field here when YAML or context gains a new locked concept. Do not put
+    parsing or SQL in this file — only shapes.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +32,8 @@ GrainName = Literal["day", "month", "quarter", "year"]
 
 @dataclass(frozen=True)
 class DatasetBinding:
+    """One dataset from context.datasets, ready for DuckDB to scan."""
+
     key: str
     alias: str
     path: str
@@ -24,6 +44,8 @@ class DatasetBinding:
 
 @dataclass(frozen=True)
 class FilterMapping:
+    """Maps a context filter_code to a physical column (operator defaults to IN)."""
+
     filter_code: str
     column_name: str
     operator: str
@@ -32,6 +54,8 @@ class FilterMapping:
 
 @dataclass(frozen=True)
 class IncomingFilter:
+    """A filter as it arrived on the context, before column binding."""
+
     raw_key: str
     code: str
     values: tuple[Any, ...]
@@ -40,6 +64,8 @@ class IncomingFilter:
 
 @dataclass(frozen=True)
 class BoundFilter:
+    """Filter bound to a column and a stage (source DuckDB, or per-cut Pandas)."""
+
     code: str
     column: str
     values: tuple[Any, ...]
@@ -49,6 +75,8 @@ class BoundFilter:
 
 @dataclass(frozen=True)
 class Pagination:
+    """Caller paging settings. Null page_size means return every row."""
+
     page: int | None
     page_size: int | None
     limit: int | None
@@ -56,6 +84,8 @@ class Pagination:
 
 @dataclass(frozen=True)
 class AdaptedRequest:
+    """Normalized request after parsing context; still independent of KPI YAML."""
+
     kpi_id: int | str
     request_id: str | None
     measure_keys: tuple[str, ...]
@@ -67,6 +97,8 @@ class AdaptedRequest:
 
 @dataclass(frozen=True)
 class TimeSpec:
+    """KPI time column, grain, and which context filter is the selected month."""
+
     column: str
     grain: GrainName
     filter_code: str
@@ -76,6 +108,8 @@ class TimeSpec:
 
 @dataclass(frozen=True)
 class BaseMeasure:
+    """Internal fact: SQL column + aggregation, used as the ingredient for measures."""
+
     name: str
     sql: str
     agg: AggName
@@ -83,6 +117,8 @@ class BaseMeasure:
 
 @dataclass(frozen=True)
 class CutSpec:
+    """One grouping grain (e.g. global vs region) plus filters to ignore."""
+
     name: str
     group_by: tuple[str, ...]
     ignore_filters: tuple[str, ...]
@@ -91,16 +127,21 @@ class CutSpec:
 
 @dataclass(frozen=True)
 class Offset:
+    """Calendar offset for a point measure (months and years added together)."""
+
     months: int = 0
     years: int = 0
 
     @property
     def total_months(self) -> int:
+        """Return the offset as a single month count (years * 12 + months)."""
         return self.years * 12 + self.months
 
 
 @dataclass(frozen=True)
 class OutputSpec:
+    """One requestable measure (point, window, trend, arithmetic, or dimension)."""
+
     key: str
     kind: OpName
     of: str | None = None
@@ -115,6 +156,8 @@ class OutputSpec:
 
 @dataclass(frozen=True)
 class KpiSpec:
+    """Parsed KPI YAML: model, time, dimensions, base facts, cuts, and measures."""
+
     kpi_id: int | str
     version: int
     model_id: str
@@ -123,19 +166,23 @@ class KpiSpec:
     base_measures: tuple[BaseMeasure, ...]
     cuts: tuple[CutSpec, ...]
     default_cut: str
-    outputs: tuple[OutputSpec, ...]
+    measures: tuple[OutputSpec, ...]
     filter_map: dict[str, str] = field(default_factory=dict)
     row_set: Literal["span_union", "anchor_only"] = "span_union"
 
 
 @dataclass(frozen=True)
 class PhysicalSource:
+    """Named source in a physical model, bound to a context dataset alias."""
+
     name: str
     alias: str
 
 
 @dataclass(frozen=True)
 class JoinSpec:
+    """Join between two physical sources on listed key columns."""
+
     left: str
     right: str
     on: tuple[str, ...]
@@ -144,6 +191,8 @@ class JoinSpec:
 
 @dataclass(frozen=True)
 class ModelSpec:
+    """Parsed model YAML: physical tables/joins or a SQL/CTE query."""
+
     model_id: str
     kind: Literal["physical", "sql"]
     required_aliases: tuple[str, ...]
@@ -155,6 +204,8 @@ class ModelSpec:
 
 @dataclass(frozen=True)
 class TimePlan:
+    """Anchor month and the widened scan range needed for requested lookbacks."""
+
     anchor: date
     span_start: date
     span_end_exclusive: date
@@ -164,6 +215,8 @@ class TimePlan:
 
 @dataclass(frozen=True)
 class ExtractResult:
+    """DuckDB result: aggregated monthly frame plus the SQL that produced it."""
+
     frame: Any
     sql: str
     params: tuple[Any, ...]

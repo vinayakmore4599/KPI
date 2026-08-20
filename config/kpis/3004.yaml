@@ -1,7 +1,27 @@
+# KPI definition for kpi_id 3004 (Sotif).
+#
+# What this file provides
+#   The onboarding contract: time, dimensions, base_measures, cuts, measures.
+#   Context.measures_required[].measure_key must match keys under `measures`.
+#
+# Where it is used
+#   binder.load_kpi(3004). The engine does not hard-code Sotif math.
+#
+# Capabilities
+#   dimensions     — row splits (reason_code, region)
+#   base_measures  — internal SUM(amount) as sotif_value
+#   cuts           — G (global, ignore region) also emits R (by region)
+#   measures       — current, previous year, 3/6/12m windows, yoy, 12m trend
+#
+# When to use
+#   Copy this file to config/kpis/<new_id>.yaml to onboard a KPI. Do not put
+#   ADLS paths or Python here.
+#
 kpi_id: 3004
 version: 1
 model: sotif
 
+# Selected month arrives as this filter. It is the anchor, never a single-month IN.
 time:
   column: event_month
   grain: month
@@ -9,15 +29,18 @@ time:
   calendar: gregorian
   timezone: UTC
 
+# How rows are split. Not numbers.
 dimensions:
   - { name: reason_code, kind: dimension }
   - { name: region, kind: dimension }
 
+# Internal fact from the table. UI does not request this name.
 base_measures:
   sotif_value:
     sql: amount
     agg: sum
 
+# Grouping grains. G = global (no region); R = by region. also_emit packs both in one response.
 cuts:
   - name: G
     group_by: [reason_code]
@@ -30,7 +53,9 @@ cuts:
 default_cut: G
 row_set: span_union
 
-outputs:
+# Calculated columns the context can request via measure_key.
+# of: which base_measure to use. op: point | window | trend | arithmetic | dimension.
+measures:
   reason_code:
     kind: dimension
 

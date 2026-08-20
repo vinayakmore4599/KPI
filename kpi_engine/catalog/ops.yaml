@@ -1,4 +1,22 @@
-# Reusable op kinds. Implementations live in kpi_engine.core.calc_engine.
+# Reusable measure op kinds (catalog index).
+#
+# What this file provides
+#   The list of op kinds the engine understands for KPI YAML `measures.*.op`.
+#   It is documentation / a versioned index, not executable code.
+#
+# Where it is used
+#   Authors and reviewers. Implementations live in kpi_engine.core.calc_engine.
+#
+# Capabilities
+#   point       — one month (current, previous year, lag)
+#   window      — trailing N months, MTD/YTD-style windows as a single number
+#   arithmetic  — ratio / growth of two measures
+#   trend       — array of monthly values for graphs
+#   dimension   — pass-through attribute requested as measure_key
+#
+# When to use
+#   Add a kind here when calc_engine.evaluate gains a new op. KPI files should
+#   only use names from this list.
 version: 1
 kinds:
   - point

@@ -1,4 +1,23 @@
-"""Parse the immutable metadata context into an AdaptedRequest."""
+"""Parse the immutable metadata context into AdaptedRequest.
+
+What this file provides
+    `adapt(context)` plus helpers to read execution, filters, datasets, pagination.
+
+Where it is used
+    orchestrator.compute / validate as the first step. Tests in test_adapter.py.
+
+Capabilities
+    - Requires execution.kpi_id and exactly one view_details entry.
+    - Reads measures_required[].measure_key (projection list).
+    - Normalizes filter `value` or `values` to a list (default operator IN).
+    - Rejects input_text=heir (hierarchy must be expanded upstream).
+    - Ignores business_date (never used in calculations).
+    - Does not claim the month filter; time_planner does that later.
+
+When to use
+    Touch this file when the context JSON shape changes (new required fields,
+    filter formats). Do not put KPI YAML logic here.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +34,7 @@ from kpi_engine.exceptions import ContextError, FilterError
 
 
 def adapt(context: dict[str, Any]) -> AdaptedRequest:
+    """Parse the metadata context into a typed request. Does not load KPI YAML."""
     if not isinstance(context, dict):
         raise ContextError("Context must be a JSON object.")
 
@@ -50,6 +70,7 @@ def adapt(context: dict[str, Any]) -> AdaptedRequest:
 
 
 def _measure_keys(raw: Any) -> tuple[str, ...]:
+    """Read measures_required[].measure_key from the single view."""
     if raw is None:
         return ()
     if not isinstance(raw, list):
@@ -66,6 +87,7 @@ def _measure_keys(raw: Any) -> tuple[str, ...]:
 
 
 def _filters(raw: Any) -> tuple[IncomingFilter, ...]:
+    """Normalize filters; accept value or values; reject hierarchical (heir) filters."""
     if raw is None:
         return ()
     if not isinstance(raw, dict):
@@ -92,6 +114,7 @@ def _filters(raw: Any) -> tuple[IncomingFilter, ...]:
 
 
 def _as_list(values: Any) -> tuple[Any, ...]:
+    """Turn a scalar or list into a tuple so every filter is IN (...)."""
     if values is None:
         return ()
     if isinstance(values, list):
@@ -100,6 +123,7 @@ def _as_list(values: Any) -> tuple[Any, ...]:
 
 
 def _datasets(raw: Any) -> tuple[DatasetBinding, ...]:
+    """Bind context.datasets (path, alias, columns, filter mappings)."""
     if not isinstance(raw, dict) or not raw:
         raise ContextError("datasets must be a non-empty object.")
     out: list[DatasetBinding] = []
@@ -128,6 +152,7 @@ def _datasets(raw: Any) -> tuple[DatasetBinding, ...]:
 
 
 def _mapping(raw: Any) -> FilterMapping:
+    """Parse one filter_column_mappings entry (filter_code → column_name)."""
     if not isinstance(raw, dict):
         raise ContextError("filter_column_mappings entries must be objects.")
     code = raw.get("filter_code")
@@ -143,6 +168,7 @@ def _mapping(raw: Any) -> FilterMapping:
 
 
 def _pagination(raw: Any) -> Pagination:
+    """Read output.page / page_size / limit. Missing values stay None."""
     if not isinstance(raw, dict):
         return Pagination(page=None, page_size=None, limit=None)
     return Pagination(
@@ -153,6 +179,7 @@ def _pagination(raw: Any) -> Pagination:
 
 
 def _require_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return parent[key] or raise if it is missing or not an object."""
     value = parent.get(key)
     if not isinstance(value, dict):
         raise ContextError(f"{key} must be an object.")
@@ -160,12 +187,14 @@ def _require_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _optional_str(value: Any) -> str | None:
+    """Coerce a value to str, or None when the field was omitted."""
     if value is None:
         return None
     return str(value)
 
 
 def _optional_int(value: Any) -> int | None:
+    """Coerce a value to int, or None when the field was omitted."""
     if value is None or value == "":
         return None
     return int(value)

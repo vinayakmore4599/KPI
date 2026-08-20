@@ -1,4 +1,22 @@
-"""Bind remaining filters to columns. Default operator is IN."""
+"""Bind remaining filters to columns. Default operator is IN.
+
+What this file provides
+    bind_filters — map filter_code → column (context mappings, then YAML filter_map).
+    split_for_duckdb — source IN vs deferred (ignored by any emitted cut).
+    apply_cut_filters — Pandas isin for deferred filters per cut.
+
+Where it is used
+    orchestrator after plan_time. calc_engine.apply path for G vs R region.
+
+Capabilities
+    Unmapped filters fail hard. Empty IN list matches nothing (FALSE), not
+    invalid SQL. Filters listed in a cut's ignore_filters stay out of DuckDB
+    so global cuts can still see all regions.
+
+When to use
+    Change mapping rules if metadata mappings change. Hierarchy (heir) is
+    rejected in the adapter, not here.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +30,7 @@ def bind_filters(
     datasets: dict[str, DatasetBinding],
     extract_columns: set[str],
 ) -> tuple[BoundFilter, ...]:
+    """Map leftover filters to source columns. Unmapped filters are a hard error."""
     mappings = _mapping_index(datasets, kpi)
     bound: list[BoundFilter] = []
     for item in remaining:
@@ -50,6 +69,7 @@ def split_for_duckdb(
 
 
 def apply_cut_filters(frame, cut: CutSpec, deferred: tuple[BoundFilter, ...]):
+    """Apply deferred IN filters on a Pandas frame, skipping this cut's ignore_filters."""
     work = frame
     for item in deferred:
         if _is_ignored(cut, item):
@@ -61,11 +81,13 @@ def apply_cut_filters(frame, cut: CutSpec, deferred: tuple[BoundFilter, ...]):
 
 
 def _is_ignored(cut: CutSpec, item: BoundFilter) -> bool:
+    """True if this cut lists the filter (by code or column) in ignore_filters."""
     names = _ignore_names(cut)
     return item.code in names or item.column in names or _norm(item.code) in names
 
 
 def _ignore_names(cut: CutSpec) -> set[str]:
+    """Ignore-filter names in both original and normalized form."""
     names: set[str] = set()
     for raw in cut.ignore_filters:
         names.add(raw)
@@ -79,6 +101,7 @@ def _resolve_column(
     kpi: KpiSpec,
     extract_columns: set[str],
 ) -> str:
+    """Find the source column for a filter via mappings, YAML filter_map, or name match."""
     mapped = mappings.get(_norm(item.code)) or mappings.get(_norm(item.raw_key))
     if mapped:
         return mapped
@@ -97,6 +120,7 @@ def _resolve_column(
 def _mapping_index(
     datasets: dict[str, DatasetBinding], kpi: KpiSpec
 ) -> dict[str, str]:
+    """Build filter_code → column from context mappings and optional YAML filter_map."""
     index: dict[str, str] = {}
     for dataset in datasets.values():
         for mapping in dataset.mappings:
@@ -107,4 +131,5 @@ def _mapping_index(
 
 
 def _norm(value: str) -> str:
+    """Case-insensitive compare key (spaces become underscores)."""
     return value.strip().lower().replace(" ", "_")

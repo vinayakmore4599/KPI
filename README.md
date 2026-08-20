@@ -1,0 +1,112 @@
+# KPI Engine
+
+Config-driven KPI calculator. It consumes a **context JSON** from the existing metadata framework, loads data with **DuckDB**, calculates in **Pandas**, and returns **JSON** (table scalars plus optional trend arrays for graphs).
+
+You onboard a KPI by adding YAML. You should not need to change engine code for a normal metric.
+
+**Onboarding playbook (steps + which files to change):** [kpi-onboarding-guide.md](kpi-onboarding-guide.md)
+
+Full architecture: [kpi-framework-plan.md](kpi-framework-plan.md).
+
+Every Python and YAML file starts with a header covering **what it provides**, **where it is used**, **capabilities**, and **when to change it**.
+
+---
+
+## Folders
+
+```text
+config/                 Authoring — edit these to add KPIs
+  kpis/                 One file per kpi_id (measures, cuts, time)
+  models/               DuckDB extract (tables/joins or SQL)
+
+kpi_engine/             Stable engine — rarely edit
+  core/                 Request path: adapter → bind → plan → SQL → calc
+  catalog/              Shared op kinds (point, window, trend, arithmetic)
+  extensions/           Named Python hooks (allowlist only)
+
+udfs/                   Platform entry. udfs.sotif.main → kpi_engine.compute
+tests/                  Local parquet tests (no ADLS)
+```
+
+| You want to… | Open |
+|---|---|
+| Add or change a KPI | `config/kpis/<id>.yaml` |
+| Change how source tables join | `config/models/<name>.yaml` |
+| Understand a request failure | `kpi_engine/core/` (adapter, binder, time_planner) |
+| Add a reusable calc | `kpi_engine/core/calc_engine.py` (catalog ops) |
+
+---
+
+## Install and test
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest -q
+```
+
+---
+
+## Run a request
+
+The metadata layer already builds `context`. This engine only consumes it:
+
+```python
+from kpi_engine import compute, validate
+from udfs.sotif import main
+
+# Compile DuckDB SQL without scanning files
+validate(context)
+
+# Full calculation
+result = compute(context)
+# or the UDF shim:
+result = main(context)
+```
+
+`business_date` on the context is ignored. The **selected month** in filters is the anchor.
+
+---
+
+## KPI YAML (what the sections mean)
+
+Example: `config/kpis/3004.yaml`.
+
+**`dimensions`** — columns that split rows (`reason_code`, `region`). Not numbers.
+
+**`base_measures`** — internal fact from the table, e.g. `sotif_value: SUM(amount)`. The UI does not request this name.
+
+**`measures`** — calculated columns the UI can request via `measure_key`:
+
+- `point` — one month (current, previous year)
+- `window` — trailing 3m / 6m / 12m (and similar)
+- `trend` — array of monthly values for a graph
+- `arithmetic` — YoY / ratio of two measures
+- `dimension` — only if the context still sends a dimension as `measure_key`
+
+**`cuts`** — grouping grains, not measures. Example: **G** = global (no region), **R** = by region. `also_emit` packs extra grains into the same response.
+
+**`time.filter_code`** — which context filter is the selected month. That filter is **never** applied as `IN (one month)`; it becomes a date **range** so lookbacks have history.
+
+---
+
+## Request path
+
+1. Adapt context (one view, `value`/`values` → IN lists).
+2. Load KPI + model YAML; bind dataset **alias** to context paths.
+3. Claim the month filter → anchor + `required_span`.
+4. DuckDB: scan, source IN filters, time range, `GROUP BY` month grain.
+5. Pandas: dense month spine, cuts, catalog ops.
+6. JSON: one row per dimension combo per cut; one column per requested `measure_key`.
+
+---
+
+## Adding a KPI
+
+1. Copy `config/kpis/3004.yaml` to `config/kpis/<kpi_id>.yaml`.
+2. Point `model` at an alias that exists in context datasets.
+3. Declare `dimensions`, `base_measures`, `cuts`, and `measures` (every `measure_key` the page can ask for).
+4. Run `validate(sample_context)` then `pytest`.
+
+Do not put ADLS paths, YoY math, or DuckDB connection code in the KPI file.

@@ -13,7 +13,7 @@ Capabilities
     - Point: value at anchor ± calendar offset; unobserved month → null.
     - Window: trailing N months (inclusive by default) using declared agg.
     - Trend: fixed-length array + shared axis in metadata (graphs).
-    - Arithmetic: growth_pct / div / add / sub / mul / percent; /0 and /null → null.
+    - Arithmetic / fn / expr: compose other measures; /0 and /null → null.
     - Hook: allowlisted function from extensions.hooks.REGISTRY.
     - Trends default to default_cut only unless measures.*.cuts lists more.
     - row_set: span_union keeps combos seen anywhere in the span; anchor_only
@@ -31,6 +31,7 @@ from typing import Any
 
 import pandas as pd
 
+from kpi_engine.catalog.ops_impl import call_measure_fn, eval_expr_scalar
 from kpi_engine.contracts import (
     BoundFilter,
     CutSpec,
@@ -82,7 +83,7 @@ def densify(
     merged["_observed"] = observed
     for col in fill_zero_cols:
         if col in merged.columns:
-            merged[col] = merged[col].fillna(0)
+            merged.loc[~merged["_observed"], col] = merged.loc[~merged["_observed"], col].fillna(0)
     return merged
 
 
@@ -93,7 +94,7 @@ def compute_cuts(
     kpi: KpiSpec,
     emitted: tuple[CutSpec, ...],
     deferred_filters: tuple[BoundFilter, ...],
-    plan: TimePlan,
+    plan: TimePlan | None,
     requested: tuple[str, ...],
     detail: pd.DataFrame | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
@@ -107,7 +108,7 @@ def compute_cuts(
     for cut in emitted:
         cut_monthly = _cut_monthly(monthly, cut, deferred_filters, kpi)
         cut_detail = apply_cut_filters(detail, cut, deferred_filters) if detail is not None else None
-        group_dims = list(cut_group_dims(cut, kpi.time.column))
+        group_dims = list(cut_group_dims(cut, kpi.time.column if kpi.time else ""))
         if cut_monthly.empty and not group_dims:
             combo_frame = pd.DataFrame([{}])
         elif cut_monthly.empty and cut_detail is not None and not cut_detail.empty:
@@ -132,7 +133,10 @@ def compute_cuts(
         _guard_trend_payload(len(combo_frame), trend_keys, measures, cut)
 
         for _, combo in combo_frame.iterrows():
-            series = _combo_series(cut_monthly, group_dims, combo, kpi.time.column)
+            series = _combo_series(
+                cut_monthly, group_dims, combo, kpi.time.column if kpi.time else ""
+            )
+            memo: dict[str, Any] = {}
             row: dict[str, Any] = {"output_cut": cut.name}
             for dim in kpi.dimensions:
                 if dim in group_dims:
@@ -155,6 +159,7 @@ def compute_cuts(
                     detail=cut_detail,
                     combo=combo,
                     group_dims=group_dims,
+                    memo=memo,
                 )
                 if spec.kind == "trend":
                     axis, values = value
@@ -175,14 +180,43 @@ def evaluate(
     spec: OutputSpec,
     series: pd.DataFrame,
     kpi: KpiSpec,
-    plan: TimePlan,
+    plan: TimePlan | None,
     catalog: dict[str, OutputSpec],
     detail: pd.DataFrame | None = None,
     combo: pd.Series | None = None,
     group_dims: list[str] | None = None,
+    memo: dict[str, Any] | None = None,
 ) -> Any:
-    """Dispatch one measure op against a single partition's monthly series."""
+    """Dispatch one measure op against a single partition's monthly series.
+
+    `memo` caches results for this partition so a measure named by several
+    parents is computed once. Trends are not cached (they return an axis pair).
+    """
+    if memo is not None and spec.key in memo:
+        return memo[spec.key]
+    value = _evaluate_uncached(
+        spec, series, kpi, plan, catalog, detail, combo, group_dims, memo
+    )
+    if memo is not None and spec.kind != "trend":
+        memo[spec.key] = value
+    return value
+
+
+def _evaluate_uncached(
+    spec: OutputSpec,
+    series: pd.DataFrame,
+    kpi: KpiSpec,
+    plan: TimePlan | None,
+    catalog: dict[str, OutputSpec],
+    detail: pd.DataFrame | None = None,
+    combo: pd.Series | None = None,
+    group_dims: list[str] | None = None,
+    memo: dict[str, Any] | None = None,
+) -> Any:
+    """Run one measure op. Callers should use evaluate so results are memoized."""
     if spec.kind == "point":
+        if kpi.time is None or plan is None:
+            return _point(series, kpi, spec.of, target=None)
         offset = spec.offset
         target = truncate_period_safe(plan.anchor, kpi)
         if offset:
@@ -202,21 +236,52 @@ def evaluate(
             return _agg_detail(detail, kpi, base, group_dims or [], combo, target, target)
         return _point(series, kpi, spec.of, target)
     if spec.kind == "window":
+        if kpi.time is None or plan is None:
+            raise CatalogError(f"{spec.key} is a window measure; this KPI has no time column.")
         start, end = _window_bounds(plan.anchor, spec, kpi)
         base = _base(kpi, spec.of)
         if base.agg in NON_ADDITIVE:
             return _agg_detail(detail, kpi, base, group_dims or [], combo, start, end)
         return _window(series, kpi, spec, start, end)
     if spec.kind == "trend":
+        if kpi.time is None or plan is None:
+            raise CatalogError(f"{spec.key} is a trend measure; this KPI has no time column.")
         return _trend(series, kpi, spec, plan, detail=detail, combo=combo, group_dims=group_dims)
-    if spec.kind == "arithmetic":
-        left = evaluate(
-            catalog[spec.left or ""], series, kpi, plan, catalog, detail, combo, group_dims
-        )
-        right = evaluate(
-            catalog[spec.right or ""], series, kpi, plan, catalog, detail, combo, group_dims
-        )
-        return _arithmetic(spec.fn or "div", left, right)
+    if spec.kind in {"arithmetic", "fn", "expr"}:
+        if spec.kind == "fn":
+            names = list(spec.inputs)
+        elif spec.kind == "expr":
+            names = list(spec.inputs)
+        else:
+            names = list(spec.operands) or [spec.left or "", spec.right or ""]
+        missing = [n for n in names if n not in catalog]
+        if missing:
+            raise CatalogError(f"{spec.key} references measures that do not exist: {missing}.")
+        values = [
+            evaluate(
+                catalog[n],
+                series,
+                kpi,
+                plan,
+                catalog,
+                detail,
+                combo,
+                group_dims,
+                memo=memo,
+            )
+            for n in names
+        ]
+        if spec.kind == "expr":
+            from kpi_engine.identifiers import parse_expression
+
+            keys = list(spec.input_params) if spec.input_params else names
+            return eval_expr_scalar(
+                parse_expression(spec.expr or "", what=f"measures.{spec.key}.expr"),
+                dict(zip(keys, values)),
+            )
+        if spec.kind == "fn":
+            return call_measure_fn(spec.fn or "", values, spec.input_params)
+        return call_measure_fn(spec.fn or "divide", values)
     if spec.kind == "hook":
         from kpi_engine.extensions.hooks import run
 
@@ -231,10 +296,16 @@ def _combos_at_anchor(
     cut_monthly: pd.DataFrame,
     group_dims: list[str],
     kpi: KpiSpec,
-    plan: TimePlan,
+    plan: TimePlan | None,
 ) -> pd.DataFrame:
     """Keep only dimension combos that have observed activity at the anchor period."""
     empty = pd.DataFrame(columns=group_dims) if group_dims else pd.DataFrame()
+    if kpi.time is None or plan is None:
+        if cut_monthly.empty:
+            return empty
+        if not group_dims:
+            return pd.DataFrame([{}])
+        return cut_monthly[group_dims].drop_duplicates()
     if cut_monthly.empty or kpi.time.column not in cut_monthly.columns:
         return empty
     ts = pd.to_datetime(cut_monthly[kpi.time.column])
@@ -256,24 +327,32 @@ def _cut_monthly(
 ) -> pd.DataFrame:
     """Filter then re-aggregate the monthly frame to this cut's group_by."""
     work = apply_cut_filters(monthly, cut, deferred)
-    time_col = kpi.time.column
-    dims = list(cut_group_dims(cut, time_col))
-    value_cols = [m.name for m in kpi.base_measures if m.agg not in NON_ADDITIVE]
+    time_col = kpi.time.column if kpi.time is not None else None
+    dims = list(cut_group_dims(cut, time_col or ""))
+    value_cols = [
+        m.name
+        for m in kpi.base_measures
+        if m.agg not in NON_ADDITIVE or m.row_op
+    ]
     extra = [f"{m.name}__sum" for m in kpi.base_measures if m.agg == "avg"]
     extra += [f"{m.name}__count" for m in kpi.base_measures if m.agg == "avg"]
     cols = [c for c in [*value_cols, *extra, "_observed"] if c in work.columns]
-    group = [*dims, time_col]
     if work.empty:
         return work
     if not cols:
         return work.iloc[0:0].copy()
-    if time_col not in work.columns:
+    if time_col is not None and time_col not in work.columns:
         return work.iloc[0:0].copy()
     rollup = _rollup_funcs(kpi)
     agg: dict[str, str] = {}
     for col in cols:
         agg[col] = "max" if col == "_observed" else rollup.get(col, "sum")
-    out = work.groupby(group, dropna=False, as_index=False).agg(agg)
+    group = [*dims, time_col] if time_col is not None else list(dims)
+    if not group:
+        out = work[list(agg)].agg(agg)
+        out = out.to_frame().T if isinstance(out, pd.Series) else out.reset_index(drop=True)
+    else:
+        out = work.groupby(group, dropna=False, as_index=False).agg(agg)
     out["_observed"] = out["_observed"].astype(bool)
     return out
 
@@ -287,7 +366,7 @@ def _rollup_funcs(kpi: KpiSpec) -> dict[str, str]:
     """
     funcs: dict[str, str] = {}
     for measure in kpi.base_measures:
-        if measure.agg in {"min", "max"}:
+        if measure.agg in {"min", "max", "first", "last"}:
             funcs[measure.name] = measure.agg
     return funcs
 
@@ -309,14 +388,25 @@ def _combo_series(
     return work.sort_values(time_col) if time_col in work.columns else work
 
 
-def _point(series: pd.DataFrame, kpi: KpiSpec, measure: str | None, target: date) -> float | None:
-    """Value at one calendar month. Missing/unobserved months return null, not a shifted row."""
+def _point(
+    series: pd.DataFrame, kpi: KpiSpec, measure: str | None, target: date | None
+) -> float | None:
+    """Value at one calendar month, or the snapshot row when the KPI has no time column."""
     base = _base(kpi, measure)
+    if kpi.time is None or target is None:
+        if series.empty:
+            return None
+        row = series.iloc[0]
+        return _value_from_row(row, base)
     ts = pd.Timestamp(target)
     hit = series[pd.to_datetime(series[kpi.time.column]) == ts]
     if hit.empty:
         return None
-    row = hit.iloc[0]
+    return _value_from_row(hit.iloc[0], base)
+
+
+def _value_from_row(row: pd.Series, base) -> float | None:
+    """Read one aggregated base measure from a monthly/snapshot row."""
     if not bool(row.get("_observed", True)):
         return None
     if base.agg == "avg":
@@ -356,7 +446,7 @@ def _trend(
     series: pd.DataFrame,
     kpi: KpiSpec,
     spec: OutputSpec,
-    plan: TimePlan,
+    plan: TimePlan | None,
     detail: pd.DataFrame | None = None,
     combo: pd.Series | None = None,
     group_dims: list[str] | None = None,
@@ -396,8 +486,21 @@ def _trend(
 
 
 def _window_bounds(anchor: date, spec: OutputSpec, kpi: KpiSpec) -> tuple[date, date]:
-    """Inclusive: last N grain periods through the anchor. Exclusive: N periods before."""
+    """Inclusive trailing N through the anchor; leading N after; cumulative YTD."""
+    from kpi_engine.dates import add_days, year_start
+
+    kind = spec.window_range or "trailing"
     n = spec.trailing_months or 1
+    if kind == "cumulative":
+        return year_start(anchor, kpi.time), anchor
+    if kind == "leading":
+        if spec.inclusive:
+            return anchor, add_periods(anchor, n - 1, kpi.time)
+        return add_periods(anchor, 1, kpi.time), add_periods(anchor, n, kpi.time)
+    if spec.trailing_unit == "day":
+        if spec.inclusive:
+            return add_days(anchor, -(n - 1)), anchor
+        return add_days(anchor, -n), add_days(anchor, -1)
     if spec.inclusive:
         return add_periods(anchor, -(n - 1), kpi.time), anchor
     return add_periods(anchor, -n, kpi.time), add_periods(anchor, -1, kpi.time)
@@ -407,6 +510,8 @@ def truncate_period_safe(anchor: date, kpi: KpiSpec) -> date:
     """Truncate the anchor to the KPI grain."""
     from kpi_engine.dates import truncate_period
 
+    if kpi.time is None:
+        return anchor
     return truncate_period(anchor, kpi.time)
 
 
@@ -423,17 +528,27 @@ def _agg_detail(
     if detail is None or detail.empty:
         return None
     work = detail
-    ts = pd.to_datetime(work[kpi.time.column]).dt.normalize()
-    work = work[(ts >= pd.Timestamp(start)) & (ts <= pd.Timestamp(end))]
+    if kpi.time is not None:
+        ts = pd.to_datetime(work[kpi.time.column]).dt.normalize()
+        work = work[(ts >= pd.Timestamp(start)) & (ts <= pd.Timestamp(end))]
     if combo is not None:
         for dim in group_dims:
             if dim in work.columns and dim in combo.index:
                 work = work[work[dim] == combo[dim]]
     if work.empty:
         return None
-    col = base.sql if base.sql in work.columns else base.name
-    if col not in work.columns:
+    col = base.name if base.name in work.columns else (base.sql if base.sql in work.columns else None)
+    if col is None or col not in work.columns:
         return None
+    if base.agg in {"first", "last"}:
+        order_col = "__event_time" if "__event_time" in work.columns else (
+            kpi.time.column if kpi.time is not None and kpi.time.column in work.columns else None
+        )
+        if order_col:
+            work = work.sort_values(order_col)
+        series = work[col]
+        value = series.iloc[0] if base.agg == "first" else series.iloc[-1]
+        return _num_or_none(value)
     series = work[col]
     if base.agg == "count_distinct":
         return _num(series.nunique(dropna=True))
@@ -442,29 +557,11 @@ def _agg_detail(
     if base.agg == "percentile":
         q = base.percentile if base.percentile is not None else 0.5
         return _num_or_none(series.quantile(q))
+    if base.agg == "first":
+        return _num_or_none(series.iloc[0])
+    if base.agg == "last":
+        return _num_or_none(series.iloc[-1])
     return None
-
-
-def _arithmetic(fn: str, left: Any, right: Any) -> float | None:
-    """Combine two scalars. Division by zero or null yields null, never inf."""
-    if fn in {"growth_pct", "yoy", "mom"}:
-        if left is None or right in (None, 0):
-            return None
-        return _num((left - right) / right)
-    if fn in {"div", "percent"}:
-        if left is None or right in (None, 0):
-            return None
-        value = left / right
-        return _num(value * 100) if fn == "percent" else _num(value)
-    if left is None or right is None:
-        return None
-    if fn == "add":
-        return _num(left + right)
-    if fn == "sub":
-        return _num(left - right)
-    if fn == "mul":
-        return _num(left * right)
-    raise CatalogError(f"Unknown arithmetic fn {fn!r}.")
 
 
 def _base(kpi: KpiSpec, name: str | None):

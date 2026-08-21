@@ -50,6 +50,13 @@ def test_time_block_is_validated(extra_config):
         load_kpi(9103, extra_config)
 
 
+def test_timezone_is_rejected_rather_than_silently_ignored(extra_config):
+    """The engine buckets timestamps as stored, so a timezone would be a lie."""
+    _write(extra_config, 9106, time=_time(timezone="Asia/Kolkata"))
+    with pytest.raises(BindError, match="time.timezone is not supported"):
+        load_kpi(9106, extra_config)
+
+
 @pytest.mark.parametrize("start_month", [0, 13])
 def test_fiscal_start_month_must_be_1_to_12(extra_config, start_month):
     """A fiscal calendar cannot start outside the year."""
@@ -323,7 +330,6 @@ def _time(**overrides) -> dict:
         "grain": "month",
         "filter_code": "reporting_month",
         "calendar": "gregorian",
-        "timezone": "UTC",
     }
     block.update(overrides)
     return block

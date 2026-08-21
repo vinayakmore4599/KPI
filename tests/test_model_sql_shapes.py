@@ -36,7 +36,7 @@ _AGG_MEASURES = {
 
 
 def test_every_additive_agg_compiles_to_its_sql_function(parquet_path, extra_config):
-    """sum/count/min/max map one-to-one; avg is carried as SUM plus COUNT."""
+    """DuckDB retrieves the physical column; Pandas applies sum/count/min/max/avg."""
     write_yaml(
         extra_config / "kpis" / "9500.yaml",
         minimal_kpi(
@@ -47,21 +47,20 @@ def test_every_additive_agg_compiles_to_its_sql_function(parquet_path, extra_con
     )
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"], kpi_id=9500)
     sql = validate(ctx, config_dir=extra_config)["sql"]
-    assert 'SUM("amount") AS "sum_value"' in sql
-    assert 'COUNT("amount") AS "count_value"' in sql
-    assert 'MIN("amount") AS "min_value"' in sql
-    assert 'MAX("amount") AS "max_value"' in sql
-    assert 'SUM("amount") AS "avg_value__sum"' in sql
-    assert 'COUNT("amount") AS "avg_value__count"' in sql
+    assert "SUM(" not in sql
+    assert "COUNT(" not in sql
+    assert "GROUP BY" not in sql
+    assert '"amount"' in sql
 
 
 def test_additive_extract_groups_by_grain_ordinals(parquet_path, config_dir):
-    """GROUP BY lists one ordinal per grain column, so dims and time stay aligned."""
+    """The retrieve is row-level model columns; grain keys are selected, not grouped."""
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
     sql = validate(ctx, config_dir=config_dir)["sql"]
-    assert sql.rstrip().endswith("GROUP BY 1, 2, 3")
+    assert "GROUP BY" not in sql
     assert '"reason_code"' in sql
     assert '"region"' in sql
+    assert '"amount"' in sql
 
 
 def test_non_additive_measures_compile_to_a_row_level_query(parquet_path, extra_config):
@@ -87,7 +86,7 @@ def test_non_additive_measures_compile_to_a_row_level_query(parquet_path, extra_
 
 
 def test_mixed_aggs_compile_to_one_query_per_shape(parquet_path, extra_config):
-    """Additive and non-additive measures need separate extracts from the same model."""
+    """Additive and non-additive measures share one row-level retrieve of model columns."""
     write_yaml(
         extra_config / "kpis" / "9502.yaml",
         minimal_kpi(
@@ -113,10 +112,12 @@ def test_mixed_aggs_compile_to_one_query_per_shape(parquet_path, extra_config):
         kpi_id=9502,
     )
     planned = validate(ctx, config_dir=extra_config)
-    assert len(planned["sqls"]) == 2
-    grouped, row_level = planned["sqls"]
-    assert "GROUP BY" in grouped
-    assert "GROUP BY" not in row_level
+    assert len(planned["sqls"]) == 1
+    sql = planned["sqls"][0]
+    assert "GROUP BY" not in sql
+    assert "SUM(" not in sql
+    assert '"amount"' in sql
+    assert '"supplier_name"' in sql
 
 
 @pytest.mark.parametrize(
@@ -284,7 +285,7 @@ def test_unbound_source_alias_is_reported(parquet_path, extra_config):
 
 
 def test_grouped_select_omits_non_additive_measures(parquet_path, extra_config):
-    """DuckDB never pre-aggregates a median, so the grouped SELECT carries grain only."""
+    """DuckDB retrieves the physical column; median is computed in Pandas."""
     write_yaml(
         extra_config / "kpis" / "9512.yaml",
         minimal_kpi(
@@ -298,18 +299,18 @@ def test_grouped_select_omits_non_additive_measures(parquet_path, extra_config):
     kpi = load_kpi(9512, extra_config)
     model = load_model("sotif", extra_config)
     request = adapt(make_context(parquet_path, measures=["current_value"], kpi_id=9512))
-    grouped, _params = compile_extract(
+    sql, _params = compile_extract(
         model=model,
         kpi=kpi,
         datasets=bind_datasets(model, request),
         source_filters=(),
         plan=_plan(),
         grain=("event_month",),
-        row_level=False,
     )
-    assert "median" not in grouped.lower()
-    assert "MEDIAN(" not in grouped
-    assert grouped.startswith("SELECT CAST(date_trunc('month'")
+    assert "median" not in sql.lower()
+    assert "GROUP BY" not in sql
+    assert '"amount"' in sql
+    assert sql.startswith("SELECT CAST(date_trunc('month'")
 
 
 def test_duckdb_failures_surface_as_engine_errors(parquet_path, extra_config):

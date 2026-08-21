@@ -88,7 +88,6 @@ def test_sql_model_matches_physical(parquet_path, extra_config):
             "grain": "month",
             "filter_code": "reporting_month",
             "calendar": "gregorian",
-            "timezone": "UTC",
         },
         "dimensions": [
             {"name": "reason_code", "kind": "dimension"},

@@ -36,13 +36,19 @@ from kpi_engine.core.binder import (
     load_kpi,
     load_model,
 )
+from kpi_engine.catalog.ops_impl import (
+    apply_dimension_maps,
+    apply_pandas_facts,
+    collapse_pandas_detail,
+    pandas_group_keys,
+)
 from kpi_engine.core.calc_engine import compute_cuts, densify
 from kpi_engine.core.cuts import emitted_cuts, finest_grain
 from kpi_engine.core.filters import bind_filters, columns_for_source_filters, split_for_duckdb
 from kpi_engine.core.model_sql import NON_ADDITIVE, compile_extract, extract
 from kpi_engine.core.relations import join_monthly
 from kpi_engine.core.time_planner import plan_time
-from kpi_engine.dates import iso_period
+from kpi_engine.dates import add_periods, iso_period
 from kpi_engine.exceptions import KPIEngineError
 from kpi_engine.platform import acquire_connection
 from kpi_engine.runlog import (
@@ -141,15 +147,11 @@ def _compute(
     rows = _sort_rows(rows, kpi)
     log_step("paginate")
     page_rows, pagination = _paginate(rows, request)
+    parameters = _parameters(kpi, time_plan)
     result = {
         "kpi_id": kpi.kpi_id,
         "request_id": request.request_id,
-        "parameters": {
-            "anchor": iso_period(time_plan.anchor, kpi.time),
-            "time_grain": kpi.time.grain,
-            "span_start": iso_period(time_plan.span_start, kpi.time),
-            "lookback_months": time_plan.lookback_months,
-        },
+        "parameters": parameters,
         "applied_filters": _applied(source_filters, deferred, emitted),
         "ignored_filters": _ignored(deferred, emitted),
         "trend_axes": trend_axes,
@@ -217,39 +219,24 @@ def _validate(
     for model in models:
         bound_ds = bind_datasets(model, request)
         filter_cols = _model_filter_columns(model, bound_ds, grain, kpi)
-        add_m = [
-            m
-            for m in kpi.base_measures
-            if (m.model_id or kpi.model_id) == model.model_id and m.agg not in NON_ADDITIVE
-        ]
-        na_m = [
-            m
-            for m in kpi.base_measures
-            if (m.model_id or kpi.model_id) == model.model_id and m.agg in NON_ADDITIVE
-        ]
-        for row_level, measures in ((False, add_m), (True, na_m)):
-            if not measures:
-                continue
-            sub = replace(kpi, base_measures=tuple(measures), model_id=model.model_id)
-            sql, params = compile_extract(
-                model=model,
-                kpi=sub,
-                datasets=bound_ds,
-                source_filters=source_filters,
-                plan=time_plan,
-                grain=grain,
-                row_level=row_level,
-                filter_columns=filter_cols,
-            )
-            log_sql(sql, params, model=model.model_id, row_level=row_level)
-            sqls.append(sql)
-            param_count += len(params)
+        owned = [m for m in kpi.base_measures if (m.model_id or kpi.model_id) == model.model_id]
+        sub = replace(kpi, base_measures=tuple(owned), model_id=model.model_id)
+        sql, params = compile_extract(
+            model=model,
+            kpi=sub,
+            datasets=bound_ds,
+            source_filters=source_filters,
+            plan=time_plan,
+            grain=grain,
+            filter_columns=filter_cols,
+        )
+        log_sql(sql, params, model=model.model_id, row_level=True)
+        sqls.append(sql)
+        param_count += len(params)
     result = {
         "ok": True,
         "kpi_id": kpi.kpi_id,
-        "anchor": iso_period(time_plan.anchor, kpi.time),
-        "span_start": iso_period(time_plan.span_start, kpi.time),
-        "lookback_months": time_plan.lookback_months,
+        **_parameters(kpi, time_plan),
         "sql": sqls[0] if sqls else "",
         "sqls": sqls,
         "param_count": param_count,
@@ -276,7 +263,8 @@ def _model_filter_columns(
     for dataset in datasets.values():
         cols.update(dataset.columns)
     cols.update(model.output_schema)
-    cols.add(kpi.time.column)
+    if kpi.time is not None:
+        cols.add(kpi.time.column)
     return cols
 
 
@@ -292,84 +280,104 @@ def _extract_all(
     request: AdaptedRequest,
     connection: Any | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame | None, list[str]]:
-    """Per-model additive GROUP BY extracts plus optional row-level detail for non-additive aggs."""
+    """Per-model row-level retrieve of physical columns, then Pandas builds the monthly frame."""
     frames: dict[str, pd.DataFrame] = {}
     detail_parts: list[pd.DataFrame] = []
     sqls: list[str] = []
     for model in models:
         bound_ds = bind_datasets(model, request)
         filter_cols = _model_filter_columns(model, bound_ds, grain, kpi)
-        add_m = [
-            m
-            for m in kpi.base_measures
-            if (m.model_id or kpi.model_id) == model.model_id and m.agg not in NON_ADDITIVE
-        ]
-        na_m = [
-            m
-            for m in kpi.base_measures
-            if (m.model_id or kpi.model_id) == model.model_id and m.agg in NON_ADDITIVE
-        ]
-        if add_m:
-            sub = replace(kpi, base_measures=tuple(add_m), model_id=model.model_id)
-            extracted = extract(
-                model=model,
-                kpi=sub,
-                datasets=bound_ds,
-                source_filters=source_filters,
-                plan=plan,
-                grain=grain,
-                filter_columns=filter_cols,
-                connection=connection,
-            )
-            frames[model.model_id] = extracted.frame
-            sqls.append(extracted.sql)
-        if na_m:
-            sub = replace(kpi, base_measures=tuple(na_m), model_id=model.model_id)
-            extracted = extract(
-                model=model,
-                kpi=sub,
-                datasets=bound_ds,
-                source_filters=source_filters,
-                plan=plan,
-                grain=grain,
-                row_level=True,
-                filter_columns=filter_cols,
-                connection=connection,
-            )
-            detail_parts.append(extracted.frame)
-            sqls.append(extracted.sql)
+        owned = [m for m in kpi.base_measures if (m.model_id or kpi.model_id) == model.model_id]
+        sub = replace(kpi, base_measures=tuple(owned), model_id=model.model_id)
+        extracted = extract(
+            model=model,
+            kpi=sub,
+            datasets=bound_ds,
+            source_filters=source_filters,
+            plan=plan,
+            grain=grain,
+            filter_columns=filter_cols,
+            connection=connection,
+        )
+        sqls.append(extracted.sql)
+        raw = extracted.frame
+        mapped = apply_dimension_maps(raw, kpi)
+        detail_parts.append(apply_pandas_facts(mapped, sub) if not mapped.empty else mapped)
+        pandas_monthly = collapse_pandas_detail(raw, sub, grain)
+        if not pandas_monthly.empty:
+            frames[model.model_id] = pandas_monthly
+    detail = pd.concat(detail_parts, ignore_index=True) if detail_parts else None
     if frames:
         monthly = join_monthly(frames, kpi)
-        monthly = _to_monthly(monthly, kpi, grain, plan)
     else:
-        monthly = pd.DataFrame(columns=[kpi.time.column, "_observed"])
-    detail = pd.concat(detail_parts, ignore_index=True) if detail_parts else None
+        cols = [kpi.time.column, "_observed"] if kpi.time is not None else ["_observed"]
+        monthly = pd.DataFrame(columns=cols)
+    monthly = apply_dimension_maps(monthly, kpi)
+    monthly = _to_monthly(monthly, kpi, grain, plan)
     return monthly, detail, sqls
 
 
 def _to_monthly(
-    frame: pd.DataFrame, kpi: KpiSpec, grain: tuple[str, ...], plan: TimePlan
+    frame: pd.DataFrame, kpi: KpiSpec, grain: tuple[str, ...], plan: TimePlan | None
 ) -> pd.DataFrame:
-    """Place the DuckDB extract on a dense month spine from span_start through the anchor."""
+    """Place the DuckDB extract on a dense month spine from span_start through the anchor.
+
+    Snapshot KPIs have no period column; the extract is already one row per combo.
+    """
+    if kpi.time is None or plan is None:
+        work = frame.copy()
+        if "_observed" not in work.columns:
+            work["_observed"] = True
+        return work
     time_col = kpi.time.column
-    keys = [c for c in grain if c != time_col]
-    value_cols = [m.name for m in kpi.base_measures]
-    for measure in kpi.base_measures:
-        if measure.agg == "avg":
-            value_cols.extend([f"{measure.name}__sum", f"{measure.name}__count"])
+    keys = pandas_group_keys(kpi, grain)
+    value_cols = _monthly_value_cols(kpi)
     fill_zero = [m.name for m in kpi.base_measures if m.agg in {"sum", "count"}]
+    densify_end = plan.anchor
+    if plan.lookback_forward:
+        densify_end = add_periods(plan.anchor, plan.lookback_forward, kpi.time)
     kwargs = dict(
         keys=keys,
         time_col=time_col,
         start=plan.span_start,
-        end=plan.anchor,
+        end=densify_end,
         value_cols=value_cols,
         fill_zero_cols=fill_zero,
         time_spec=kpi.time,
     )
     if frame.empty:
-        return densify(pd.DataFrame(columns=[*grain, *value_cols]), **kwargs)
+        return densify(pd.DataFrame(columns=[*([time_col] if time_col else []), *keys, *value_cols]), **kwargs)
     return densify(frame, **kwargs)
+
+
+def _monthly_value_cols(kpi: KpiSpec) -> list[str]:
+    """Columns densify must carry (named facts plus avg carry columns)."""
+    cols: list[str] = []
+    for measure in kpi.base_measures:
+        if measure.agg in NON_ADDITIVE:
+            continue
+        if measure.agg == "avg":
+            cols.extend([f"{measure.name}__sum", f"{measure.name}__count"])
+            continue
+        cols.append(measure.name)
+    return cols
+
+
+def _parameters(kpi: KpiSpec, time_plan: TimePlan | None) -> dict[str, Any]:
+    """Anchor / span for the response. Snapshot KPIs have no period clock."""
+    if kpi.time is None or time_plan is None:
+        return {
+            "anchor": None,
+            "time_grain": None,
+            "span_start": None,
+            "lookback_months": 0,
+        }
+    return {
+        "anchor": iso_period(time_plan.anchor, kpi.time),
+        "time_grain": kpi.time.grain,
+        "span_start": iso_period(time_plan.span_start, kpi.time),
+        "lookback_months": time_plan.lookback_months,
+    }
 
 
 def _sort_rows(rows: list[dict[str, Any]], kpi: KpiSpec) -> list[dict[str, Any]]:

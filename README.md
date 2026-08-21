@@ -80,7 +80,7 @@ Example: `udfs/config/kpis/3004.yaml`.
 
 **`dimensions`** — columns that split rows (`reason_code`, `region`). Not numbers.
 
-**`base_measures`** — internal fact from the table, e.g. `sotif_value: SUM(amount)`. The UI does not request this name. Aggregations: `sum`, `avg`, `count`, `min`, `max`, `count_distinct`, `median`, `percentile`.
+**`base_measures`** — internal fact from the table, e.g. `sotif_value` from column `amount` with `agg: sum` (Pandas). The UI does not request this name. Aggregations: `sum`, `avg`, `count`, `min`, `max`, `count_distinct`, `median`, `percentile`.
 
 **`measures`** — calculated columns the UI can request via `measure_key`:
 

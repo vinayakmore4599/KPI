@@ -44,7 +44,7 @@ def test_compute_writes_a_timestamped_log_with_sql_and_steps(parquet_path, confi
     assert "---------- SQL" in text
     assert "SELECT" in text
     assert "FROM" in text
-    assert "GROUP BY" in text
+    assert "GROUP BY" not in text
     assert "---------- END SQL ----------" in text
     assert "MEASURE" in text
     assert "current_value" in text

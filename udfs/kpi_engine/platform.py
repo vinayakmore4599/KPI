@@ -2,7 +2,6 @@
 
 What this file provides
     acquire_connection — one DuckDB session for a compute() request.
-    get_duckdb_connection — the platform helper (auth, ADLS, Delta extension).
     register_duckdb_getter — tests / hosts that inject the helper at import time.
 
 Where it is used
@@ -40,12 +39,6 @@ def register_duckdb_getter(fn: Callable[[], Any] | None) -> None:
     """Inject the host helper (or None to clear). Used by tests and host startup."""
     global _registered
     _registered = fn
-
-
-def get_duckdb_connection() -> Any:
-    """Return the DuckDB session the platform already authenticated."""
-    con, _owned = acquire_connection()
-    return con
 
 
 @traced

@@ -322,7 +322,6 @@ time:
   grain: month                 # day | month | quarter | year
   filter_code: reporting_month # claimed by time planner (confirm actual name)
   calendar: gregorian
-  timezone: UTC
 
 dimensions:
   - { name: reason_code, kind: dimension }
@@ -604,7 +603,7 @@ Fallback if upstream cannot expand: a hierarchy model in YAML, queried before bu
 ## 10. Calendar and time
 
 - Truncate `time_column` to the first day of `time_grain` and store as `DATE`, never a formatted string.
-- Default timezone for bucketing: **UTC** (framework-level, overridable per KPI).
+- Timestamps bucket as stored; there is no timezone conversion, and `time.timezone` is rejected at bind. Convert the column in a `kind: sql` model if a KPI needs it.
 - Default calendar: **gregorian**. Add fiscal start-month only when a KPI needs fiscal YTD.
 - Anchor is user-selected, so “incomplete current month” is an explicit user choice, not a framework default. Still echo `anchor` in metadata.
 
@@ -639,8 +638,7 @@ kpi_engine/
     calc_engine.py       # catalog ops on the monthly frame
     orchestrator.py      # request lifecycle, one DuckDB session
   catalog/
-    ops.yaml             # reusable op definitions
-    ops_impl.py          # Pandas implementations by op kind
+    ops_impl.py          # COLUMN_FNS / MEASURE_FNS registries + Pandas helpers
   config/
     models/              # physical YAML or sql models
     kpis/                # one file per kpi_id

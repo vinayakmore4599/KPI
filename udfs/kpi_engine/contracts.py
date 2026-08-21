@@ -25,9 +25,14 @@ from datetime import date
 from typing import Any, Literal
 
 
-AggName = Literal["sum", "avg", "count", "count_distinct", "min", "max", "median", "percentile"]
-OpName = Literal["point", "window", "arithmetic", "trend", "dimension", "hook"]
+AggName = Literal[
+    "sum", "avg", "count", "count_distinct", "min", "max", "median", "percentile", "first", "last"
+]
+OpName = Literal["point", "window", "arithmetic", "trend", "dimension", "hook", "fn", "expr"]
 GrainName = Literal["day", "month", "quarter", "year"]
+# Open set: any name registered in catalog.ops_impl.COLUMN_FNS.
+RowOpName = str
+WindowRangeName = Literal["trailing", "leading", "cumulative"]
 
 
 @dataclass(frozen=True)
@@ -97,25 +102,52 @@ class AdaptedRequest:
 
 @dataclass(frozen=True)
 class TimeSpec:
-    """KPI time column, grain, and which context filter is the selected month."""
+    """KPI time column, grain, and which context filter is the selected period.
+
+    Absent on snapshot KPIs that omit the YAML `time:` block.
+    """
 
     column: str
     grain: GrainName
     filter_code: str
     calendar: str = "gregorian"
-    timezone: str = "UTC"
     fiscal_start_month: int = 4
 
 
 @dataclass(frozen=True)
+class MeasureWhere:
+    """Structured row mask on a retrieved column (Pandas, not SQL)."""
+
+    column: str
+    op: str
+    values: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class DimensionSpec:
+    """A grouping field, optionally mapped or truncated after the extract."""
+
+    name: str
+    source: str
+    mapping: dict[str, str] = field(default_factory=dict)
+    default: str | None = None
+    grain: GrainName | None = None
+
+
+@dataclass(frozen=True)
 class BaseMeasure:
-    """Internal fact: SQL column + aggregation, used as the ingredient for measures."""
+    """Internal fact from the extract, optionally combined in Pandas."""
 
     name: str
     sql: str
     agg: AggName
     model_id: str | None = None
     percentile: float | None = None
+    columns: tuple[str, ...] = ()
+    column_params: tuple[str, ...] = ()
+    row_op: RowOpName | None = None
+    where: MeasureWhere | None = None
+    expr: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,7 +177,7 @@ class Offset:
 
 @dataclass(frozen=True)
 class OutputSpec:
-    """One requestable measure (point, window, trend, arithmetic, hook, or dimension)."""
+    """One requestable measure (point, window, trend, arithmetic, fn, expr, hook, or dimension)."""
 
     key: str
     kind: OpName
@@ -158,6 +190,12 @@ class OutputSpec:
     left: str | None = None
     right: str | None = None
     cuts: tuple[str, ...] | None = None
+    window_range: WindowRangeName | None = None
+    trailing_unit: GrainName | None = None
+    operands: tuple[str, ...] = ()
+    inputs: tuple[str, ...] = ()
+    input_params: tuple[str, ...] = ()
+    expr: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,7 +205,7 @@ class KpiSpec:
     kpi_id: int | str
     version: int
     model_id: str
-    time: TimeSpec
+    time: TimeSpec | None
     dimensions: tuple[str, ...]
     base_measures: tuple[BaseMeasure, ...]
     cuts: tuple[CutSpec, ...]
@@ -176,6 +214,7 @@ class KpiSpec:
     filter_map: dict[str, str] = field(default_factory=dict)
     row_set: Literal["span_union", "anchor_only"] = "span_union"
     model_relations: tuple["ModelRelation", ...] = ()
+    dimension_specs: tuple[DimensionSpec, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -231,6 +270,7 @@ class TimePlan:
     span_end_exclusive: date
     lookback_months: int
     claimed_filter_code: str
+    lookback_forward: int = 0
 
 
 @dataclass(frozen=True)

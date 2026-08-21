@@ -9,7 +9,7 @@
 #
 # Capabilities
 #   dimensions     — row splits (reason_code, region)
-#   base_measures  — internal SUM(amount) as sotif_value
+#   base_measures  — internal amount fact as sotif_value (Pandas sum)
 #   cuts           — G (global, ignore region) also emits R (by region)
 #   measures       — current, previous year, 3/6/12m windows, yoy, 12m trend
 #
@@ -27,7 +27,6 @@ time:
   grain: month
   filter_code: reporting_month
   calendar: gregorian
-  timezone: UTC
 
 # How rows are split. Not numbers.
 dimensions:

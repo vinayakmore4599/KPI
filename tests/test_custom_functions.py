@@ -147,7 +147,6 @@ def _hook_kpi(kpi_id: int, hook_name: str = "double_anchor") -> dict:
             "grain": "month",
             "filter_code": "reporting_month",
             "calendar": "gregorian",
-            "timezone": "UTC",
         },
         "dimensions": [
             {"name": "reason_code", "kind": "dimension"},

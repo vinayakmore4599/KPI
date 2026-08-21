@@ -149,7 +149,6 @@ def _grain_kpi(
         "grain": grain,
         "filter_code": "reporting_month",
         "calendar": calendar,
-        "timezone": "UTC",
     }
     if calendar == "fiscal":
         time["fiscal_start_month"] = fiscal_start_month

@@ -159,6 +159,14 @@ def periods_between(start: date, end: date, time: TimeSpec) -> int:
     return n
 
 
+def year_start(anchor: date, time: TimeSpec) -> date:
+    """First day of the calendar or fiscal year that contains the anchor."""
+    day = parse_date(anchor)
+    if time.calendar == "fiscal":
+        return _fiscal_year_start(day, time.fiscal_start_month)
+    return date(day.year, 1, 1)
+
+
 def iso_month(value: date) -> str:
     """Format a period as YYYY-MM-01 for JSON metadata."""
     d = parse_month(value)

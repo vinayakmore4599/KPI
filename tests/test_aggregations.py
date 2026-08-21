@@ -8,7 +8,7 @@ Where it is used
     pytest tests/test_aggregations.py.
 
 When to use
-    Add a case if a new additive agg is added to model_sql._measure_select.
+    Add a case if a new additive agg is folded in collapse_pandas_detail.
 """
 
 from datetime import date
@@ -78,7 +78,6 @@ def _agg_kpi(kpi_id: int) -> dict:
             "grain": "month",
             "filter_code": "reporting_month",
             "calendar": "gregorian",
-            "timezone": "UTC",
         },
         "dimensions": [
             {"name": "reason_code", "kind": "dimension"},

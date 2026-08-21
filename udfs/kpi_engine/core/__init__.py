@@ -9,7 +9,7 @@ Where it is used
     import core modules unless they are changing the engine.
 
 Capabilities
-    Implements the locked split: DuckDB extract + GROUP BY, Pandas calculations.
+    Implements the locked split: DuckDB retrieves model columns, Pandas runs KPI YAML.
 
 When to use
     Edit a core module when engine behaviour changes. For a new KPI, edit

@@ -22,7 +22,7 @@ from kpi_engine import compute
 from kpi_engine.contracts import OutputSpec, TimePlan
 from kpi_engine.core.binder import load_kpi
 from kpi_engine.core.calc_engine import densify, evaluate
-from kpi_engine.exceptions import CatalogError
+from kpi_engine.exceptions import BindError, CatalogError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 
 _BASES = {
@@ -269,14 +269,14 @@ def test_dimension_measures_are_returned_as_columns(parquet_path, config_dir):
 
 
 def test_measure_pointing_at_an_unknown_base_fails(gapped_parquet, extra_config):
-    """`of:` must name a declared base measure."""
+    """`of:` must name a declared base measure, and it fails at bind time."""
     spec = minimal_kpi(
         9612,
         measures={"current_value": {"of": "ghost_value", "op": "point", "offset": {"months": 0}}},
     )
     write_yaml(extra_config / "kpis" / "9612.yaml", spec)
     ctx = make_context(gapped_parquet, measures=["current_value"], supplier=["ABC"], kpi_id=9612)
-    with pytest.raises(CatalogError, match="Unknown base measure 'ghost_value'"):
+    with pytest.raises(BindError, match="of='ghost_value' is not a base measure"):
         compute(ctx, config_dir=extra_config)
 
 
@@ -288,7 +288,7 @@ def test_window_without_of_fails(gapped_parquet, extra_config):
     )
     write_yaml(extra_config / "kpis" / "9613.yaml", spec)
     ctx = make_context(gapped_parquet, measures=["value_3m"], supplier=["ABC"], kpi_id=9613)
-    with pytest.raises(CatalogError, match="requires `of`"):
+    with pytest.raises(BindError, match="requires `of:`"):
         compute(ctx, config_dir=extra_config)
 
 

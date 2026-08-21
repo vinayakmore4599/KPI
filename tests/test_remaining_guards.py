@@ -183,7 +183,7 @@ def test_illegal_sql_identifiers_fail_at_bind(extra_config):
         load_kpi(9047, extra_config)
 
     spec = _kpi(9048)
-    spec["base_measures"]["sotif_value"]["sql"] = "amount + 1"
+    spec["base_measures"]["sotif_value"]["sql"] = "amount; DROP TABLE x"
     write_yaml(extra_config / "kpis" / "9048.yaml", spec)
     with pytest.raises(BindError, match="Illegal measure sql"):
         load_kpi(9048, extra_config)
@@ -237,7 +237,6 @@ def _kpi(
             "grain": "month",
             "filter_code": "reporting_month",
             "calendar": "gregorian",
-            "timezone": "UTC",
         },
         "dimensions": [
             {"name": "reason_code", "kind": "dimension"},

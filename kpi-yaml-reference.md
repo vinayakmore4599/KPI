@@ -29,11 +29,13 @@ time:
 dimensions:
   - { name: reason_code, kind: dimension }
   - { name: region, kind: dimension }
+  # optional after extract: from + map + default (see §3)
 
 base_measures:               # internal facts; the UI does not request these
   sotif_value:
-    sql: amount              # a COLUMN NAME, never an expression
-    agg: sum                 # sum avg count min max count_distinct median percentile
+    sql: amount              # physical column (or expr: for nested + - * /)
+    agg: sum                 # Pandas folds the retrieved rows
+                             # or: columns: [ontime, fullqty] + op: multiply
 
 cuts:
   - name: G
@@ -57,11 +59,15 @@ measures:                    # every measure_key the UI can send
 | I need… | Use |
 |---|---|
 | One period's value | `op: point` |
-| Trailing 3/6/12 periods as one number | `op: window` |
+| Trailing / leading / YTD window | `op: window` (`range: trailing` / `leading` / `cumulative`) |
 | An array for a graph | `op: trend` |
-| YoY, ratio, share | `op: arithmetic` |
+| YoY, ratio, share, n-ary add/sub | `op: arithmetic` |
+| A formula over retrieved columns | `expr:` on a base measure (see §4) |
+| A formula over other measures | `op: expr` (see §5.6) |
+| A named function over other measures' values | `op: fn` + `inputs:` (see §5.5) |
+| A named function over retrieved columns | `columns:` + `op:` on a base measure (see §10.1) |
 | A dimension echoed as a `measure_key` | `op: dimension` |
-| Math the catalog cannot express | `op: hook` (see §10) |
+| Math the catalog cannot express | `op: hook` (see §10.3) |
 
 ---
 
@@ -71,8 +77,8 @@ Understanding this makes the YAML obvious.
 
 1. The **anchor** is the single value of the `time.filter_code` filter, truncated to `time.grain`. It is never applied as `WHERE month IN (...)`.
 2. The engine reads the **requested** `measure_key`s, works out the deepest lookback among them, and scans `[anchor − lookback, anchor]` as a **date range**. Measures nobody asked for cost nothing.
-3. DuckDB scans once and groups to the finest grain any cut needs (time + all dimensions + cut keys).
-4. Pandas puts the result on a **dense period spine** — every partition × every period in the span — so shifts move by the calendar, not by row position.
+3. DuckDB retrieves **model columns only** (time bucket, dimensions, and physical columns named by KPI YAML). It does not run `agg:`, `op:`, or `expr:`.
+4. Pandas computes every base measure on those rows, folds with `agg:`, then puts the result on a **dense period spine** so shifts move by the calendar, not by row position.
 5. Each cut re-aggregates that spine to its own `group_by`, then every requested measure is evaluated per dimension combination.
 
 The practical consequences:
@@ -87,17 +93,18 @@ The practical consequences:
 
 | Key | Values | Default | Notes |
 |---|---|---|---|
-| `column` | column name | required | Date or timestamp on the extract |
+| `column` | column name | required if `time:` is present | Date or timestamp on the extract |
 | `grain` | `day`, `month`, `quarter`, `year` | `month` | The period every measure counts in |
-| `filter_code` | context filter key | required | Case- and space-insensitive (`Reporting Month` matches `reporting_month`) |
+| `filter_code` | context filter key | required if `time:` is present | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month` — each KPI names its own filter. |
 | `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal affects `quarter` and `year` only |
 | `fiscal_start_month` | 1–12 | `4` | First month of the fiscal year |
-| `timezone` | string | `UTC` | Parsed and stored, **not currently applied** |
+
+Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Snapshot KPIs may only use `point` (no offset), `dimension`, `arithmetic`, and `hook` without lookback. Windows, trends, and period offsets require `time:`.
 
 Rules the engine enforces:
 
-- The time filter must carry **exactly one** value. Two values or zero values is an error, not a range.
-- A missing time filter is an error. The engine never defaults to "latest data" or to `business_date`.
+- When `time:` is declared, that filter must carry **exactly one** value. Two values or zero values is an error, not a range.
+- A missing time filter on a time-based KPI is an error. The engine never defaults to "latest data" or to `business_date`.
 - `grain: day` requires a full `YYYY-MM-DD`. A `YYYY-MM` value is rejected.
 - Truncation happens in SQL (`date_trunc`), so a mid-period date anchors on the period start.
 
@@ -112,38 +119,111 @@ time:
   fiscal_start_month: 4
 ```
 
+A dimension can rewrite retrieved codes in Pandas (`from` + `map` + `default`) or truncate a date column (`grain:`). Joins stay in the model YAML; this is not SQL in the KPI file.
+
+```yaml
+dimensions:
+  - name: order_status
+    from: o_orderstatus
+    map: { O: Open, P: Processing, F: Fulfilled }
+    default: Other
+```
+
 ---
 
 ## 4. `base_measures` — the built-in aggregations
 
-A base measure is the raw fact. It is **not** requestable by the UI; calculated measures point at it with `of:`.
+A base measure is the raw fact. It is **not** requestable by the UI; calculated measures point at it with `of:`. Compute `sotif_value` once; `current_value`, `value_3m`, `trend_12m`, and hooks all reuse that same series. Arithmetic then reuses those **measures** (`left` / `right` / `of: [a, b]`), not the base fact a second time.
 
 ```yaml
 base_measures:
   sotif_value:
-    sql: amount        # column name only — "amount * 1.2" is rejected
+    sql: amount        # physical column DuckDB retrieves
+    agg: sum           # Pandas SUM of that column
+  harmonic:
+    expr: (col_a * col_b) / (col_a + col_b)   # per row, then agg
     agg: sum
+  line_value:
+    columns: [ontime, fullqty]
+    op: multiply       # Pandas: ontime * fullqty on each retrieved row
+    agg: sum           # optional; fold remaining rows (SUM of products)
+  fill_rate:
+    columns: { numerator: shipped_qty, denominator: ordered_qty }
+    op: divide         # named, so the operands cannot end up the wrong way round
+    agg: avg
   distinct_suppliers:
     sql: supplier_name
     agg: count_distinct
+  snapshot_balance:
+    sql: balance
+    agg: last          # semiadditive: last row in the period, not a sum of days
   p90_delay:
     sql: delay_days
     agg: percentile
     percentile: 90     # 90 and 0.9 both mean the 90th percentile
+  open_amount:
+    columns: [amount]
+    agg: sum
+    where:
+      column: status
+      op: in           # in | eq | ne
+      values: [O]
 ```
+
+`sql: amount` + `agg: sum` names the physical column DuckDB retrieves. Pandas then sums it. KPI YAML formulas never appear in the DuckDB SQL.
+
+Prefer `expr:` for nested arithmetic, or `columns:` + `op:` for a registered function. `expr: (col_a * col_b) / (col_a + col_b)` with `agg: sum` is the **sum of per-row ratios**. The ratio of totals is a measure-level `op: expr` over two summed facts (see §5.6).
+
+Prefer `columns:` + `op:` when Pandas must combine retrieved columns. `op: multiply` with `columns: [ontime, fullqty]` is the row-wise product, then `agg: sum` adds those products (`1*10 + 0*4 = 10`, not `(1+0)*(10+4)`). `agg` may be omitted; it defaults to `sum` so a one-row extract is just the product.
+
+`op:` names a function in the column registry, and every entry in `columns:` is handed to it as a numeric Series. Register your own for a custom calculation (see §10.1). These are built in:
+
+| `op` | Columns | Does |
+|---|---|---|
+| `sum` | any number | `a + b + c …` across one row |
+| `subtract` | any number | `a - b - c …` |
+| `multiply` | any number | `a * b * c …` |
+| `min` / `max` / `avg` | any number | reduces **across** the listed columns of one row |
+| `coalesce` | any number | first non-null, left to right |
+| `divide` | `numerator`, `denominator` | zero denominator yields null, not `inf` |
+| `percent_of` | `part`, `whole` | the share, scaled to 0-100 |
+| `abs` | `column` | absolute value |
+| `value` | `column` | passes the column through |
+
+Older files may use `add`, `sub`, `mul`, `product`, `mean`, `ratio`, `share`, `div`, or `identity`; these are aliases of the names above and keep working.
+
+Note `op: sum` reduces **across** the columns of a single row, while `agg: sum` reduces **down** the rows of a period. A base measure often uses both.
+
+**Naming the columns.** When a function's arguments are not interchangeable, write `columns:` as a mapping instead of a list and the columns bind by parameter name, so key order in the file cannot invert the result:
+
+```yaml
+base_measures:
+  fill_rate:
+    columns: { numerator: shipped_qty, denominator: ordered_qty }
+    op: divide
+    agg: avg
+```
+
+How many columns an `op` accepts, and what its parameters are called, come from the function's own Python signature. A function declared `def rate(shipped, ordered)` takes exactly two; one declared `def total(*columns)` takes any number and cannot be called by name. An unknown op, the wrong number of columns, or a parameter that does not exist all fail at bind time with the valid alternatives listed.
+
+`sql:` / `expr:` name physical columns (and optional `+ - * /` on a base measure). Function calls (`COALESCE`, `SUM`, …) and free SQL are rejected; put the aggregation in `agg:`. DuckDB only SELECTs the column names; Pandas evaluates the formula.
+
+Do **not** use `agg: sum` on a per-row ratio if you wanted a ratio of two totals. Declare two base measures and `op: expr` (or `op: arithmetic`) instead.
 
 ### Built-in aggregations
 
 | `agg` | Computed in | Combines across a coarser cut by | Empty period returns |
 |---|---|---|---|
-| `sum` | DuckDB `SUM` | adding | `0` in windows and trends, `null` at a point |
-| `count` | DuckDB `COUNT` | adding | `0` in windows and trends, `null` at a point |
-| `min` | DuckDB `MIN` | taking the minimum | `null` |
-| `max` | DuckDB `MAX` | taking the maximum | `null` |
-| `avg` | DuckDB `SUM` + `COUNT` | adding both parts, then dividing | `null` |
+| `sum` | Pandas | adding | `0` in windows and trends, `null` at a point |
+| `count` | Pandas | adding | `0` in windows and trends, `null` at a point |
+| `min` | Pandas | taking the minimum | `null` |
+| `max` | Pandas | taking the maximum | `null` |
+| `avg` | Pandas `sum` + `count` | adding both parts, then dividing | `null` |
 | `count_distinct` | Pandas over raw rows | recomputing from rows | `null` |
 | `median` | Pandas over raw rows | recomputing from rows | `null` |
 | `percentile` | Pandas over raw rows | recomputing from rows | `null` |
+| `first` | Pandas over raw rows | taking the first event | `null` |
+| `last` | Pandas over raw rows | taking the last event | `null` |
 
 Three behaviours worth knowing before you pick an aggregation:
 
@@ -151,7 +231,7 @@ Three behaviours worth knowing before you pick an aggregation:
 
 **`min` and `max` are recomputed at every cut.** A global cut takes the minimum across regions; it does not add regional minima together.
 
-**`count_distinct`, `median` and `percentile` are non-additive**, so the engine issues a second, row-level query for them and computes over the raw rows in the window. A 3-month distinct count is the number of distinct values across those three months — not the sum of three monthly counts. This costs more memory than an additive measure; keep the dimensionality sensible.
+**`count_distinct`, `median`, `percentile`, `first` and `last` are non-additive**, so Pandas keeps the retrieved rows and recomputes over the window. `last` on a balance is the latest snapshot in the period — it does not add daily balances. This costs more memory than an additive measure; keep the dimensionality sensible.
 
 `percentile` requires the `percentile:` key. Values above 1 are read as percentages (`90` → `0.9`); values must land in 0–1 or 0–100.
 
@@ -191,7 +271,7 @@ previous_year_value:
 
 Returns `null` when that period has no rows for this dimension combination.
 
-### 5.2 `window` — trailing periods as one number
+### 5.2 `window` — trailing, leading, or cumulative
 
 ```yaml
 value_3m:
@@ -199,16 +279,34 @@ value_3m:
   op: window
   trailing: { months: 3 }
   inclusive: true          # default
+
+value_ytd:
+  of: sotif_value
+  op: window
+  range: cumulative        # calendar (or fiscal) year start through the anchor
+
+value_next_3m:
+  of: sotif_value
+  op: window
+  range: leading
+  trailing: { months: 3 }
+  inclusive: true
 ```
 
-| `inclusive` | Window | With anchor March |
+| `range` | Window |
+|---|---|
+| `trailing` (default) | last N periods relative to the anchor |
+| `leading` | next N periods relative to the anchor |
+| `cumulative` | from the start of the calendar/fiscal year through the anchor |
+
+| `inclusive` | Trailing window | With anchor March |
 |---|---|---|
 | `true` (default) | the last N periods **including** the anchor | Jan, Feb, Mar |
 | `false` | N periods **ending one period before** the anchor | Dec, Jan, Feb |
 
-> **Caution:** the number under `trailing` is a count of **grain periods**, and the unit key is cosmetic. `periods`, `months`, `days`, `quarters` and `years` are all aliases for the same integer. On a `grain: quarter` KPI, `trailing: { months: 4 }` means **4 quarters**. Prefer `trailing: { periods: 4 }` on non-monthly KPIs to avoid confusion.
+`trailing: { days: N }` is a calendar-day window. `periods`, `months`, `quarters`, and `years` are counts of **KPI grain periods**.
 
-The window aggregates using the base measure's own `agg`: a `min` base gives the minimum over the window, a `sum` base gives the total.
+The window aggregates using the base measure's own `agg`: a `min` base gives the minimum over the window, a `sum` base gives the total, a `last` base gives the last snapshot in the window.
 
 ### 5.3 `trend` — an array for a graph
 
@@ -228,7 +326,7 @@ trend_12m:
 
 `cuts:` is only honoured for trend measures; on other ops it is ignored.
 
-### 5.4 `arithmetic` — combine two measures
+### 5.4 `arithmetic` — combine measures
 
 ```yaml
 yoy_month:
@@ -236,22 +334,81 @@ yoy_month:
   fn: growth_pct
   left: current_value       # keys of other measures
   right: previous_year_value
+
+net_value:
+  op: arithmetic
+  fn: subtract
+  of: [gross_value, opex_value]   # n-ary; folded left to right
 ```
 
-| `fn` | Result | Null / zero handling |
-|---|---|---|
-| `growth_pct`, `yoy`, `mom` | `(left − right) / right` | `null` if `right` is 0 or null |
-| `div` | `left / right` | `null` if `right` is 0 or null |
-| `percent` | `left / right × 100` | `null` if `right` is 0 or null |
-| `add` | `left + right` | `null` if either side is null |
-| `sub` | `left − right` | `null` if either side is null |
-| `mul` | `left × right` | `null` if either side is null |
+| `fn` | Parameters | Result | Null / zero handling |
+|---|---|---|---|
+| `growth_pct` | `current`, `previous` | `(current − previous) / previous` | `null` if `previous` is 0 or null |
+| `divide` | `numerator`, `denominator` | the ratio | `null` if `denominator` is 0 or null |
+| `percent` | `part`, `whole` | the ratio × 100 | `null` if `whole` is 0 or null |
+| `sum` | any number | `a + b + c …` | `null` if any operand is null |
+| `subtract` | any number | `a − b − c …` | `null` if any operand is null |
+| `multiply` | any number | `a × b × c …` | `null` if any operand is null |
+| `min` / `max` / `avg` | any number | reduces the operands, ignoring nulls | `null` only if every operand is null |
+
+Aliases `yoy`, `mom`, `percent_change`, `div`, `ratio`, `share`, `add`, `sub`, and `mul` map onto the same functions and keep older files working.
 
 `growth_pct` returns a **ratio** (0.05 = +5%), not a pre-multiplied percentage. Use `percent` if the UI wants 5.0.
 
-`left` and `right` may reference any other measure, including another `arithmetic` measure. The scan span automatically covers the deepest operand.
+`left` and `right` may reference any other measure, including another `arithmetic` measure. `of: [a, b, c]` is the same fold with more than two operands. The scan span automatically covers the deepest operand.
 
-### 5.5 `dimension` — echo an attribute
+`fn` names an entry in the measure function registry, so the table above is the built-in set, not a closed one. A two-parameter function given a longer `of:` list is folded two at a time; a function that accepts any number sees every operand at once, which is why `avg` over three operands is a true three-way mean.
+
+### 5.5 `fn` — feed other measures into a named function
+
+```yaml
+otd_pct:
+  op: fn
+  fn: safe_ratio            # a registered measure function
+  inputs: [ontime_value, total_value]   # keys of other measures
+```
+
+The engine computes each measure in `inputs:` first and passes their scalars to the function. A list binds positionally; a mapping binds by parameter name, which is worth using whenever swapping two operands would still produce a plausible-looking number:
+
+```yaml
+yoy_growth:
+  op: fn
+  fn: growth_pct
+  inputs: { current: this_year_value, previous: last_year_value }
+```
+
+Inputs may be any measure, including another `fn` measure, so calculations chain:
+
+```yaml
+otd_scaled:
+  op: fn
+  fn: multiply
+  inputs: [otd_pct, total_value]
+```
+
+Rules the binder enforces:
+
+- Every name in `inputs:` must be a declared measure, else bind fails listing the valid keys.
+- The number of inputs must fit the function's signature, and a named input must be one of its parameters.
+- A dependency cycle (`a -> b -> a`, or a measure naming itself) fails at bind with the cycle spelled out.
+- The scan span covers the deepest input, so a `fn` over a year-ago point still scans 12 months.
+- A measure named by several parents is evaluated **once** per dimension combination.
+
+See §10.2 for registering the function.
+
+### 5.6 `expr` — a formula over other measures
+
+```yaml
+agg_ratio:
+  op: expr
+  expr: (a_value * b_value) / (a_value + b_value)
+```
+
+Identifiers are other measure keys. The engine computes them first (same memo and cycle rules as `fn`). A zero or null denominator yields null.
+
+This is the **ratio of totals**. The same formula on `base_measures.expr` is the **sum of per-row ratios**. Parentheses follow normal `+ - * /` precedence.
+
+### 5.7 `dimension` — echo an attribute
 
 ```yaml
 reason_code:
@@ -260,9 +417,9 @@ reason_code:
 
 Only needed when the platform sends a dimension as a `measure_key`. The key must match a name in `dimensions:`.
 
-### 5.6 `hook` — a registered Python function
+### 5.8 `hook` — a registered Python function
 
-See §10.
+See §10.3.
 
 ---
 
@@ -428,17 +585,94 @@ sql: |
 
 ## 10. When you need a custom function
 
-Reach for a hook only after ruling out YAML. Work down this list and stop at the first row that fits.
+Work down this list and stop at the first row that fits.
 
 | Your need | Answer |
 |---|---|
 | A different trailing length, offset, or ratio | YAML — combine existing ops |
 | A messy source shape, eligibility rule, or derived column | Model YAML — `kind: sql` |
 | A different aggregation of the same column | YAML — a second `base_measures` entry |
-| Maths every KPI will reuse (a new op or agg) | Engine change in `calc_engine.py` + `binder.py`, then YAML everywhere |
-| A genuinely one-off algorithm on already-aggregated data | **Hook** |
+| Row maths across retrieved columns | **Column function** — register it, then `columns:` + `op:` |
+| Maths over other measures' results | **Measure function** — register it, then `op: fn` + `inputs:` |
+| A one-off algorithm needing the whole period series | **Hook** |
 
-Signals that you actually need a hook: the calculation is iterative, needs multiple periods in a non-linear way (cohort survival, custom allocation, a bespoke smoothing), or has branching business rules that would be unreadable as YAML.
+Registering a function never requires an engine change. Both registries are validated at bind time, so a typo names the registered alternatives instead of failing mid-request.
+
+### 10.1 Column functions — `base_measures.op`
+
+A column function receives one numeric pandas Series per entry in `columns:` and returns a Series of the same length. It runs per retrieved row, before `agg:` folds the result.
+
+**Your signature is the contract.** The engine reads arity and parameter names off the function itself, so you choose how many columns it takes and what YAML may call them.
+
+```python
+from kpi_engine.extensions.functions import register_column_fn
+
+def weighted_score(hits, weight):
+    """Exactly two columns; both arguments are pandas Series."""
+    return hits * weight * 10
+
+def blended_score(*columns):
+    """Any number of columns, added with a decaying weight."""
+    return sum(column * 0.5**n for n, column in enumerate(columns))
+
+register_column_fn("weighted_score", weighted_score)
+register_column_fn("blended_score", blended_score, min_columns=2)
+```
+
+```yaml
+base_measures:
+  score:
+    columns: [ontime, fullqty]                 # positional
+    op: weighted_score
+    agg: sum                                   # optional; folds the per-row results
+
+  named_score:
+    columns: { weight: fullqty, hits: ontime } # by parameter, order irrelevant
+    op: weighted_score
+
+  spread:
+    columns: [q1, q2, q3, q4]                  # blended_score takes as many as you give it
+    op: blended_score
+```
+
+A `*columns` function has no upper bound, so pass `min_columns` to say how few are too few — the signature alone cannot tell. Everything else is bounded by its parameters and can be fed by name. Section 4 lists the built-ins.
+
+### 10.2 Measure functions — `measures.fn`
+
+A measure function receives one **scalar** per entry in `inputs:` and returns one scalar (`None` for undefined). The engine computes the inputs first.
+
+```python
+from kpi_engine.extensions.functions import register_measure_fn
+
+def safe_ratio(numerator, denominator):
+    """Ratio that reports null instead of dividing by zero."""
+    if numerator is None or not denominator:
+        return None
+    return float(numerator) / float(denominator)
+
+register_measure_fn("safe_ratio", safe_ratio)
+```
+
+```yaml
+measures:
+  otd_pct:
+    op: fn
+    fn: safe_ratio
+    inputs: [ontime_value, total_value]
+
+  yoy_growth:
+    op: fn
+    fn: growth_pct
+    inputs: { current: this_year, previous: last_year }   # by parameter name
+```
+
+`inputs:` follows the same rules as `columns:`: a list binds positionally, a mapping binds by parameter name, and the arity comes from the function's signature.
+
+Built-ins: `sum`, `subtract`, `multiply`, `min`, `max`, `avg` (any number of inputs), `divide(numerator, denominator)`, `percent(part, whole)`, and `growth_pct(current, previous)`. Aliases `add`, `sub`, `mul`, `div`, `ratio`, `share`, `yoy`, `mom`, and `percent_change` keep older files working. These are the same functions `op: arithmetic` uses; a two-argument function given a longer `of:` list is folded left to right.
+
+### 10.3 Hooks — the last resort
+
+Reach for a hook when the calculation needs the whole period series rather than columns or scalars: iterative maths, multiple periods combined non-linearly (cohort survival, custom allocation, bespoke smoothing), or branching rules that would be unreadable as YAML.
 
 ### Writing one
 
@@ -588,12 +822,12 @@ pytest -q
 | Message | Cause | Fix |
 |---|---|---|
 | `Unknown measure_key(s) [...]` | Context asked for a key not under `measures:` | Add the measure, or correct metadata |
-| `Missing month filter '<code>'` | `time.filter_code` does not match the context filter | KPI YAML or metadata |
+| `Missing month filter '<code>'` | `time.filter_code` does not match the context filter | Set `time.filter_code` to the actual filter key, or omit `time:` for a snapshot KPI |
 | `Month filter must contain exactly one value` | The page sent a multi-select for the period | Metadata — the anchor is a single period |
 | `time.grain=day requires a full date` | Day-grain KPI received `YYYY-MM` | Send `YYYY-MM-DD` |
 | `Filter '<x>' has no column mapping` | No context mapping and no matching column | Add `filter_column_mappings` or `filter_map` |
 | `Filter '<x>' does not bind to a source column` | Mapped to a column the extract does not expose — typically a CTE-internal one | Add it to `output_schema` |
-| `Illegal measure sql: 'amount * 2'. Use a simple SQL identifier.` | An expression in `base_measures.sql` | Use a column; move maths into the model |
+| `Illegal measure sql: '…'` | Quotes, function calls, or `;` in `base_measures.sql` | Use `ontime * fullqty` style math only; put `SUM` in `agg:` |
 | `Unknown agg '<x>'` | Aggregation not in §4 | Pick a built-in or add one to the engine |
 | `agg=percentile requires percentile:` | Missing quantile | Add `percentile: 90` |
 | `default_cut '<x>' is not a declared cut` | Typo in `default_cut` or `also_emit` | Match a `cuts[].name` |
@@ -609,7 +843,7 @@ pytest -q
 
 Known boundaries, so you do not design around something that is not there:
 
-- `time.timezone` is parsed but not applied; timestamps are used as stored.
+- Timestamps are bucketed as stored; there is no timezone conversion, and `time.timezone` is rejected at bind rather than silently ignored. Convert the column in a `kind: sql` model if you need it.
 - `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months.
 - `trailing` counts grain periods; the unit key is an alias, not a converter (§5.2).
 - `measures.*.cuts` restricts trends only.

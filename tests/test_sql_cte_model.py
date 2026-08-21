@@ -350,7 +350,6 @@ def _kpi_9020() -> dict:
             "grain": "month",
             "filter_code": "reporting_month",
             "calendar": "gregorian",
-            "timezone": "UTC",
         },
         "dimensions": [
             {"name": "reason_code", "kind": "dimension"},

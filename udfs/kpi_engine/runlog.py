@@ -118,12 +118,6 @@ def end_run() -> None:
     _active.set(None)
 
 
-def active_path() -> Path | None:
-    """Path of the log file for the current request, if any."""
-    run = _active.get()
-    return None if run is None else run.path
-
-
 def info(msg: str, *args: Any) -> None:
     """Write an INFO line to the current run file."""
     run = _active.get()

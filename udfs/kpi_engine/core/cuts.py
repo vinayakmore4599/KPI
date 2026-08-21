@@ -3,7 +3,7 @@
 What this file provides
     emitted_cuts — default_cut plus also_emit (e.g. G also emits R).
     cut_group_dims — group_by minus the time column.
-    finest_grain — DuckDB GROUP BY keys (time + dimensions ∪ cut keys).
+    finest_grain — retrieve keys (time + dimensions ∪ cut keys).
 
 Where it is used
     orchestrator (what to extract and what to calculate). calc_engine
@@ -53,18 +53,24 @@ def cut_group_dims(cut: CutSpec, time_column: str) -> tuple[str, ...]:
 
 @traced
 def finest_grain(kpi: KpiSpec, emitted: tuple[CutSpec, ...]) -> tuple[str, ...]:
-    """DuckDB GROUP BY: time column plus the union of dimensions, cuts, and join keys."""
+    """Columns DuckDB must return: time, dimensions, cut keys, and join keys."""
     dims: list[str] = []
     seen: set[str] = set()
-    for name in (kpi.time.column, *kpi.dimensions):
+    time_names = (kpi.time.column,) if kpi.time is not None else ()
+    dim_sources = tuple(spec.source or spec.name for spec in kpi.dimension_specs) or kpi.dimensions
+    rename_to_source = {spec.name: spec.source or spec.name for spec in kpi.dimension_specs}
+    extra = tuple(m.where.column for m in kpi.base_measures if m.where is not None)
+    for name in (*time_names, *dim_sources, *extra):
         if name not in seen:
             dims.append(name)
             seen.add(name)
     for cut in emitted:
         for name in cut.group_by:
-            if name not in seen:
-                dims.append(name)
-                seen.add(name)
+            physical = rename_to_source.get(name, name)
+            if physical not in seen:
+                dims.append(physical)
+                seen.add(physical)
+            seen.add(name)
     for rel in kpi.model_relations:
         for name in rel.on:
             if name not in seen:

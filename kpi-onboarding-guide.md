@@ -66,7 +66,7 @@ Set `kpi_id` and `model` to match.
 - `column` — date/timestamp on the extract.
 - `grain` — `day`, `month`, `quarter`, or `year`.
 - `calendar` — `gregorian` (default) or `fiscal` with `fiscal_start_month` (default 4). Fiscal affects quarter and year grains only.
-- `filter_code` — **exact** context filter key for the user-selected period.  
+- `filter_code` — **exact** context filter key for the user-selected period. This is per KPI (not always `reporting_month`). Omit the whole `time:` block if the KPI has no period column.  
   That filter is the **anchor**. It must never be applied as `IN (one month)`.
 
 **`dimensions`**
@@ -216,7 +216,7 @@ This is an **engine** change. Do it once in the catalog, then every KPI YAML can
 | `kpi_engine/core/calc_engine.py` — implement the op | A one-off `if kpi_id == 3004` |
 | `kpi_engine/core/binder.py` — allow the new `op` / `agg` | Copy-paste the formula into each KPI file as Python |
 | `kpi_engine/core/time_planner.py` — `lookback_for` if the op needs extra history | `udfs/sotif/main.py` |
-| `kpi_engine/catalog/ops.yaml` — add the kind name | Context JSON schema |
+| `kpi-yaml-reference.md` — document the kind | Context JSON schema |
 | `tests/test_span.py` and a behaviour test | |
 
 Then onboard KPIs with YAML only (section 4.3).
@@ -276,12 +276,12 @@ Only if metadata **must** call `udfs.<something>.main`.
 | `core/binder.py` | YAML schema (new op fields) | Per-KPI special cases |
 | `core/time_planner.py` | Lookback rules for a new op | Applying month as IN |
 | `core/filters.py` | Filter bind / ignore_filters | Hierarchy expansion (upstream) |
-| `core/model_sql.py` | DuckDB SQL / scan / GROUP BY | YoY, trends |
+| `core/model_sql.py` | DuckDB retrieve (scans, joins, filters, model columns) | KPI YAML formulas |
 | `core/cuts.py` | Cut walk / finest grain | Listing G/R in Python |
 | `core/calc_engine.py` | New catalog op implementation | One KPI’s one-off SQL |
 | `core/orchestrator.py` | Pipeline order | Business metrics |
 | `extensions/hooks.py` | Named custom functions | Import paths from context |
-| `catalog/ops.yaml` | Document a new `op` kind | Executable logic |
+| `catalog/ops_impl.py` | A function every KPI should reuse | Per-KPI formulas |
 | `udfs/sotif/main.py` | Never, except shim signature | Calculations |
 | `contracts.py` | New typed fields for YAML/context | Parsing or SQL |
 
@@ -305,7 +305,7 @@ Need a new KPI?
   ├─ New combo of point/window/trend/arithmetic?
   │    → KPI YAML measures only
   ├─ New math every KPI will reuse?
-  │    → calc_engine + binder + lookback + ops.yaml + tests, then YAML
+  │    → calc_engine + binder + lookback + reference doc + tests, then YAML
   ├─ One-off algorithm?
   │    → extensions/hooks.py (register) + tests; not core forks
   └─ Context JSON changed?
@@ -344,7 +344,7 @@ value_9m:
 1. Implement in `calc_engine.py` (`evaluate` + helper).
 2. Allow `op: rolling_median` in `binder.py`.
 3. Set lookback in `time_planner.lookback_for`.
-4. Add kind to `catalog/ops.yaml`.
+4. Document the kind in `kpi-yaml-reference.md`.
 5. Test with a small parquet.
 6. After that, KPIs only add YAML `op: rolling_median`.
 

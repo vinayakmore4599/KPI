@@ -10,6 +10,8 @@ Where it is used
 Capabilities
     - Reads config/kpis/<kpi_id>.yaml and config/models/<model_id>.yaml.
     - Validates identifiers, aggs, default_cut, measure keys.
+    - `base_measures.sql` / `expr:` / `columns:` + `op` run in Pandas after retrieve.
+    - DuckDB never receives KPI YAML formulas.
     - Binds model.required_aliases to context.datasets by alias, then key.
     - Context path wins; model default_path / default_paths fills a missing alias.
     - Unknown measure_key is a hard error listing valid YAML keys.
@@ -32,8 +34,10 @@ from kpi_engine.contracts import (
     BaseMeasure,
     CutSpec,
     DatasetBinding,
+    DimensionSpec,
     JoinSpec,
     KpiSpec,
+    MeasureWhere,
     ModelRelation,
     ModelSpec,
     Offset,
@@ -42,7 +46,14 @@ from kpi_engine.contracts import (
     TimeSpec,
 )
 from kpi_engine.exceptions import BindError
-from kpi_engine.identifiers import require_ident
+from kpi_engine.identifiers import compile_sql_expr, is_simple_ident, parse_expression, expression_columns, require_ident
+from kpi_engine.catalog.ops_impl import (
+    COLUMN_FNS,
+    MEASURE_FNS,
+    WHERE_OPS,
+    column_op_error,
+    measure_fn_error,
+)
 from kpi_engine.runlog import traced
 
 
@@ -151,53 +162,14 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     """Turn a KPI YAML dict into KpiSpec."""
     kpi_id = raw.get("kpi_id", expected_id)
-    time_raw = raw.get("time") or {}
-    if not isinstance(time_raw, dict):
-        raise BindError("time must be an object.")
-    grain = time_raw.get("grain", "month")
-    if grain not in {"day", "month", "quarter", "year"}:
-        raise BindError(f"Unknown time.grain {grain!r}. Use day, month, quarter, or year.")
-    calendar = str(time_raw.get("calendar") or "gregorian")
-    if calendar not in {"gregorian", "fiscal"}:
-        raise BindError(f"Unknown time.calendar {calendar!r}. Use gregorian or fiscal.")
-    raw_fiscal_start = time_raw.get("fiscal_start_month")
-    fiscal_start = 4 if raw_fiscal_start is None else int(raw_fiscal_start)
-    if fiscal_start < 1 or fiscal_start > 12:
-        raise BindError("time.fiscal_start_month must be 1-12.")
+    time = _parse_time(raw.get("time"))
 
-    dimensions = tuple(
-        require_ident(str(d["name"] if isinstance(d, dict) else d), what="dimension")
-        for d in raw.get("dimensions") or []
-    )
+    dim_specs = tuple(_parse_dimension(d) for d in raw.get("dimensions") or [])
+    dimensions = tuple(d.name for d in dim_specs)
 
     bases: list[BaseMeasure] = []
     for name, spec in (raw.get("base_measures") or {}).items():
-        if not isinstance(spec, dict):
-            raise BindError(f"base_measures.{name} must be an object.")
-        agg = spec.get("agg", "sum")
-        allowed = {"sum", "avg", "count", "min", "max", "count_distinct", "median", "percentile"}
-        if agg not in allowed:
-            raise BindError(f"Unknown agg {agg!r} on {name}.")
-        percentile = spec.get("percentile")
-        pvalue = None
-        if percentile is not None:
-            pvalue = float(percentile)
-            if pvalue > 1:
-                pvalue = pvalue / 100.0
-            if pvalue < 0 or pvalue > 1:
-                raise BindError(f"base_measures.{name}.percentile must be in 0-1 or 0-100.")
-        if agg == "percentile" and pvalue is None:
-            raise BindError(f"base_measures.{name} agg=percentile requires percentile:.")
-        model_id = spec.get("model")
-        bases.append(
-            BaseMeasure(
-                name=require_ident(str(name), what="base measure"),
-                sql=require_ident(str(spec.get("sql")), what="measure sql"),
-                agg=agg,
-                model_id=str(model_id) if model_id else None,
-                percentile=pvalue,
-            )
-        )
+        bases.append(_parse_base_measure(name, spec))
 
     cuts = tuple(_parse_cut(c) for c in raw.get("cuts") or [])
     if not cuts:
@@ -209,6 +181,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     measures = tuple(_parse_measure(k, v) for k, v in (raw.get("measures") or {}).items())
     if not measures:
         raise BindError("measures cannot be empty.")
+    _assert_measure_graph(measures, tuple(b.name for b in bases), dimensions)
 
     filter_map = {
         str(k): require_ident(str(v), what="filter_map column")
@@ -232,18 +205,14 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
             "Base measures span multiple models; declare model_relations to join them."
         )
 
+    if time is None:
+        _assert_snapshot_measures(measures)
+
     return KpiSpec(
         kpi_id=kpi_id,
         version=int(raw.get("version") or 1),
         model_id=str(raw.get("model")),
-        time=TimeSpec(
-            column=require_ident(str(time_raw.get("column")), what="time.column"),
-            grain=grain,  # type: ignore[arg-type]
-            filter_code=str(time_raw.get("filter_code") or ""),
-            calendar=calendar,
-            timezone=str(time_raw.get("timezone") or "UTC"),
-            fiscal_start_month=fiscal_start,
-        ),
+        time=time,
         dimensions=dimensions,
         base_measures=tuple(bases),
         cuts=cuts,
@@ -252,7 +221,293 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         filter_map=filter_map,
         row_set=row_set,  # type: ignore[arg-type]
         model_relations=relations,
+        dimension_specs=dim_specs,
     )
+
+
+def _parse_dimension(raw: Any) -> DimensionSpec:
+    """Parse a dimension name or {name, from, map, default, grain}."""
+    if isinstance(raw, str):
+        name = require_ident(raw, what="dimension")
+        return DimensionSpec(name=name, source=name)
+    if not isinstance(raw, dict) or not raw.get("name"):
+        raise BindError("Each dimension needs a name.")
+    name = require_ident(str(raw["name"]), what="dimension")
+    source = require_ident(str(raw.get("from") or name), what="dimension.from")
+    mapping_raw = raw.get("map") or {}
+    if mapping_raw and not isinstance(mapping_raw, dict):
+        raise BindError(f"dimensions.{name}.map must be an object.")
+    mapping = {str(k): str(v) for k, v in mapping_raw.items()}
+    grain = raw.get("grain")
+    if grain is not None and grain not in {"day", "month", "quarter", "year"}:
+        raise BindError(f"dimensions.{name}.grain must be day, month, quarter, or year.")
+    default = raw.get("default")
+    return DimensionSpec(
+        name=name,
+        source=source,
+        mapping=mapping,
+        default=None if default is None else str(default),
+        grain=grain,
+    )
+
+
+def _parse_base_measure(name: str, spec: Any) -> BaseMeasure:
+    """Parse sql:/columns:/op:/expr:/agg:/where for one base fact."""
+    if not isinstance(spec, dict):
+        raise BindError(f"base_measures.{name} must be an object.")
+    columns, column_params = _parse_column_args(name, spec.get("columns"))
+    row_op = spec.get("op") or spec.get("row_op")
+    expr_raw = spec.get("expr")
+    expr = str(expr_raw).strip() if expr_raw else None
+    if expr:
+        parse_expression(expr, what=f"base_measures.{name}.expr")
+        if row_op is not None or columns:
+            raise BindError(
+                f"base_measures.{name} uses `expr:` and cannot also set `columns:` / `op:`."
+            )
+        if spec.get("sql"):
+            raise BindError(
+                f"base_measures.{name} uses `expr:` and cannot also set `sql:`."
+            )
+        columns = expression_columns(parse_expression(expr, what=f"base_measures.{name}.expr"))
+    if row_op is not None:
+        row_op = str(row_op)
+        if row_op not in COLUMN_FNS:
+            raise BindError(
+                f"base_measures.{name} unknown op {row_op!r}. Registered: "
+                f"{sorted(COLUMN_FNS)}. Register it with "
+                "kpi_engine.extensions.functions.register_column_fn."
+            )
+    elif column_params:
+        raise BindError(
+            f"base_measures.{name} names its columns but has no `op:` to bind them to."
+        )
+    sql_raw = str(spec.get("sql") or "").strip()
+    if not sql_raw and columns:
+        sql_raw = columns[0]
+    if not sql_raw and expr:
+        sql_raw = columns[0] if columns else ""
+    if not sql_raw:
+        raise BindError(f"base_measures.{name} needs sql:, columns:, or expr:.")
+    if sql_raw:
+        compile_sql_expr(sql_raw, what="measure sql")
+    if row_op is not None:
+        problem = column_op_error(row_op, len(columns) or 1, column_params)
+        if problem:
+            raise BindError(f"base_measures.{name} op {problem}")
+    if not expr and sql_raw and not is_simple_ident(sql_raw) and row_op is None:
+        expr = sql_raw
+        columns = expression_columns(parse_expression(expr, what="measure sql"))
+    default_agg = "sum" if row_op is None else spec.get("agg")
+    agg = spec.get("agg", default_agg)
+    if agg is None:
+        agg = "sum"
+    allowed = {
+        "sum", "avg", "count", "min", "max", "count_distinct", "median", "percentile", "first", "last"
+    }
+    if agg not in allowed:
+        raise BindError(f"Unknown agg {agg!r} on {name}.")
+    percentile = spec.get("percentile")
+    pvalue = None
+    if percentile is not None:
+        pvalue = float(percentile)
+        if pvalue > 1:
+            pvalue = pvalue / 100.0
+        if pvalue < 0 or pvalue > 1:
+            raise BindError(f"base_measures.{name}.percentile must be in 0-1 or 0-100.")
+    if agg == "percentile" and pvalue is None:
+        raise BindError(f"base_measures.{name} agg=percentile requires percentile:.")
+    where = _parse_where(name, spec.get("where"))
+    model_id = spec.get("model")
+    return BaseMeasure(
+        name=require_ident(str(name), what="base measure"),
+        sql=sql_raw,
+        agg=agg,
+        model_id=str(model_id) if model_id else None,
+        percentile=pvalue,
+        columns=columns,
+        column_params=column_params,
+        row_op=row_op,
+        where=where,
+        expr=expr,
+    )
+
+
+def _parse_column_args(name: str, raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Read `columns:` as an ordered list or a {parameter: column} mapping.
+
+    The mapping form binds by keyword, so an order-sensitive op such as
+    `divide` cannot silently be handed its operands the wrong way round.
+    """
+    if raw is None:
+        return (), ()
+    if isinstance(raw, dict):
+        params = tuple(str(key) for key in raw)
+        columns = tuple(
+            require_ident(str(value), what="base_measures.columns") for value in raw.values()
+        )
+        return columns, params
+    if not isinstance(raw, (list, tuple)):
+        raise BindError(
+            f"base_measures.{name}.columns must be a list of columns or a "
+            "{parameter: column} mapping."
+        )
+    return tuple(require_ident(str(c), what="base_measures.columns") for c in raw), ()
+
+
+def _parse_where(name: str, raw: Any) -> MeasureWhere | None:
+    """Parse where: { column, op, values } for a Pandas mask."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BindError(f"base_measures.{name}.where must be an object.")
+    column = require_ident(str(raw.get("column") or ""), what="where.column")
+    op = str(raw.get("op") or "in").lower()
+    if op not in WHERE_OPS:
+        raise BindError(f"base_measures.{name}.where.op must be in, eq, or ne.")
+    values_raw = raw.get("values")
+    if values_raw is None and "value" in raw:
+        values_raw = [raw["value"]]
+    if values_raw is None:
+        raise BindError(f"base_measures.{name}.where needs values:.")
+    if not isinstance(values_raw, (list, tuple)):
+        values_raw = [values_raw]
+    return MeasureWhere(column=column, op=op, values=tuple(values_raw))
+
+
+def _parse_time(raw: Any) -> TimeSpec | None:
+    """Parse YAML time:. Missing/empty means a snapshot KPI with no period column."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BindError("time must be an object.")
+    if not raw:
+        return None
+    column = raw.get("column")
+    if not column:
+        raise BindError("time.column is required when time is declared.")
+    filter_code = str(raw.get("filter_code") or "").strip()
+    if not filter_code:
+        raise BindError(
+            "time.filter_code is required when time is declared. "
+            "Set it to the context filter that carries the selected period, "
+            "or omit the time: block if this KPI has no time column."
+        )
+    grain = raw.get("grain", "month")
+    if grain not in {"day", "month", "quarter", "year"}:
+        raise BindError(f"Unknown time.grain {grain!r}. Use day, month, quarter, or year.")
+    calendar = str(raw.get("calendar") or "gregorian")
+    if calendar not in {"gregorian", "fiscal"}:
+        raise BindError(f"Unknown time.calendar {calendar!r}. Use gregorian or fiscal.")
+    if raw.get("timezone") is not None:
+        raise BindError(
+            "time.timezone is not supported; timestamps are bucketed as stored. "
+            "Remove it, or convert the column in a kind: sql model."
+        )
+    raw_fiscal_start = raw.get("fiscal_start_month")
+    fiscal_start = 4 if raw_fiscal_start is None else int(raw_fiscal_start)
+    if fiscal_start < 1 or fiscal_start > 12:
+        raise BindError("time.fiscal_start_month must be 1-12.")
+    return TimeSpec(
+        column=require_ident(str(column), what="time.column"),
+        grain=grain,  # type: ignore[arg-type]
+        filter_code=filter_code,
+        calendar=calendar,
+        fiscal_start_month=fiscal_start,
+    )
+
+
+def measure_dependencies(spec: OutputSpec) -> tuple[str, ...]:
+    """Measure keys this measure consumes (fn/expr inputs, arithmetic operands)."""
+    if spec.kind in {"fn", "expr"}:
+        return spec.inputs
+    if spec.kind == "arithmetic":
+        if spec.operands:
+            return spec.operands
+        return tuple(n for n in (spec.left, spec.right) if n)
+    return ()
+
+
+def _assert_measure_graph(
+    measures: tuple[OutputSpec, ...],
+    base_names: tuple[str, ...],
+    dimensions: tuple[str, ...],
+) -> None:
+    """Fail at bind time on unknown references and dependency cycles."""
+    by_key = {m.key: m for m in measures}
+    known_bases = set(base_names)
+    for spec in measures:
+        if spec.kind in {"point", "window", "trend"} and not spec.of:
+            raise BindError(
+                f"measures.{spec.key} op={spec.kind} requires `of:` naming the base "
+                f"measure it aggregates. Declared base_measures: {sorted(known_bases)}."
+            )
+        if spec.kind in {"point", "window", "trend", "hook"} and spec.of:
+            if spec.of not in known_bases:
+                raise BindError(
+                    f"measures.{spec.key} of={spec.of!r} is not a base measure. "
+                    f"Declared base_measures: {sorted(known_bases)}."
+                )
+        if spec.kind == "dimension" and spec.key not in dimensions:
+            raise BindError(
+                f"measures.{spec.key} is a dimension measure but {spec.key!r} is not in "
+                f"dimensions: {sorted(dimensions)}."
+            )
+        for name in measure_dependencies(spec):
+            if name not in by_key:
+                raise BindError(
+                    f"measures.{spec.key} references unknown measure {name!r}. "
+                    f"Valid keys: {sorted(by_key)}."
+                )
+
+    state: dict[str, int] = {}
+
+    def walk(key: str, trail: list[str]) -> None:
+        """Depth-first search that reports the cycle it closed."""
+        if state.get(key) == 2:
+            return
+        if state.get(key) == 1:
+            cycle = trail[trail.index(key):] + [key]
+            raise BindError(
+                f"measures dependency cycle: {' -> '.join(cycle)}. "
+                "A measure cannot depend on itself, directly or indirectly."
+            )
+        state[key] = 1
+        trail.append(key)
+        for name in measure_dependencies(by_key[key]):
+            walk(name, trail)
+        trail.pop()
+        state[key] = 2
+
+    for spec in measures:
+        walk(spec.key, [])
+
+
+def _assert_snapshot_measures(measures: tuple[OutputSpec, ...]) -> None:
+    """Window/trend/offset ops need a time column; snapshot KPIs cannot declare them."""
+    bad: list[str] = []
+    for spec in measures:
+        if spec.kind in {"window", "trend"}:
+            bad.append(f"{spec.key} ({spec.kind})")
+        elif spec.kind == "point" and _offset_is_nonzero(spec.offset):
+            bad.append(f"{spec.key} (point offset)")
+        elif spec.kind == "hook" and (
+            _offset_is_nonzero(spec.offset) or spec.trailing_months
+        ):
+            bad.append(f"{spec.key} (hook lookback)")
+    if bad:
+        raise BindError(
+            "This KPI has no time: block, so measures cannot use windows, trends, "
+            f"or period offsets ({', '.join(bad)}). Add time.column / time.filter_code, "
+            "or keep only current-period point / dimension / arithmetic measures."
+        )
+
+
+def _offset_is_nonzero(offset: Offset | None) -> bool:
+    """True when a point/hook offset actually shifts the anchor."""
+    if offset is None:
+        return False
+    return bool(offset.months or offset.years or offset.days or offset.quarters)
 
 
 def _parse_cut(raw: Any) -> CutSpec:
@@ -291,12 +546,21 @@ def _parse_relation(raw: Any) -> ModelRelation:
 
 
 def _parse_measure(key: str, raw: Any) -> OutputSpec:
-    """Parse one requestable measure (point / window / trend / arithmetic / hook / dimension)."""
+    """Parse one requestable measure (point / window / trend / arithmetic / fn / hook / dimension)."""
     if not isinstance(raw, dict):
         raise BindError(f"measures.{key} must be an object.")
     kind = raw.get("kind") or raw.get("op")
-    if kind not in {"point", "window", "arithmetic", "trend", "dimension", "hook"}:
+    if kind not in {"point", "window", "arithmetic", "trend", "dimension", "hook", "fn", "expr"}:
         raise BindError(f"measures.{key} has unknown op/kind {kind!r}.")
+    if raw.get("fn") is not None and kind in {"point", "window", "trend", "dimension", "expr"}:
+        raise BindError(
+            f"measures.{key} op={kind} ignores `fn:`. "
+            "Use op: fn with inputs:, or op: arithmetic, or op: hook."
+        )
+    if raw.get("inputs") is not None and kind not in {"fn", "expr"}:
+        raise BindError(f"measures.{key} op={kind} ignores `inputs:`. Use op: fn or op: expr.")
+    if raw.get("expr") is not None and kind not in {"expr"}:
+        raise BindError(f"measures.{key} op={kind} ignores `expr:`. Use op: expr.")
     offset = None
     if raw.get("offset"):
         off = raw["offset"]
@@ -307,12 +571,89 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
             quarters=int(off.get("quarters") or 0),
         )
     trailing = None
+    trailing_unit = None
     if raw.get("trailing"):
         trail = raw["trailing"]
         for unit in ("periods", "months", "days", "quarters", "years"):
             if trail.get(unit) is not None:
                 trailing = int(trail[unit])
+                trailing_unit = {
+                    "periods": None,
+                    "months": "month",
+                    "days": "day",
+                    "quarters": "quarter",
+                    "years": "year",
+                }[unit]
                 break
+    window_range = raw.get("range")
+    if window_range is not None:
+        window_range = str(window_range)
+        if window_range not in {"trailing", "leading", "cumulative"}:
+            raise BindError(
+                f"measures.{key}.range must be trailing, leading, or cumulative."
+            )
+    of_raw = raw.get("of")
+    of = None
+    operands: tuple[str, ...] = ()
+    if isinstance(of_raw, (list, tuple)):
+        operands = tuple(str(x) for x in of_raw)
+    elif of_raw is not None:
+        of = str(of_raw)
+    inputs: tuple[str, ...] = ()
+    input_params: tuple[str, ...] = ()
+    if kind == "fn":
+        raw_inputs = raw.get("inputs")
+        if not raw_inputs:
+            raise BindError(
+                f"measures.{key} op=fn requires `inputs:` listing the measures to feed it."
+            )
+        inputs, input_params = _parse_fn_inputs(key, raw_inputs)
+        if not raw.get("fn"):
+            raise BindError(
+                f"measures.{key} op=fn requires `fn:` (a registered measure function)."
+            )
+        fn_name = str(raw["fn"])
+        if fn_name not in MEASURE_FNS:
+            raise BindError(
+                f"measures.{key} names unknown fn {fn_name!r}. Registered: "
+                f"{sorted(MEASURE_FNS)}. Register it with "
+                "kpi_engine.extensions.functions.register_measure_fn."
+            )
+        problem = measure_fn_error(fn_name, len(inputs), input_params)
+        if problem:
+            raise BindError(f"measures.{key} fn {problem}")
+    if kind == "arithmetic":
+        arithmetic_fn = str(raw.get("fn") or "divide")
+        if arithmetic_fn not in MEASURE_FNS:
+            raise BindError(
+                f"measures.{key} names unknown fn {arithmetic_fn!r}. Registered: "
+                f"{sorted(MEASURE_FNS)}. Register it with "
+                "kpi_engine.extensions.functions.register_measure_fn."
+            )
+        operand_count = len(operands) or len([n for n in (raw.get("left"), raw.get("right")) if n])
+        problem = measure_fn_error(arithmetic_fn, operand_count or 2)
+        if problem:
+            raise BindError(f"measures.{key} fn {problem}")
+    expr = None
+    if kind == "expr":
+        expr_raw = raw.get("expr")
+        if not expr_raw or not str(expr_raw).strip():
+            raise BindError(f"measures.{key} op=expr requires `expr:` with a formula.")
+        expr = str(expr_raw).strip()
+        node = parse_expression(expr, what=f"measures.{key}.expr")
+        names = expression_columns(node)
+        if not names:
+            raise BindError(f"measures.{key} expr must name at least one other measure.")
+        if raw.get("inputs"):
+            inputs, input_params = _parse_fn_inputs(key, raw.get("inputs"))
+            bindable = input_params or inputs
+            unknown = [n for n in names if n not in bindable]
+            if unknown:
+                raise BindError(
+                    f"measures.{key} expr names {unknown[0]!r}, which is not in inputs: {list(bindable)}."
+                )
+        else:
+            inputs, input_params = names, ()
     cuts = tuple(raw["cuts"]) if raw.get("cuts") is not None else None
     hook = raw.get("hook")
     if kind == "hook":
@@ -329,7 +670,7 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
     return OutputSpec(
         key=str(key),
         kind=kind,
-        of=raw.get("of"),
+        of=of,
         offset=offset,
         trailing_months=trailing,
         inclusive=bool(raw.get("inclusive", True)),
@@ -338,7 +679,25 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
         left=raw.get("left"),
         right=raw.get("right"),
         cuts=cuts,
+        window_range=window_range,
+        trailing_unit=trailing_unit,
+        operands=operands,
+        inputs=inputs,
+        input_params=input_params,
+        expr=expr,
     )
+
+
+def _parse_fn_inputs(key: str, raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Read `inputs:` as an ordered list or a {parameter: measure} mapping."""
+    if isinstance(raw, dict):
+        return tuple(str(v) for v in raw.values()), tuple(str(k) for k in raw)
+    if not isinstance(raw, (list, tuple)):
+        raise BindError(
+            f"measures.{key}.inputs must be a list of measure keys or a "
+            "{parameter: measure} mapping."
+        )
+    return tuple(str(x) for x in raw), ()
 
 
 def _parse_model(raw: dict[str, Any], expected_id: str) -> ModelSpec:

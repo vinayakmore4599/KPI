@@ -239,7 +239,7 @@ def test_multi_model_requests_report_one_sql_per_extract(parquet_path, extra_con
         kpi_id=9700,
     )
     result = compute(ctx, config_dir=extra_config)
-    assert len(result["sqls"]) == 2
+    assert len(result["sqls"]) == 1
     assert result["sql"] == result["sqls"][0]
     row = next(r for r in result["rows"] if r["output_cut"] == "G")
     assert row["supplier_count"] == 1.0

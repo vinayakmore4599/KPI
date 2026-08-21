@@ -8,11 +8,11 @@ Where it is used
     pytest tests/test_complex_calculations.py.
 
 When to use
-    Add a case when a new arithmetic fn is added to calc_engine._arithmetic.
+    Add a case when a new function is registered in ops_impl.MEASURE_FNS.
 """
 
 from kpi_engine import compute
-from kpi_engine.exceptions import CatalogError
+from kpi_engine.exceptions import KPIEngineError
 from tests.conftest import find_row, make_context, write_yaml
 
 
@@ -92,7 +92,7 @@ def test_division_by_zero_is_null(tmp_path, extra_config):
 
 
 def test_unknown_arithmetic_fn(parquet_path, extra_config):
-    """Unknown fn is a catalog error, not eval()."""
+    """Unknown fn is rejected against the registry at bind time, not eval()."""
     spec = _arith_kpi(9005)
     spec["measures"]["bad_fn"] = {
         "op": "arithmetic",
@@ -109,10 +109,10 @@ def test_unknown_arithmetic_fn(parquet_path, extra_config):
     )
     try:
         compute(ctx, config_dir=extra_config)
-    except CatalogError as exc:
+    except KPIEngineError as exc:
         assert "eval_me" in str(exc)
     else:
-        raise AssertionError("expected CatalogError")
+        raise AssertionError("expected an engine error")
 
 
 def test_all_3004_measures_together(parquet_path, config_dir):
@@ -156,7 +156,6 @@ def _arith_kpi(kpi_id: int) -> dict:
             "grain": "month",
             "filter_code": "reporting_month",
             "calendar": "gregorian",
-            "timezone": "UTC",
         },
         "dimensions": [
             {"name": "reason_code", "kind": "dimension"},

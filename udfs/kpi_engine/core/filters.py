@@ -39,7 +39,13 @@ def columns_for_source_filters(
     inside a CTE (eligible, weight, …) are not filterable on the wrapped query.
     Physical models expose every context dataset column.
     """
-    cols = set(grain) | {m.sql for m in kpi.base_measures} | set(kpi.dimensions)
+    cols = set(grain) | set(kpi.dimensions)
+    for measure in kpi.base_measures:
+        if measure.sql:
+            cols.add(measure.sql)
+        cols.update(measure.columns)
+        if measure.where is not None:
+            cols.add(measure.where.column)
     if model.kind == "sql" and model.output_schema:
         cols.update(model.output_schema)
         return cols

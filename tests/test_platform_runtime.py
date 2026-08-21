@@ -21,7 +21,7 @@ from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError, KPIEngineError
 from kpi_engine.platform import register_duckdb_getter
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
-from udfs.sotif import main
+from udfs.sotif.main import main
 
 
 @pytest.fixture(autouse=True)

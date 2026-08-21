@@ -2,7 +2,7 @@
 
 Everything the engine can calculate, and how to declare it in YAML.
 
-Use this document while writing `config/kpis/<kpi_id>.yaml` and `config/models/<model_id>.yaml`.
+Use this document while writing `udfs/config/kpis/<kpi_id>.yaml` and `udfs/config/models/<model_id>.yaml`.
 
 Related docs:
 

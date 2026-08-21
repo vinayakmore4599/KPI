@@ -41,8 +41,8 @@ def _redirect_kpi_logs(tmp_path_factory, monkeypatch):
 
 @pytest.fixture
 def config_dir() -> Path:
-    """Repo-root config/ (kpis and models YAML)."""
-    return Path(__file__).resolve().parents[1] / "config"
+    """Repo udfs/config (kpis and models YAML)."""
+    return Path(__file__).resolve().parents[1] / "udfs" / "config"
 
 
 @pytest.fixture
@@ -244,7 +244,7 @@ def make_context(
             "udf_id": 6,
             "udf_name": "sotif",
             "udf_type": "MEASURE",
-            "module_path": "udfs.sotif,main",
+            "module_path": "udfs.sotif.main",
             "output_type": "df",
         },
         "output": {

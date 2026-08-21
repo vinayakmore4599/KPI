@@ -19,8 +19,8 @@ A KPI in this framework is:
 | Piece | Lives in | Role |
 |---|---|---|
 | Context JSON | Existing metadata framework (you do not change it) | `kpi_id`, filters, dataset paths, `measures_required` |
-| Model | `config/models/<name>.yaml` | What DuckDB reads (tables/joins or SQL) |
-| KPI definition | `config/kpis/<kpi_id>.yaml` | Dimensions, base fact, cuts, calculated measures |
+| Model | `udfs/config/models/<name>.yaml` | What DuckDB reads (tables/joins or SQL) |
+| KPI definition | `udfs/config/kpis/<kpi_id>.yaml` | Dimensions, base fact, cuts, calculated measures |
 | Engine | `kpi_engine/` | Reusable; do not fork it per KPI |
 
 The UI asks for columns by **`measure_key`**. Those names must exist under **`measures:`** in the KPI YAML.
@@ -46,7 +46,7 @@ Do **not** put ADLS paths in YAML. Paths stay on the context.
 ### Step 2 — Model (only if this source is new)
 
 - If the KPI uses an **existing** model (same tables as 3004): set `model: sotif` (or the existing `model_id`). **Do not copy the model file.**
-- If the source is **new tables/joins**: add `config/models/<model_id>.yaml`.
+- If the source is **new tables/joins**: add `udfs/config/models/<model_id>.yaml`.
   - `kind: physical` — `required_aliases`, `sources`, optional `joins`.
   - `kind: sql` — CTE string; declare `output_schema`; use `$alias_path` for paths.
 - If the source is a **complex CTE**: prefer `kind: sql`. Do not encode that CTE in the KPI file.
@@ -54,7 +54,7 @@ Do **not** put ADLS paths in YAML. Paths stay on the context.
 ### Step 3 — Copy a KPI file
 
 ```bash
-cp config/kpis/3004.yaml config/kpis/<kpi_id>.yaml
+cp udfs/config/kpis/3004.yaml udfs/config/kpis/<kpi_id>.yaml
 ```
 
 Set `kpi_id` and `model` to match.
@@ -121,7 +121,7 @@ Add a test under `tests/` with local parquet (see `tests/conftest.py`). Do not h
 
 ### Step 7 — Entry point
 
-Keep calling `udfs.sotif.main(context)` (or `kpi_engine.compute`). **Do not** add `udfs/<kpi>.py` per KPI unless the platform still requires a unique module name. Routing is by `kpi_id`.
+Keep calling `udfs.sotif.main` (file `udfs/sotif/main.py`). **Do not** add `udfs/<kpi>.py` per KPI unless the platform still requires a unique module name. Routing is by `kpi_id`. Copy the whole `udfs/` folder (sotif, kpi_engine, config) into the host.
 
 DuckDB/ADLS stay on the platform. Set `kpi_engine.platform.HOST_DUCKDB_GETTER` to the existing helper (`module.path:function_name`) when you copy this tree in. The engine reuses that session and does not `duckdb.connect()` in production. Context `datasets.*.table_type` chooses `delta_scan` (DELTA) or `read_parquet` (PARQUET). In SQL models prefer `$alias_scan` so the same YAML works for both.
 
@@ -131,7 +131,7 @@ Each `compute` / `validate` writes `logs/kpi-<kind>-<kpi_id>-<timestamp>.log` wi
 
 ## 3. Checklist (standard KPI)
 
-- [ ] `config/kpis/<kpi_id>.yaml` exists; `kpi_id` matches context
+- [ ] `udfs/config/kpis/<kpi_id>.yaml` exists; `kpi_id` matches context
 - [ ] `model` points at a model whose aliases exist on the context
 - [ ] `time.filter_code` matches the selected-month filter
 - [ ] `base_measures` column exists on the extract
@@ -154,8 +154,8 @@ Work **top-down**. Stop at the first row that fits.
 
 | Change | Do not change |
 |---|---|
-| `config/kpis/<id>.yaml` | `kpi_engine/**` |
-| `config/models/<name>.yaml` only if the source is new | `udfs/sotif.py` |
+| `udfs/config/kpis/<id>.yaml` | `kpi_engine/**` |
+| `udfs/config/models/<name>.yaml` only if the source is new | `udfs/sotif/main.py` |
 | `tests/` for this KPI | `adapter.py`, `orchestrator.py` |
 
 ### 4.2 New source shape (joins or CTE)
@@ -164,7 +164,7 @@ Work **top-down**. Stop at the first row that fits.
 
 | Change | Do not change |
 |---|---|
-| `config/models/<name>.yaml` (`kind: physical` or `sql`) | KPI `measures` math (keep catalog ops) |
+| `udfs/config/models/<name>.yaml` (`kind: physical` or `sql`) | KPI `measures` math (keep catalog ops) |
 | KPI `model:` pointer | `calc_engine.py` unless a new op is required |
 
 Put messy SQL in the **model**, not in `measures.sql` (that field is a **column name** only).
@@ -215,7 +215,7 @@ This is an **engine** change. Do it once in the catalog, then every KPI YAML can
 |---|---|
 | `kpi_engine/core/calc_engine.py` — implement the op | A one-off `if kpi_id == 3004` |
 | `kpi_engine/core/binder.py` — allow the new `op` / `agg` | Copy-paste the formula into each KPI file as Python |
-| `kpi_engine/core/time_planner.py` — `lookback_for` if the op needs extra history | `udfs/sotif.py` |
+| `kpi_engine/core/time_planner.py` — `lookback_for` if the op needs extra history | `udfs/sotif/main.py` |
 | `kpi_engine/catalog/ops.yaml` — add the kind name | Context JSON schema |
 | `tests/test_span.py` and a behaviour test | |
 
@@ -254,7 +254,7 @@ Only if metadata **must** call `udfs.<something>.main`.
 
 | Change | Do not change |
 |---|---|
-| Thin shim: `return compute(context)` like `udfs/sotif.py` | Duplicate engine code in the shim |
+| Thin shim: `return compute(context)` like `udfs/sotif/main.py` | Duplicate engine code in the shim |
 
 ---
 
@@ -264,8 +264,8 @@ Only if metadata **must** call `udfs.<something>.main`.
 
 | File | Change when |
 |---|---|
-| `config/kpis/<kpi_id>.yaml` | New or updated KPI definition |
-| `config/models/<model_id>.yaml` | New extract / joins / SQL model |
+| `udfs/config/kpis/<kpi_id>.yaml` | New or updated KPI definition |
+| `udfs/config/models/<model_id>.yaml` | New extract / joins / SQL model |
 | `tests/test_*.py` | Prove this KPI or this op |
 
 ### Engine (change rarely)
@@ -282,7 +282,7 @@ Only if metadata **must** call `udfs.<something>.main`.
 | `core/orchestrator.py` | Pipeline order | Business metrics |
 | `extensions/hooks.py` | Named custom functions | Import paths from context |
 | `catalog/ops.yaml` | Document a new `op` kind | Executable logic |
-| `udfs/sotif.py` | Never, except shim signature | Calculations |
+| `udfs/sotif/main.py` | Never, except shim signature | Calculations |
 | `contracts.py` | New typed fields for YAML/context | Parsing or SQL |
 
 ### Never put in KPI YAML
@@ -299,9 +299,9 @@ Only if metadata **must** call `udfs.<something>.main`.
 ```text
 Need a new KPI?
   ├─ Same SUM + 3m/12m/YoY/trend/cuts?
-  │    → config/kpis/<id>.yaml only
+  │    → udfs/config/kpis/<id>.yaml only
   ├─ New tables or CTE?
-  │    → config/models/<id>.yaml + KPI YAML
+  │    → udfs/config/models/<id>.yaml + KPI YAML
   ├─ New combo of point/window/trend/arithmetic?
   │    → KPI YAML measures only
   ├─ New math every KPI will reuse?
@@ -318,7 +318,7 @@ Need a new KPI?
 
 ### A. New KPI, same Sotif model, add 9m and keep G/R
 
-1. Copy `config/kpis/3004.yaml` → `config/kpis/3010.yaml`.
+1. Copy `udfs/config/kpis/3004.yaml` → `udfs/config/kpis/3010.yaml`.
 2. Set `kpi_id: 3010`.
 3. Add:
 
@@ -335,8 +335,8 @@ value_9m:
 
 ### B. Need “same month last year” on a new fact table
 
-1. New `config/models/orders.yaml` (`required_aliases: [orders]`).
-2. New `config/kpis/4001.yaml` with `model: orders`, `base_measures` on that fact, `measures.previous_year_value` with `op: point`, `offset: { years: 1 }`.
+1. New `udfs/config/models/orders.yaml` (`required_aliases: [orders]`).
+2. New `udfs/config/kpis/4001.yaml` with `model: orders`, `base_measures` on that fact, `measures.previous_year_value` with `op: point`, `offset: { years: 1 }`.
 3. **Files not touched:** `calc_engine.py` (point + years already exists).
 
 ### C. Need a new op `rolling_median`

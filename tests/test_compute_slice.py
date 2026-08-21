@@ -13,7 +13,7 @@ When to use
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError, TimePlanError
 from tests.conftest import make_context
-from udfs.sotif import main
+from udfs.sotif.main import main
 
 
 def test_unrequested_measures_do_not_widen_scan(parquet_path, config_dir):
@@ -64,5 +64,9 @@ def test_unknown_measure_key(parquet_path, config_dir):
 
 def test_udf_shim_matches_compute(parquet_path, config_dir):
     """udfs.sotif.main is a thin wrapper around kpi_engine.compute."""
+    import importlib
+
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
+    mod = importlib.import_module("udfs.sotif.main")
+    assert mod.main is main
     assert main(ctx, config_dir=str(config_dir))["rows"] == compute(ctx, config_dir=config_dir)["rows"]

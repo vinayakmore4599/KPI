@@ -19,11 +19,11 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]
-include = ["kpi_engine*", "udfs*"]
+include = ["udfs*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "udfs"]
 
 [tool.ruff]
 line-length = 100

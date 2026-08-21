@@ -47,11 +47,11 @@ from kpi_engine.runlog import traced
 
 
 def default_config_dir() -> Path:
-    """Prefer repo-root /config (authoring). Fall back to a packaged copy."""
+    """Prefer udfs/config (next to kpi_engine). Fall back to a packaged copy."""
     here = Path(__file__).resolve()
-    repo_config = here.parents[2] / "config"
-    if (repo_config / "kpis").is_dir():
-        return repo_config
+    udfs_config = here.parents[2] / "config"
+    if (udfs_config / "kpis").is_dir():
+        return udfs_config
     return here.parents[1] / "config"
 
 

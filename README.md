@@ -17,25 +17,22 @@ Every Python and YAML file starts with a header covering **what it provides**, *
 ## Folders
 
 ```text
-config/                 Authoring — edit these to add KPIs
-  kpis/                 One file per kpi_id (measures, cuts, time)
-  models/               DuckDB extract (tables/joins or SQL)
+udfs/                   Copy this folder into the platform
+  sotif/main.py         Entry: udfs.sotif.main
+  kpi_engine/           Engine (DuckDB extract, Pandas calc)
+  config/
+    kpis/               One YAML per kpi_id
+    models/             DuckDB extract (tables/joins or SQL)
 
-kpi_engine/             Stable engine — rarely edit
-  core/                 Request path: adapter → bind → plan → SQL → calc
-  catalog/              Shared op kinds (point, window, trend, arithmetic)
-  extensions/           Named Python hooks (allowlist only)
-
-udfs/                   Platform entry. udfs.sotif.main → kpi_engine.compute
-tests/                  Local parquet tests (no ADLS)
+tests/                  Local parquet tests (no ADLS) — not deployed
 ```
 
 | You want to… | Open |
 |---|---|
-| Add or change a KPI | `config/kpis/<id>.yaml` |
-| Change how source tables join | `config/models/<name>.yaml` |
-| Understand a request failure | `kpi_engine/core/` (adapter, binder, time_planner) |
-| Add a reusable calc | `kpi_engine/core/calc_engine.py` (catalog ops) |
+| Add or change a KPI | `udfs/config/kpis/<id>.yaml` |
+| Change how source tables join | `udfs/config/models/<name>.yaml` |
+| Understand a request failure | `udfs/kpi_engine/core/` (adapter, binder, time_planner) |
+| Add a reusable calc | `udfs/kpi_engine/core/calc_engine.py` |
 
 ---
 
@@ -56,7 +53,7 @@ The metadata layer already builds `context`. This engine only consumes it. DuckD
 
 ```python
 from kpi_engine import compute, validate
-from udfs.sotif import main
+from udfs.sotif.main import main
 
 # Compile DuckDB SQL without scanning files
 validate(context)
@@ -79,7 +76,7 @@ The file traces every pipeline step (adapt, bind, extract, calculate), logs the 
 
 ## KPI YAML (what the sections mean)
 
-Example: `config/kpis/3004.yaml`.
+Example: `udfs/config/kpis/3004.yaml`.
 
 **`dimensions`** — columns that split rows (`reason_code`, `region`). Not numbers.
 
@@ -113,7 +110,7 @@ Example: `config/kpis/3004.yaml`.
 
 ## Adding a KPI
 
-1. Copy `config/kpis/3004.yaml` to `config/kpis/<kpi_id>.yaml`.
+1. Copy `udfs/config/kpis/3004.yaml` to `udfs/config/kpis/<kpi_id>.yaml`.
 2. Point `model` at an alias that exists in context datasets.
 3. Declare `dimensions`, `base_measures`, `cuts`, and `measures` (every `measure_key` the page can ask for).
 4. Run `validate(sample_context)` then `pytest`.

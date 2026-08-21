@@ -19,7 +19,7 @@ import pytest
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import KPIEngineError
 from tests.conftest import make_context, minimal_kpi, write_yaml
-from udfs.sotif import main
+from udfs.sotif.main import main
 
 
 def test_response_envelope_has_every_documented_key(parquet_path, config_dir):

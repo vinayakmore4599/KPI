@@ -50,7 +50,7 @@ def cut_group_dims(cut: CutSpec, time_column: str) -> tuple[str, ...]:
 
 
 def finest_grain(kpi: KpiSpec, emitted: tuple[CutSpec, ...]) -> tuple[str, ...]:
-    """DuckDB GROUP BY: time column plus the union of dimensions and cut group_bys."""
+    """DuckDB GROUP BY: time column plus the union of dimensions, cuts, and join keys."""
     dims: list[str] = []
     seen: set[str] = set()
     for name in (kpi.time.column, *kpi.dimensions):
@@ -59,6 +59,11 @@ def finest_grain(kpi: KpiSpec, emitted: tuple[CutSpec, ...]) -> tuple[str, ...]:
             seen.add(name)
     for cut in emitted:
         for name in cut.group_by:
+            if name not in seen:
+                dims.append(name)
+                seen.add(name)
+    for rel in kpi.model_relations:
+        for name in rel.on:
             if name not in seen:
                 dims.append(name)
                 seen.add(name)

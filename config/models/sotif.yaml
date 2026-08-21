@@ -7,7 +7,8 @@
 #   KPI YAML `model: sotif` → binder.load_model → model_sql.extract.
 #
 # Capabilities
-#   required_aliases must exist on context.datasets (alias or key).
+#   required_aliases must exist on context.datasets (alias or key), unless the
+#   source has default_path / default_paths in this file. Context path wins.
 #   table_type PARQUET uses read_parquet; DELTA uses delta_scan.
 #
 # When to use

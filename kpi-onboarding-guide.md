@@ -156,6 +156,19 @@ Work **top-down**. Stop at the first row that fits.
 
 Put messy SQL in the **model**, not in `measures.sql` (that field is a **column name** only).
 
+Runtime scan paths come from `context.datasets` (`$alias_path` in SQL models). If a dim table is not on the context, set `default_paths:` or `sources.<alias>.default_path` in the model YAML. A context path always overrides the default.
+
+```yaml
+required_aliases: [sotif, regions]
+default_paths:
+  regions: abfss://container@account/dims/regions.parquet
+sql: |
+  WITH facts AS (SELECT * FROM read_parquet($sotif_path)),
+       regions AS (SELECT * FROM read_parquet($regions_path))
+  SELECT f.*, r.weight FROM facts f
+  INNER JOIN regions r ON f.region = r.region
+```
+
 ### 4.3 New combination of existing ops
 
 **Examples:** `value_9m` window, `yoy_12m` as growth of two 12m windows, trend on global+region.

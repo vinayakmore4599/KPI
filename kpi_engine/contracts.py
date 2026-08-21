@@ -25,8 +25,8 @@ from datetime import date
 from typing import Any, Literal
 
 
-AggName = Literal["sum", "avg", "count", "count_distinct", "min", "max"]
-OpName = Literal["point", "window", "arithmetic", "trend", "dimension"]
+AggName = Literal["sum", "avg", "count", "count_distinct", "min", "max", "median", "percentile"]
+OpName = Literal["point", "window", "arithmetic", "trend", "dimension", "hook"]
 GrainName = Literal["day", "month", "quarter", "year"]
 
 
@@ -104,6 +104,7 @@ class TimeSpec:
     filter_code: str
     calendar: str = "gregorian"
     timezone: str = "UTC"
+    fiscal_start_month: int = 4
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,8 @@ class BaseMeasure:
     name: str
     sql: str
     agg: AggName
+    model_id: str | None = None
+    percentile: float | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,8 @@ class Offset:
 
     months: int = 0
     years: int = 0
+    days: int = 0
+    quarters: int = 0
 
     @property
     def total_months(self) -> int:
@@ -140,7 +145,7 @@ class Offset:
 
 @dataclass(frozen=True)
 class OutputSpec:
-    """One requestable measure (point, window, trend, arithmetic, or dimension)."""
+    """One requestable measure (point, window, trend, arithmetic, hook, or dimension)."""
 
     key: str
     kind: OpName
@@ -149,6 +154,7 @@ class OutputSpec:
     trailing_months: int | None = None
     inclusive: bool = True
     fn: str | None = None
+    hook: str | None = None
     left: str | None = None
     right: str | None = None
     cuts: tuple[str, ...] | None = None
@@ -169,14 +175,17 @@ class KpiSpec:
     measures: tuple[OutputSpec, ...]
     filter_map: dict[str, str] = field(default_factory=dict)
     row_set: Literal["span_union", "anchor_only"] = "span_union"
+    model_relations: tuple["ModelRelation", ...] = ()
 
 
 @dataclass(frozen=True)
 class PhysicalSource:
-    """Named source in a physical model, bound to a context dataset alias."""
+    """Named source in a physical or SQL model, bound to a context dataset alias."""
 
     name: str
     alias: str
+    default_path: str | None = None
+    table_type: str = "PARQUET"
 
 
 @dataclass(frozen=True)
@@ -190,6 +199,16 @@ class JoinSpec:
 
 
 @dataclass(frozen=True)
+class ModelRelation:
+    """Join two base measures after each model's extract (not a SQL join of raw rows)."""
+
+    left: str
+    right: str
+    on: tuple[str, ...]
+    how: str = "outer"
+
+
+@dataclass(frozen=True)
 class ModelSpec:
     """Parsed model YAML: physical tables/joins or a SQL/CTE query."""
 
@@ -200,6 +219,7 @@ class ModelSpec:
     joins: tuple[JoinSpec, ...] = ()
     sql: str | None = None
     output_schema: tuple[str, ...] = ()
+    default_paths: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ Capabilities
     - Normalizes filter `value` or `values` to a list (default operator IN).
     - Rejects input_text=heir (hierarchy must be expanded upstream).
     - Ignores business_date (never used in calculations).
+    - Dataset path may be omitted; binder fills model default_path when present.
     - Does not claim the month filter; time_planner does that later.
 
 When to use
@@ -123,7 +124,7 @@ def _as_list(values: Any) -> tuple[Any, ...]:
 
 
 def _datasets(raw: Any) -> tuple[DatasetBinding, ...]:
-    """Bind context.datasets (path, alias, columns, filter mappings)."""
+    """Bind context.datasets (alias, columns, mappings). Path may be filled later from YAML."""
     if not isinstance(raw, dict) or not raw:
         raise ContextError("datasets must be a non-empty object.")
     out: list[DatasetBinding] = []
@@ -131,8 +132,6 @@ def _datasets(raw: Any) -> tuple[DatasetBinding, ...]:
         if not isinstance(spec, dict):
             raise ContextError(f"datasets[{key!r}] must be an object.")
         path = spec.get("path")
-        if not path:
-            raise ContextError(f"datasets[{key!r}].path is required.")
         alias = spec.get("alias") or key
         columns = spec.get("columns") or []
         if not isinstance(columns, list):
@@ -142,7 +141,7 @@ def _datasets(raw: Any) -> tuple[DatasetBinding, ...]:
             DatasetBinding(
                 key=str(key),
                 alias=str(alias),
-                path=str(path),
+                path=str(path) if path else "",
                 table_type=str(spec.get("table_type") or "PARQUET"),
                 columns=tuple(str(c) for c in columns),
                 mappings=mappings,

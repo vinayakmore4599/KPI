@@ -21,6 +21,7 @@ When to use
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import duckdb
@@ -34,11 +35,14 @@ from kpi_engine.contracts import (
     ModelSpec,
     TimePlan,
 )
-from kpi_engine.exceptions import BindError, KPIEngineError
+from kpi_engine.exceptions import BindError, FilterError, KPIEngineError
 from kpi_engine.identifiers import quote_ident, require_ident
 
 
 _ADDITIVE = {"sum", "count", "min", "max", "avg"}
+NON_ADDITIVE = {"count_distinct", "median", "percentile"}
+_NON_ADDITIVE = NON_ADDITIVE
+_PATH_TOKEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)_path")
 
 
 def extract(
@@ -50,6 +54,8 @@ def extract(
     plan: TimePlan,
     grain: tuple[str, ...],
     connection: duckdb.DuckDBPyConnection | None = None,
+    row_level: bool = False,
+    filter_columns: set[str] | None = None,
 ) -> ExtractResult:
     """Compile and execute the DuckDB extract. Opens a connection if none is passed."""
     sql, params = compile_extract(
@@ -59,6 +65,8 @@ def extract(
         source_filters=source_filters,
         plan=plan,
         grain=grain,
+        row_level=row_level,
+        filter_columns=filter_columns,
     )
     con = connection or duckdb.connect()
     own = connection is None
@@ -80,22 +88,33 @@ def compile_extract(
     source_filters: tuple[BoundFilter, ...],
     plan: TimePlan,
     grain: tuple[str, ...],
+    row_level: bool = False,
+    filter_columns: set[str] | None = None,
 ) -> tuple[str, tuple[Any, ...]]:
-    """Build parameterized SELECT ... GROUP BY SQL. Does not execute."""
+    """Build parameterized SELECT SQL. GROUP BY unless row_level (non-additive detail)."""
     params: list[Any] = []
     from_sql = _from_clause(model, datasets, params)
+    usable = source_filters
+    if filter_columns is not None:
+        usable = tuple(
+            f for f in source_filters if f.column in filter_columns or f.column == kpi.time.column
+        )
     where_sql, where_params = _where_clause(
-        source_filters, kpi.time.column, plan
+        usable, kpi, plan, model=model
     )
     params.extend(where_params)
-    select_sql = _select_clause(kpi, grain)
-    group_sql = ", ".join(str(i) for i in range(1, len(grain) + 1))
-    sql = (
-        f"SELECT {select_sql}\n"
-        f"FROM {from_sql}\n"
-        f"WHERE {where_sql}\n"
-        f"GROUP BY {group_sql}"
-    )
+    if row_level:
+        select_sql = _select_row_level(kpi, grain, model=model)
+        sql = f"SELECT {select_sql}\nFROM {from_sql}\nWHERE {where_sql}"
+    else:
+        select_sql = _select_clause(kpi, grain, model=model)
+        group_sql = ", ".join(str(i) for i in range(1, len(grain) + 1))
+        sql = (
+            f"SELECT {select_sql}\n"
+            f"FROM {from_sql}\n"
+            f"WHERE {where_sql}\n"
+            f"GROUP BY {group_sql}"
+        )
     _assert_no_month_in(sql, plan)
     return sql, tuple(params)
 
@@ -109,12 +128,7 @@ def _from_clause(
     if model.kind == "sql":
         if not model.sql:
             raise BindError("SQL model is missing sql.")
-        inner = model.sql
-        for alias, dataset in datasets.items():
-            token = f"${alias}_path"
-            if token in inner:
-                inner = inner.replace(token, "?")
-                params.append(dataset.path)
+        inner = _substitute_paths(model.sql, datasets, params)
         return f"(\n{inner}\n) AS {quote_ident(model.model_id)}"
 
     if not model.sources:
@@ -148,6 +162,27 @@ def _from_clause(
     return "\n".join(parts)
 
 
+def _substitute_paths(
+    sql: str, datasets: dict[str, DatasetBinding], params: list[Any]
+) -> str:
+    """Replace $alias_path left-to-right so ? params match CTE appearance order."""
+    by_alias = {alias.lower(): dataset for alias, dataset in datasets.items()}
+
+    def repl(match: re.Match[str]) -> str:
+        """Bind one $alias_path occurrence to a positional path parameter."""
+        alias = match.group(1)
+        dataset = by_alias.get(alias.lower())
+        if dataset is None:
+            raise BindError(
+                f"SQL model references ${alias}_path but alias {alias!r} is not bound. "
+                f"Bound: {sorted(datasets)}."
+            )
+        params.append(dataset.path)
+        return "?"
+
+    return _PATH_TOKEN.sub(repl, sql)
+
+
 def _scan_fn(dataset: DatasetBinding) -> str:
     """DuckDB scan function: delta_scan for Delta, read_parquet otherwise (including tests)."""
     table_type = dataset.table_type.upper()
@@ -159,19 +194,27 @@ def _scan_fn(dataset: DatasetBinding) -> str:
 
 def _where_clause(
     source_filters: tuple[BoundFilter, ...],
-    time_column: str,
+    kpi: KpiSpec,
     plan: TimePlan,
+    model: ModelSpec | None = None,
 ) -> tuple[str, list[Any]]:
     """Time range (>= span_start, < span_end) plus source IN filters. Empty IN is FALSE."""
+    selectable = set(model.output_schema) if model and model.kind == "sql" and model.output_schema else None
     parts: list[str] = []
     params: list[Any] = []
-    time_expr = f"date_trunc('month', CAST({quote_ident(time_column)} AS DATE))"
+    time_expr = _time_bucket_expr(kpi, model=model)
     parts.append(f"{time_expr} >= ?")
     params.append(plan.span_start)
     parts.append(f"{time_expr} < ?")
     params.append(plan.span_end_exclusive)
+    prefix = _source_prefix(model)
     for item in source_filters:
-        col = quote_ident(item.column)
+        if selectable is not None and item.column not in selectable and item.column != kpi.time.column:
+            raise FilterError(
+                f"Filter {item.code!r} maps to {item.column!r}, which is not in the "
+                "model SELECT (output_schema). Expose that column in the CTE to filter it in DuckDB."
+            )
+        col = f"{prefix}{quote_ident(item.column)}"
         if not item.values:
             parts.append("FALSE")
             continue
@@ -181,28 +224,81 @@ def _where_clause(
     return " AND ".join(parts), params
 
 
-def _select_clause(kpi: KpiSpec, grain: tuple[str, ...]) -> str:
-    """SELECT grain columns (time truncated to month) plus aggregated base measures."""
+def _source_prefix(model: ModelSpec | None) -> str:
+    """Qualify columns with the first physical source when YAML joins would be ambiguous."""
+    if model is None or model.kind != "physical" or len(model.sources) < 2:
+        return ""
+    return f"{quote_ident(model.sources[0].alias)}."
+
+
+def _select_clause(kpi: KpiSpec, grain: tuple[str, ...], model: ModelSpec | None = None) -> str:
+    """SELECT grain columns (time truncated to grain) plus aggregated additive measures."""
     time_col = kpi.time.column
+    prefix = _source_prefix(model)
     select_parts: list[str] = []
     for col in grain:
         ident = quote_ident(col)
         if col == time_col:
-            select_parts.append(
-                f"date_trunc('month', CAST({ident} AS DATE)) AS {ident}"
-            )
+            select_parts.append(f"{_time_bucket_expr(kpi, model=model)} AS {ident}")
         else:
-            select_parts.append(ident)
+            select_parts.append(f"{prefix}{ident}")
     for measure in kpi.base_measures:
-        select_parts.extend(_measure_select(measure))
+        if measure.agg in _NON_ADDITIVE:
+            continue
+        select_parts.extend(_measure_select(measure, prefix=prefix))
     return ", ".join(select_parts)
 
 
-def _measure_select(measure: BaseMeasure) -> list[str]:
+def _select_row_level(
+    kpi: KpiSpec, grain: tuple[str, ...], model: ModelSpec | None = None
+) -> str:
+    """SELECT time bucket, dims, and raw columns for non-additive aggs (no GROUP BY)."""
+    time_col = kpi.time.column
+    prefix = _source_prefix(model)
+    parts: list[str] = []
+    seen: set[str] = set()
+    for col in grain:
+        ident = quote_ident(col)
+        if col == time_col:
+            parts.append(f"{_time_bucket_expr(kpi, model=model)} AS {ident}")
+        else:
+            parts.append(f"{prefix}{ident}")
+        seen.add(col)
+    for measure in kpi.base_measures:
+        if measure.agg not in _NON_ADDITIVE:
+            continue
+        if measure.sql in seen:
+            continue
+        parts.append(f"{prefix}{quote_ident(require_ident(measure.sql, what='measure sql'))}")
+        seen.add(measure.sql)
+    return ", ".join(parts)
+
+
+def _time_bucket_expr(kpi: KpiSpec, model: ModelSpec | None = None) -> str:
+    """SQL expression that truncates the time column to the KPI grain (DATE)."""
+    ident = f"{_source_prefix(model)}{quote_ident(kpi.time.column)}"
+    casted = f"CAST({ident} AS DATE)"
+    grain = kpi.time.grain
+    if kpi.time.calendar == "fiscal" and grain in {"quarter", "year"}:
+        shift = kpi.time.fiscal_start_month - 1
+        if grain == "year":
+            return (
+                f"CAST(date_trunc('year', {casted} - INTERVAL {shift} MONTH) "
+                f"+ INTERVAL {shift} MONTH AS DATE)"
+            )
+        return (
+            f"CAST(date_trunc('quarter', {casted} - INTERVAL {shift} MONTH) "
+            f"+ INTERVAL {shift} MONTH AS DATE)"
+        )
+    unit = {"day": "day", "month": "month", "quarter": "quarter", "year": "year"}[grain]
+    return f"CAST(date_trunc('{unit}', {casted}) AS DATE)"
+
+
+def _measure_select(measure: BaseMeasure, prefix: str = "") -> list[str]:
     """SQL fragments for one additive agg. avg is carried as SUM and COUNT."""
     if measure.agg not in _ADDITIVE:
         raise BindError(f"agg {measure.agg!r} cannot use the shared GROUP BY.")
-    expr = quote_ident(require_ident(measure.sql, what="measure sql"))
+    expr = f"{prefix}{quote_ident(require_ident(measure.sql, what='measure sql'))}"
     name = quote_ident(measure.name)
     if measure.agg == "sum":
         return [f"SUM({expr}) AS {name}"]

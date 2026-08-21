@@ -11,7 +11,8 @@ Where it is used
 Capabilities
     Unmapped filters fail hard. Empty IN list matches nothing (FALSE), not
     invalid SQL. Filters listed in a cut's ignore_filters stay out of DuckDB
-    so global cuts can still see all regions.
+    so global cuts can still see all regions. On SQL/CTE models, only columns
+    declared in output_schema (the model SELECT) can be IN-filtered in DuckDB.
 
 When to use
     Change mapping rules if metadata mappings change. Hierarchy (heir) is
@@ -20,8 +21,29 @@ When to use
 
 from __future__ import annotations
 
-from kpi_engine.contracts import BoundFilter, CutSpec, DatasetBinding, IncomingFilter, KpiSpec
+from kpi_engine.contracts import BoundFilter, CutSpec, DatasetBinding, IncomingFilter, KpiSpec, ModelSpec
 from kpi_engine.exceptions import FilterError
+
+
+def columns_for_source_filters(
+    model: ModelSpec,
+    kpi: KpiSpec,
+    grain: tuple[str, ...],
+    datasets: dict[str, DatasetBinding],
+) -> set[str]:
+    """Columns DuckDB may IN-filter: model SELECT (output_schema) or physical table columns.
+
+    SQL models declare their SELECT as output_schema. Dim columns that exist only
+    inside a CTE (eligible, weight, …) are not filterable on the wrapped query.
+    Physical models expose every context dataset column.
+    """
+    cols = set(grain) | {m.sql for m in kpi.base_measures} | set(kpi.dimensions)
+    if model.kind == "sql" and model.output_schema:
+        cols.update(model.output_schema)
+        return cols
+    for dataset in datasets.values():
+        cols.update(dataset.columns)
+    return cols
 
 
 def bind_filters(
@@ -73,6 +95,8 @@ def apply_cut_filters(frame, cut: CutSpec, deferred: tuple[BoundFilter, ...]):
     work = frame
     for item in deferred:
         if _is_ignored(cut, item):
+            continue
+        if item.column not in work.columns:
             continue
         if not item.values:
             return work.iloc[0:0].copy()

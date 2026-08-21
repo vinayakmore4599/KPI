@@ -19,11 +19,14 @@ When to use
 
 from __future__ import annotations
 
+import shutil
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
+import yaml
 
 from kpi_engine.dates import month_range_inclusive
 
@@ -68,6 +71,86 @@ def parquet_path(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture
+def extra_config(tmp_path: Path, config_dir: Path) -> Path:
+    """Writable copy of repo config for test-only KPI / model YAML."""
+    dest = tmp_path / "config"
+    shutil.copytree(config_dir, dest)
+    return dest
+
+
+
+def write_yaml(path: Path, payload: dict[str, Any]) -> None:
+    """Write a KPI or model YAML file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def minimal_kpi(kpi_id: int, **overrides: Any) -> dict:
+    """Sotif-shaped KPI YAML dict for test-only KPIs. Any top-level key can be overridden."""
+    spec: dict[str, Any] = {
+        "kpi_id": kpi_id,
+        "version": 1,
+        "model": "sotif",
+        "time": {
+            "column": "event_month",
+            "grain": "month",
+            "filter_code": "reporting_month",
+            "calendar": "gregorian",
+            "timezone": "UTC",
+        },
+        "dimensions": [
+            {"name": "reason_code", "kind": "dimension"},
+            {"name": "region", "kind": "dimension"},
+        ],
+        "base_measures": {"sotif_value": {"sql": "amount", "agg": "sum"}},
+        "cuts": [
+            {
+                "name": "G",
+                "group_by": ["reason_code"],
+                "ignore_filters": ["region"],
+                "also_emit": ["R"],
+            },
+            {"name": "R", "group_by": ["reason_code", "region"], "ignore_filters": []},
+        ],
+        "default_cut": "G",
+        "row_set": "span_union",
+        "measures": {
+            "current_value": {"of": "sotif_value", "op": "point", "offset": {"months": 0}},
+            "value_3m": {
+                "of": "sotif_value",
+                "op": "window",
+                "trailing": {"months": 3},
+                "inclusive": True,
+            },
+        },
+    }
+    spec.update(overrides)
+    return spec
+
+
+def find_row(
+    result: dict,
+    *,
+    cut: str,
+    reason: str | None = None,
+    region: str | None = None,
+) -> dict:
+    """Return the unique result row for a cut / reason / region combo."""
+    matches = []
+    for row in result["rows"]:
+        if row.get("output_cut") != cut:
+            continue
+        if reason is not None and row.get("reason_code") != reason:
+            continue
+        if region is not None and row.get("region") != region:
+            continue
+        matches.append(row)
+    assert matches, result["rows"]
+    assert len(matches) == 1, matches
+    return matches[0]
+
+
 def make_context(
     parquet_path: Path,
     *,
@@ -76,6 +159,12 @@ def make_context(
     region: list[str] | None = None,
     supplier: list[str] | None = None,
     month: str = "2026-03",
+    kpi_id: int = 3004,
+    page: int | None = None,
+    page_size: int | None = None,
+    limit: int | None = None,
+    business_date: str | None = "2099-01-01",
+    extra_datasets: dict | None = None,
 ) -> dict:
     """Build a metadata-shaped context pointing at a local parquet path."""
     filters = {
@@ -87,11 +176,50 @@ def make_context(
         filters["Supplier Name"] = {"value": supplier, "input_text": "simple"}
     if extra_filters:
         filters.update(extra_filters)
+    datasets = {
+        "Sotif": {
+            "dataset_id": 21,
+            "dataset_name": "CDL_SOTIF",
+            "table_type": "PARQUET",
+            "path": str(parquet_path),
+            "container_name": "command",
+            "partition_key": None,
+            "alias": "sotif",
+            "columns": [
+                "event_month",
+                "region",
+                "reason_code",
+                "supplier_name",
+                "amount",
+            ],
+            "filter_column_mappings": [
+                {
+                    "filter_id": 67,
+                    "filter_code": "region",
+                    "view_id": 13,
+                    "column_name": "region",
+                    "operator": "in",
+                },
+                {
+                    "filter_id": 68,
+                    "filter_code": "Supplier Name",
+                    "view_id": 13,
+                    "column_name": "supplier_name",
+                    "operator": "in",
+                },
+            ],
+            "join_type": None,
+            "join_condition": None,
+            "join_managed_by": "udf",
+        }
+    }
+    if extra_datasets:
+        datasets.update(extra_datasets)
     return {
         "execution": {
             "source": "metadata",
             "request_id": "REQ-page-001",
-            "kpi_id": 3004,
+            "kpi_id": kpi_id,
             "view_details": [
                 {
                     "view_id": 13,
@@ -100,46 +228,10 @@ def make_context(
                 }
             ],
             "user_id": "id",
-            "business_date": None,
+            "business_date": business_date,
         },
         "filters": filters,
-        "datasets": {
-            "Sotif": {
-                "dataset_id": 21,
-                "dataset_name": "CDL_SOTIF",
-                "table_type": "PARQUET",
-                "path": str(parquet_path),
-                "container_name": "command",
-                "partition_key": None,
-                "alias": "sotif",
-                "columns": [
-                    "event_month",
-                    "region",
-                    "reason_code",
-                    "supplier_name",
-                    "amount",
-                ],
-                "filter_column_mappings": [
-                    {
-                        "filter_id": 67,
-                        "filter_code": "region",
-                        "view_id": 13,
-                        "column_name": "region",
-                        "operator": "in",
-                    },
-                    {
-                        "filter_id": 68,
-                        "filter_code": "Supplier Name",
-                        "view_id": 13,
-                        "column_name": "supplier_name",
-                        "operator": "in",
-                    },
-                ],
-                "join_type": None,
-                "join_condition": None,
-                "join_managed_by": "udf",
-            }
-        },
+        "datasets": datasets,
         "udf": {
             "udf_id": 6,
             "udf_name": "sotif",
@@ -149,8 +241,8 @@ def make_context(
         },
         "output": {
             "response_type": "pagination",
-            "page": None,
-            "page_size": None,
-            "limit": None,
+            "page": page,
+            "page_size": page_size,
+            "limit": limit,
         },
     }

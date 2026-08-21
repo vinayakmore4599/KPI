@@ -8,11 +8,12 @@
 #   Authors and reviewers. Implementations live in kpi_engine.core.calc_engine.
 #
 # Capabilities
-#   point       — one month (current, previous year, lag)
-#   window      — trailing N months, MTD/YTD-style windows as a single number
+#   point       — one period (current, previous year, lag)
+#   window      — trailing N periods as a single number
 #   arithmetic  — ratio / growth of two measures
-#   trend       — array of monthly values for graphs
+#   trend       — array of per-period values for graphs
 #   dimension   — pass-through attribute requested as measure_key
+#   hook        — allowlisted named function from extensions.hooks.REGISTRY
 #
 # When to use
 #   Add a kind here when calc_engine.evaluate gains a new op. KPI files should
@@ -24,3 +25,4 @@ kinds:
   - arithmetic
   - trend
   - dimension
+  - hook

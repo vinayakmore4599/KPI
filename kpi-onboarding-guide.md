@@ -4,8 +4,11 @@ This is the playbook for adding a KPI to the engine, and for deciding **which fi
 
 Related docs:
 
+- [kpi-yaml-reference.md](kpi-yaml-reference.md) — **every YAML key, op and aggregation the engine supports**
 - [README.md](README.md) — folders, install, YAML meaning
 - [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions
+
+This guide is the *process*: what to confirm, what to write, what to change. For the full capability list while writing YAML, keep the reference open beside it.
 
 ---
 
@@ -61,8 +64,9 @@ Set `kpi_id` and `model` to match.
 **`time`**
 
 - `column` — date/timestamp on the extract.
-- `grain` — currently `month` only.
-- `filter_code` — **exact** context filter key for the user-selected month.  
+- `grain` — `day`, `month`, `quarter`, or `year`.
+- `calendar` — `gregorian` (default) or `fiscal` with `fiscal_start_month` (default 4). Fiscal affects quarter and year grains only.
+- `filter_code` — **exact** context filter key for the user-selected period.  
   That filter is the **anchor**. It must never be applied as `IN (one month)`.
 
 **`dimensions`**
@@ -71,7 +75,9 @@ Set `kpi_id` and `model` to match.
 
 **`base_measures`**
 
-- Internal fact: `sql: <column>` + `agg: sum | avg | count | min | max`.
+- Internal fact: `sql: <column>` + `agg`.
+- Built-in aggregations: `sum`, `avg`, `count`, `min`, `max`, `count_distinct`, `median`, `percentile`.
+- `avg` is weighted; `min`/`max` are recomputed at each cut; the last three are non-additive and re-read row-level data. See [the reference](kpi-yaml-reference.md#4-base_measures--the-built-in-aggregations).
 - The UI usually does **not** request this name. Calculated measures use `of: <this name>`.
 
 **`cuts`**
@@ -89,8 +95,11 @@ Set `kpi_id` and `model` to match.
 | `window` | Trailing 3/6/12 months as **one number** | `of`, `trailing.months`, `inclusive` |
 | `trend` | Graph: array of monthly values | `of`, `trailing.months`, optional `cuts` |
 | `arithmetic` | YoY / ratio of two measures | `fn`, `left`, `right` (names of other `measures`) |
+| `hook` | Logic the catalog cannot express | `hook` (a registered name), plus `offset`/`trailing` for lookback |
 
 Every `measure_key` the page can send must appear here. Unknown keys fail at bind time.
+
+Optional top-level keys: `row_set` (`span_union` default, or `anchor_only`), `filter_map` (filter code → column), and `model_relations` (join two models after aggregation).
 
 ### Step 5 — Align metadata
 
@@ -113,6 +122,8 @@ Add a test under `tests/` with local parquet (see `tests/conftest.py`). Do not h
 ### Step 7 — Entry point
 
 Keep calling `udfs.sotif.main(context)` (or `kpi_engine.compute`). **Do not** add `udfs/<kpi>.py` per KPI unless the platform still requires a unique module name. Routing is by `kpi_id`.
+
+DuckDB/ADLS stay on the platform. Set `kpi_engine.platform.HOST_DUCKDB_GETTER` to the existing helper (`module.path:function_name`) when you copy this tree in. The engine reuses that session and does not `duckdb.connect()` in production. Context `datasets.*.table_type` chooses `delta_scan` (DELTA) or `read_parquet` (PARQUET). In SQL models prefer `$alias_scan` so the same YAML works for both.
 
 ---
 
@@ -192,7 +203,9 @@ No engine change.
 
 ### 4.4 New reusable op (all KPIs will need it)
 
-**Examples:** rolling median, fiscal YTD, percentile, `count_distinct` at each cut.
+**Examples:** rolling median over a custom window, fiscal YTD, a new ratio family.
+
+Check the [reference](kpi-yaml-reference.md#4-base_measures--the-built-in-aggregations) first — `count_distinct`, `median`, `percentile`, fiscal calendars and day/quarter/year grains already exist.
 
 This is an **engine** change. Do it once in the catalog, then every KPI YAML can use it.
 
@@ -215,12 +228,12 @@ Then onboard KPIs with YAML only (section 4.3).
 | Change | Do not change |
 |---|---|
 | `kpi_engine/extensions/hooks.py` — `register("my_hook", fn)` | `importlib` of `context.udf.module_path` from YAML |
-| KPI YAML: a measure that calls the **registered name** (when hook wiring is added) | DuckDB connection or ADLS credentials inside the hook |
+| KPI YAML: `op: hook` with `hook: my_hook` | DuckDB connection or ADLS credentials inside the hook |
 | `tests/` for that hook | `orchestrator` request order |
 
-Hooks receive **already aggregated / aligned** frames. They must not scan ADLS.
+Hooks receive **already aggregated / aligned** frames. They must not scan ADLS. Declare `offset:` or `trailing:` on the measure so the planner scans enough history.
 
-Until hook `op` is wired in binder/calc_engine, prefer extending the catalog (4.4) if the math is reusable.
+If two KPIs need the same hook, promote it to a catalog op (4.4) instead. Full signature and rules: [reference §10](kpi-yaml-reference.md#10-when-you-need-a-custom-function).
 
 ### 4.6 Context or platform change
 

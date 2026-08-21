@@ -9,9 +9,10 @@ Where it is used
     kpi_engine.compute / validate re-export these. udfs.sotif.main calls compute.
 
 Capabilities
-    Owns one DuckDB session per compute. Builds extract column set, splits
-    filters, densifies the monthly frame, sorts and paginates (null page_size
-    = all rows).
+    One DuckDB session per compute, from the platform helper (or a local
+    fallback in tests). Never closes a host connection. Builds extract column
+    set, splits filters, densifies the monthly frame, sorts and paginates
+    (null page_size = all rows).
 
 When to use
     Change step order only with an architecture decision. Do not add KPI-specific
@@ -43,12 +44,14 @@ from kpi_engine.core.relations import join_monthly
 from kpi_engine.core.time_planner import plan_time
 from kpi_engine.dates import iso_period
 from kpi_engine.exceptions import KPIEngineError
+from kpi_engine.platform import acquire_connection
 
 
 def compute(
     context: dict[str, Any],
     *,
     config_dir: str | Path | None = None,
+    connection: Any | None = None,
 ) -> dict[str, Any]:
     """Run the full KPI request: bind YAML, extract in DuckDB, calculate in Pandas, return JSON."""
     root = Path(config_dir) if config_dir else default_config_dir()
@@ -67,15 +70,21 @@ def compute(
         extract_columns |= columns_for_source_filters(model, kpi, grain, datasets)
     bound = bind_filters(remaining_filters, kpi, datasets, extract_columns)
     source_filters, deferred = split_for_duckdb(bound, emitted)
-    monthly, detail, sqls = _extract_all(
-        models=models,
-        kpi=kpi,
-        datasets=datasets,
-        source_filters=source_filters,
-        plan=time_plan,
-        grain=grain,
-        request=request,
-    )
+    con, owned = acquire_connection(connection)
+    try:
+        monthly, detail, sqls = _extract_all(
+            models=models,
+            kpi=kpi,
+            datasets=datasets,
+            source_filters=source_filters,
+            plan=time_plan,
+            grain=grain,
+            request=request,
+            connection=con,
+        )
+    finally:
+        if owned:
+            con.close()
     requested = request.measure_keys or tuple(m.key for m in kpi.measures)
     rows, trend_axes = compute_cuts(
         monthly,
@@ -203,6 +212,7 @@ def _extract_all(
     plan,
     grain: tuple[str, ...],
     request: AdaptedRequest,
+    connection: Any | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame | None, list[str]]:
     """Per-model additive GROUP BY extracts plus optional row-level detail for non-additive aggs."""
     frames: dict[str, pd.DataFrame] = {}
@@ -231,6 +241,7 @@ def _extract_all(
                 plan=plan,
                 grain=grain,
                 filter_columns=filter_cols,
+                connection=connection,
             )
             frames[model.model_id] = extracted.frame
             sqls.append(extracted.sql)
@@ -245,6 +256,7 @@ def _extract_all(
                 grain=grain,
                 row_level=True,
                 filter_columns=filter_cols,
+                connection=connection,
             )
             detail_parts.append(extracted.frame)
             sqls.append(extracted.sql)

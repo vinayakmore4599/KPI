@@ -9,14 +9,15 @@ Where it is used
     the selected month is not IN-filtered.
 
 Capabilities
-    - Physical models: read_parquet / delta_scan from context paths.
-    - SQL models: wrap CTE as a subquery (paths as $alias_path → ?).
+    - Physical models: read_parquet / delta_scan from context table_type.
+    - SQL models: wrap CTE as a subquery ($alias_scan or $alias_path → ?).
     - Additive aggs in DuckDB (sum/count/min/max; avg as sum+count).
     - Identifiers quoted; values bound as parameters.
 
 When to use
     Change this for new scan types or join YAML. Do not put YoY/MTD here —
     those belong in calc_engine after the monthly extract.
+    Do not duckdb.connect() for production — orchestrator passes the host session.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ _ADDITIVE = {"sum", "count", "min", "max", "avg"}
 NON_ADDITIVE = {"count_distinct", "median", "percentile"}
 _NON_ADDITIVE = NON_ADDITIVE
 _PATH_TOKEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)_path")
+_SCAN_TOKEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)_scan")
 
 
 def extract(
@@ -68,8 +70,11 @@ def extract(
         row_level=row_level,
         filter_columns=filter_columns,
     )
-    con = connection or duckdb.connect()
-    own = connection is None
+    con = connection
+    own = False
+    if con is None:
+        con = duckdb.connect()
+        own = True
     try:
         frame = con.execute(sql, list(params)).fetchdf()
     except Exception as exc:  # noqa: BLE001 — surface engine error, keep DuckDB details
@@ -128,7 +133,7 @@ def _from_clause(
     if model.kind == "sql":
         if not model.sql:
             raise BindError("SQL model is missing sql.")
-        inner = _substitute_paths(model.sql, datasets, params)
+        inner = _substitute_source_tokens(model.sql, datasets, params)
         return f"(\n{inner}\n) AS {quote_ident(model.model_id)}"
 
     if not model.sources:
@@ -162,25 +167,43 @@ def _from_clause(
     return "\n".join(parts)
 
 
-def _substitute_paths(
+def _substitute_source_tokens(
     sql: str, datasets: dict[str, DatasetBinding], params: list[Any]
 ) -> str:
-    """Replace $alias_path left-to-right so ? params match CTE appearance order."""
+    """Replace $alias_scan then $alias_path left-to-right so ? params match CTE order."""
     by_alias = {alias.lower(): dataset for alias, dataset in datasets.items()}
 
-    def repl(match: re.Match[str]) -> str:
+    def scan_repl(match: re.Match[str]) -> str:
+        """Bind $alias_scan to delta_scan(?) or read_parquet(?) from table_type."""
+        dataset = _dataset_for_token(match.group(1), by_alias, datasets, token="scan")
+        params.append(dataset.path)
+        return _scan_fn(dataset)
+
+    def path_repl(match: re.Match[str]) -> str:
         """Bind one $alias_path occurrence to a positional path parameter."""
-        alias = match.group(1)
-        dataset = by_alias.get(alias.lower())
-        if dataset is None:
-            raise BindError(
-                f"SQL model references ${alias}_path but alias {alias!r} is not bound. "
-                f"Bound: {sorted(datasets)}."
-            )
+        dataset = _dataset_for_token(match.group(1), by_alias, datasets, token="path")
         params.append(dataset.path)
         return "?"
 
-    return _PATH_TOKEN.sub(repl, sql)
+    sql = _SCAN_TOKEN.sub(scan_repl, sql)
+    return _PATH_TOKEN.sub(path_repl, sql)
+
+
+def _dataset_for_token(
+    alias: str,
+    by_alias: dict[str, DatasetBinding],
+    datasets: dict[str, DatasetBinding],
+    *,
+    token: str,
+) -> DatasetBinding:
+    """Resolve $alias_scan / $alias_path to a bound dataset."""
+    dataset = by_alias.get(alias.lower())
+    if dataset is None:
+        raise BindError(
+            f"SQL model references ${alias}_{token} but alias {alias!r} is not bound. "
+            f"Bound: {sorted(datasets)}."
+        )
+    return dataset
 
 
 def _scan_fn(dataset: DatasetBinding) -> str:

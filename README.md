@@ -6,6 +6,8 @@ You onboard a KPI by adding YAML. You should not need to change engine code for 
 
 **Onboarding playbook (steps + which files to change):** [kpi-onboarding-guide.md](kpi-onboarding-guide.md)
 
+**YAML reference (every op, aggregation and key):** [kpi-yaml-reference.md](kpi-yaml-reference.md)
+
 Full architecture: [kpi-framework-plan.md](kpi-framework-plan.md).
 
 Every Python and YAML file starts with a header covering **what it provides**, **where it is used**, **capabilities**, and **when to change it**.
@@ -50,7 +52,7 @@ pytest -q
 
 ## Run a request
 
-The metadata layer already builds `context`. This engine only consumes it:
+The metadata layer already builds `context`. This engine only consumes it. DuckDB and ADLS stay on the platform — `compute` / `udfs.sotif.main` reuse that connection.
 
 ```python
 from kpi_engine import compute, validate
@@ -59,10 +61,10 @@ from udfs.sotif import main
 # Compile DuckDB SQL without scanning files
 validate(context)
 
-# Full calculation
-result = compute(context)
+# Full calculation (pass the platform DuckDB session when the host has one)
+result = compute(context, connection=platform_connection)
 # or the UDF shim:
-result = main(context)
+result = main(context, connection=platform_connection)
 ```
 
 `business_date` on the context is ignored. The **selected month** in filters is the anchor.
@@ -75,15 +77,16 @@ Example: `config/kpis/3004.yaml`.
 
 **`dimensions`** — columns that split rows (`reason_code`, `region`). Not numbers.
 
-**`base_measures`** — internal fact from the table, e.g. `sotif_value: SUM(amount)`. The UI does not request this name.
+**`base_measures`** — internal fact from the table, e.g. `sotif_value: SUM(amount)`. The UI does not request this name. Aggregations: `sum`, `avg`, `count`, `min`, `max`, `count_distinct`, `median`, `percentile`.
 
 **`measures`** — calculated columns the UI can request via `measure_key`:
 
-- `point` — one month (current, previous year)
-- `window` — trailing 3m / 6m / 12m (and similar)
-- `trend` — array of monthly values for a graph
+- `point` — one period (current, previous year)
+- `window` — trailing 3 / 6 / 12 periods (and similar)
+- `trend` — array of per-period values for a graph
 - `arithmetic` — YoY / ratio of two measures
 - `dimension` — only if the context still sends a dimension as `measure_key`
+- `hook` — an allowlisted Python function for logic the catalog cannot express
 
 **`cuts`** — grouping grains, not measures. Example: **G** = global (no region), **R** = by region. `also_emit` packs extra grains into the same response.
 

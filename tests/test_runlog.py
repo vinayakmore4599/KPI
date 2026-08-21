@@ -131,3 +131,34 @@ def test_sql_in_the_log_is_not_truncated(parquet_path, config_dir, tmp_path):
     assert result["sql"] in text
     for sql in result["sqls"]:
         assert sql in text
+    assert "---------- SQL BOUND (values inlined; copy into DuckDB) ----------" in text
+    start = text.index("---------- SQL BOUND (values inlined; copy into DuckDB) ----------")
+    end = text.index("---------- END SQL ----------")
+    bound = text[start:end]
+    assert "read_parquet(" in bound
+    assert str(parquet_path) in bound
+    assert "?" not in bound
+    assert "DATE '" in bound
+    assert "ABC" in bound
+
+
+def test_percent_in_path_does_not_drop_sql_from_the_log(parquet_path, config_dir, tmp_path):
+    """A `%` in a dataset path must not make the logging formatter skip the SQL block."""
+    weird = tmp_path / "sotif%20facts.parquet"
+    weird.write_bytes(Path(parquet_path).read_bytes())
+    log_dir = tmp_path / "logs"
+    ctx = make_context(weird, measures=["current_value"], supplier=["ABC"])
+    result = compute(ctx, config_dir=config_dir, log_dir=log_dir)
+    text = next(log_dir.glob("kpi-compute-3004-*.log")).read_text(encoding="utf-8")
+    assert result["sql"] in text
+    assert str(weird) in text
+    assert "sotif%20facts.parquet" in text
+    assert "---------- END SQL ----------" in text
+
+
+def test_render_bound_sql_skips_placeholders_inside_quotes():
+    """A `?` in a string literal is not a parameter."""
+    from kpi_engine.runlog import render_bound_sql
+
+    sql = "SELECT 'what?' AS q, x FROM t WHERE id = ?"
+    assert render_bound_sql(sql, [7]) == "SELECT 'what?' AS q, x FROM t WHERE id = 7"

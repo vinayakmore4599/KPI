@@ -3,7 +3,8 @@
 What this file provides
     start_run / end_run — one timestamped log file per compute() or validate().
     traced — decorator that records invoke + return for pipeline functions.
-    log_sql — writes the full DuckDB query and bound parameters, never truncated.
+    log_sql — writes the DuckDB query, bound parameters, and the same SQL with
+    values inlined so it can be copied into DuckDB. Never truncated.
     log_context — writes the inbound context JSON in full, never truncated.
     log_step / log_measure — readable banners for orchestrator phases.
 
@@ -14,7 +15,9 @@ Where it is used
 Capabilities
     Default directory is ./logs (or $KPI_ENGINE_LOG_DIR). Disable with
     KPI_ENGINE_LOG=0 when no log_dir is passed. A host session is never
-    described beyond its type. SQL and the inbound context are always written in full.
+    described beyond its type. SQL (parameterized and inlined) and the inbound
+    context are always written in full. Percent signs in SQL or JSON cannot drop
+    a log line.
 
 When to use
     Change formatting here, not by scattering print() in core modules.
@@ -39,6 +42,26 @@ _PREVIEW_ROWS = 20
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 _FILE_COUNTER = itertools.count(1)
 _active: ContextVar["_Run | None"] = ContextVar("kpi_runlog", default=None)
+
+
+class _SafeFormatter(logging.Formatter):
+    """Format a record without re-interpreting % inside the message.
+
+    The default logging formatter does `fmt % record.__dict__` after the
+    message is already interpolated. A `%` in SQL or JSON then drops the line.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Timestamp, level, message, and optional traceback — message is literal."""
+        record.message = record.getMessage()
+        stamp = self.formatTime(record, self.datefmt)
+        line = f"{stamp}.{int(record.msecs):03d} {record.levelname} {record.message}"
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = self.formatException(record.exc_info)
+            if record.exc_text:
+                line = f"{line}\n{record.exc_text}"
+        return line
 
 
 class _Run:
@@ -91,9 +114,7 @@ def start_run(
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
     handler = logging.FileHandler(path, encoding="utf-8")
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s.%(msecs)03d %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S")
-    )
+    handler.setFormatter(_SafeFormatter(datefmt="%Y-%m-%d %H:%M:%S"))
     logger.addHandler(handler)
     _active.set(_Run(path, logger, handler))
     info(
@@ -145,17 +166,71 @@ def log_sql(
     model: Any = None,
     row_level: bool = False,
 ) -> None:
-    """Write the entire DuckDB query and every bound parameter. Never truncated."""
-    info(
-        "---------- SQL model=%s row_level=%s ----------\n%s\n---------- PARAMS (%s) ----------",
-        model,
-        row_level,
+    """Write the DuckDB query, every parameter, and the inlined statement. Never truncated."""
+    bound = render_bound_sql(sql, params)
+    lines = [
+        f"---------- SQL model={model} row_level={row_level} ----------",
         sql,
-        len(params),
-    )
+        f"---------- PARAMS ({len(params)}) ----------",
+    ]
     for i, value in enumerate(params):
-        info("  [%s] %s", i, _param(value))
-    info("---------- END SQL ----------")
+        lines.append(f"  [{i}] {_param(value)}")
+    lines.append("---------- SQL BOUND (values inlined; copy into DuckDB) ----------")
+    lines.append(bound)
+    lines.append("---------- END SQL ----------")
+    info("%s", "\n".join(lines))
+
+
+def render_bound_sql(sql: str, params: tuple[Any, ...] | list[Any] = ()) -> str:
+    """Replace each `?` placeholder with a SQL literal. Log-only; never executed.
+
+    Quoted strings and identifiers are left alone so a `?` inside a CTE comment
+    or a string does not consume a parameter.
+    """
+    values = list(params)
+    out: list[str] = []
+    i = 0
+    n = len(sql)
+    qi = 0
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            j = i + 1
+            while j < n:
+                if sql[j] == "'" and j + 1 < n and sql[j + 1] == "'":
+                    j += 2
+                    continue
+                if sql[j] == "'":
+                    j += 1
+                    break
+                j += 1
+            out.append(sql[i:j])
+            i = j
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if sql[j] == '"' and j + 1 < n and sql[j + 1] == '"':
+                    j += 2
+                    continue
+                if sql[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            out.append(sql[i:j])
+            i = j
+            continue
+        if ch == "?":
+            if qi < len(values):
+                out.append(_sql_literal(values[qi]))
+                qi += 1
+            else:
+                out.append("?")
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def log_measure(cut: str, key: str, op: str, combo: dict[str, Any], value: Any) -> None:
@@ -320,6 +395,24 @@ def _param(value: Any) -> str:
     if isinstance(value, (date, datetime)):
         return value.isoformat()
     return repr(value)
+
+
+def _sql_literal(value: Any) -> str:
+    """DuckDB literal for a bound parameter. Used only when inlining SQL for the log."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, datetime):
+        return f"TIMESTAMP '{value.isoformat(sep=' ')}'"
+    if isinstance(value, date):
+        return f"DATE '{value.isoformat()}'"
+    text = str(value).replace("'", "''")
+    return f"'{text}'"
 
 
 def _as_frame(value: Any) -> Any | None:

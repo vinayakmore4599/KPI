@@ -68,7 +68,7 @@ Each `compute` / `validate` writes a new file under `logs/` (or `$KPI_ENGINE_LOG
 
 `logs/kpi-compute-<kpi_id>-<YYYYMMDD-HHMMSS-ffffff>-<seq>.log`
 
-The file traces every pipeline step (adapt, bind, extract, calculate), logs the **full DuckDB SQL** plus bound parameters, and records each function invoke/return. Pass `log_dir=` to override the folder. Set `KPI_ENGINE_LOG=0` to disable.
+The file traces every pipeline step (adapt, bind, extract, calculate), logs the **full DuckDB SQL** (parameterized, each bound value, and the same statement with values inlined so you can paste it into DuckDB), and records each function invoke/return. Pass `log_dir=` to override the folder. Set `KPI_ENGINE_LOG=0` to disable.
 
 `business_date` on the context is ignored. The **selected month** in filters is the anchor.
 

@@ -31,6 +31,14 @@ import yaml
 from kpi_engine.dates import month_range_inclusive
 
 
+@pytest.fixture(autouse=True)
+def _redirect_kpi_logs(tmp_path_factory, monkeypatch):
+    """Keep per-run log files out of the repo during tests."""
+    root = tmp_path_factory.getbasetemp() / "kpi_engine_logs"
+    root.mkdir(exist_ok=True)
+    monkeypatch.setenv("KPI_ENGINE_LOG_DIR", str(root))
+
+
 @pytest.fixture
 def config_dir() -> Path:
     """Repo-root config/ (kpis and models YAML)."""

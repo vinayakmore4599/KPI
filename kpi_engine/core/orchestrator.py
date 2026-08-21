@@ -45,6 +45,17 @@ from kpi_engine.core.time_planner import plan_time
 from kpi_engine.dates import iso_period
 from kpi_engine.exceptions import KPIEngineError
 from kpi_engine.platform import acquire_connection
+from kpi_engine.runlog import (
+    end_run,
+    exception as log_exception,
+    log_context,
+    log_sql,
+    log_step,
+    peek_kpi_id,
+    peek_request_id,
+    start_run,
+    traced,
+)
 
 
 def compute(
@@ -52,16 +63,46 @@ def compute(
     *,
     config_dir: str | Path | None = None,
     connection: Any | None = None,
+    log_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run the full KPI request: bind YAML, extract in DuckDB, calculate in Pandas, return JSON."""
+    start_run(
+        "compute",
+        kpi_id=peek_kpi_id(context),
+        request_id=peek_request_id(context),
+        log_dir=log_dir,
+    )
+    try:
+        return _compute(
+            context, config_dir=config_dir, connection=connection
+        )
+    except Exception:
+        log_exception("compute failed")
+        raise
+    finally:
+        end_run()
+
+
+def _compute(
+    context: dict[str, Any],
+    *,
+    config_dir: str | Path | None,
+    connection: Any | None,
+) -> dict[str, Any]:
+    """Pipeline body. Logging for this request is already open."""
+    log_step("START compute")
+    log_context(context)
     root = Path(config_dir) if config_dir else default_config_dir()
+    log_step("adapt")
     request = adapt(context)
+    log_step("bind")
     kpi = load_kpi(request.kpi_id, root)
     assert_measure_keys(kpi, request.measure_keys)
     models = _models_for_kpi(kpi, root)
     datasets = {}
     for model in models:
         datasets.update(bind_datasets(model, request))
+    log_step("plan_time")
     time_plan, remaining_filters = plan_time(request, kpi)
     emitted = emitted_cuts(kpi)
     grain = finest_grain(kpi, emitted)
@@ -70,6 +111,7 @@ def compute(
         extract_columns |= columns_for_source_filters(model, kpi, grain, datasets)
     bound = bind_filters(remaining_filters, kpi, datasets, extract_columns)
     source_filters, deferred = split_for_duckdb(bound, emitted)
+    log_step("extract")
     con, owned = acquire_connection(connection)
     try:
         monthly, detail, sqls = _extract_all(
@@ -86,6 +128,7 @@ def compute(
         if owned:
             con.close()
     requested = request.measure_keys or tuple(m.key for m in kpi.measures)
+    log_step("calculate")
     rows, trend_axes = compute_cuts(
         monthly,
         kpi=kpi,
@@ -96,8 +139,9 @@ def compute(
         detail=detail,
     )
     rows = _sort_rows(rows, kpi)
+    log_step("paginate")
     page_rows, pagination = _paginate(rows, request)
-    return {
+    result = {
         "kpi_id": kpi.kpi_id,
         "request_id": request.request_id,
         "parameters": {
@@ -114,14 +158,44 @@ def compute(
         "sqls": sqls,
         "rows": page_rows,
     }
+    log_step(
+        "END compute",
+        kpi_id=kpi.kpi_id,
+        row_count=len(page_rows),
+        sql_count=len(sqls),
+        pagination=pagination,
+    )
+    return result
 
 
 def validate(
     context: dict[str, Any],
     *,
     config_dir: str | Path | None = None,
+    log_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Bind and plan without scanning ADLS. Returns the compiled DuckDB SQL."""
+    start_run(
+        "validate",
+        kpi_id=peek_kpi_id(context),
+        request_id=peek_request_id(context),
+        log_dir=log_dir,
+    )
+    try:
+        return _validate(context, config_dir=config_dir)
+    except Exception:
+        log_exception("validate failed")
+        raise
+    finally:
+        end_run()
+
+
+def _validate(
+    context: dict[str, Any], *, config_dir: str | Path | None
+) -> dict[str, Any]:
+    """Validate body. Logging for this request is already open."""
+    log_step("START validate")
+    log_context(context)
     root = Path(config_dir) if config_dir else default_config_dir()
     request = adapt(context)
     kpi = load_kpi(request.kpi_id, root)
@@ -167,9 +241,10 @@ def validate(
                 row_level=row_level,
                 filter_columns=filter_cols,
             )
+            log_sql(sql, params, model=model.model_id, row_level=row_level)
             sqls.append(sql)
             param_count += len(params)
-    return {
+    result = {
         "ok": True,
         "kpi_id": kpi.kpi_id,
         "anchor": iso_period(time_plan.anchor, kpi.time),
@@ -179,6 +254,8 @@ def validate(
         "sqls": sqls,
         "param_count": param_count,
     }
+    log_step("END validate", kpi_id=kpi.kpi_id, sql_count=len(sqls), param_count=param_count)
+    return result
 
 
 def _models_for_kpi(kpi: KpiSpec, root: Path) -> list[ModelSpec]:
@@ -203,6 +280,7 @@ def _model_filter_columns(
     return cols
 
 
+@traced
 def _extract_all(
     *,
     models: list[ModelSpec],
@@ -305,6 +383,7 @@ def _sort_rows(rows: list[dict[str, Any]], kpi: KpiSpec) -> list[dict[str, Any]]
     return sorted(rows, key=key)
 
 
+@traced
 def _paginate(
     rows: list[dict[str, Any]], request: AdaptedRequest
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:

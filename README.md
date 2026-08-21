@@ -67,6 +67,12 @@ result = compute(context, connection=platform_connection)
 result = main(context, connection=platform_connection)
 ```
 
+Each `compute` / `validate` writes a new file under `logs/` (or `$KPI_ENGINE_LOG_DIR`):
+
+`logs/kpi-compute-<kpi_id>-<YYYYMMDD-HHMMSS-ffffff>-<seq>.log`
+
+The file traces every pipeline step (adapt, bind, extract, calculate), logs the **full DuckDB SQL** plus bound parameters, and records each function invoke/return. Pass `log_dir=` to override the folder. Set `KPI_ENGINE_LOG=0` to disable.
+
 `business_date` on the context is ignored. The **selected month** in filters is the anchor.
 
 ---

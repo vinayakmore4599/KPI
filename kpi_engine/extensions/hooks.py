@@ -22,6 +22,7 @@ from collections.abc import Callable
 from typing import Any
 
 from kpi_engine.exceptions import CatalogError
+from kpi_engine.runlog import traced
 
 Hook = Callable[..., Any]
 
@@ -38,6 +39,7 @@ def unregister(name: str) -> None:
     REGISTRY.pop(name, None)
 
 
+@traced
 def run(name: str, *args: Any, **kwargs: Any) -> Any:
     """Execute an allowlisted hook by name, or fail if it was never registered."""
     if name not in REGISTRY:

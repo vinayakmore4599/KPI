@@ -1,7 +1,7 @@
 """Thin UDF shim for Sotif / kpi_id routing.
 
 What this file provides
-    main(context, config_dir=None, connection=None) → kpi_engine.compute.
+    main(context, config_dir=None, connection=None, log_dir=None) → kpi_engine.compute.
 
 Where it is used
     Existing metadata UDF (udf_name sotif, module_path udfs.sotif.main).
@@ -29,6 +29,7 @@ def main(
     *,
     config_dir: str | None = None,
     connection: Any | None = None,
+    log_dir: str | None = None,
 ) -> dict[str, Any]:
     """UDF entry the metadata layer calls. Forwards the context to the generic engine."""
-    return compute(context, config_dir=config_dir, connection=connection)
+    return compute(context, config_dir=config_dir, connection=connection, log_dir=log_dir)

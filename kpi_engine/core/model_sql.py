@@ -38,6 +38,7 @@ from kpi_engine.contracts import (
 )
 from kpi_engine.exceptions import BindError, FilterError, KPIEngineError
 from kpi_engine.identifiers import quote_ident, require_ident
+from kpi_engine.runlog import log_sql, traced
 
 
 _ADDITIVE = {"sum", "count", "min", "max", "avg"}
@@ -47,6 +48,7 @@ _PATH_TOKEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)_path")
 _SCAN_TOKEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)_scan")
 
 
+@traced
 def extract(
     *,
     model: ModelSpec,
@@ -70,6 +72,7 @@ def extract(
         row_level=row_level,
         filter_columns=filter_columns,
     )
+    log_sql(sql, params, model=model.model_id, row_level=row_level)
     con = connection
     own = False
     if con is None:

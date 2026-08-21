@@ -32,8 +32,10 @@ from kpi_engine.contracts import (
     Pagination,
 )
 from kpi_engine.exceptions import ContextError, FilterError
+from kpi_engine.runlog import traced
 
 
+@traced
 def adapt(context: dict[str, Any]) -> AdaptedRequest:
     """Parse the metadata context into a typed request. Does not load KPI YAML."""
     if not isinstance(context, dict):

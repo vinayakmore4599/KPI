@@ -33,8 +33,10 @@ from kpi_engine.dates import (
     truncate_period,
 )
 from kpi_engine.exceptions import TimePlanError
+from kpi_engine.runlog import traced
 
 
+@traced
 def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan, tuple[IncomingFilter, ...]]:
     """Claim the time filter as anchor, compute required_span, return remaining filters."""
     claimed, rest = claim_month_filter(request.filters, kpi.time.filter_code)

@@ -23,8 +23,10 @@ from __future__ import annotations
 
 from kpi_engine.contracts import BoundFilter, CutSpec, DatasetBinding, IncomingFilter, KpiSpec, ModelSpec
 from kpi_engine.exceptions import FilterError
+from kpi_engine.runlog import traced
 
 
+@traced
 def columns_for_source_filters(
     model: ModelSpec,
     kpi: KpiSpec,
@@ -46,6 +48,7 @@ def columns_for_source_filters(
     return cols
 
 
+@traced
 def bind_filters(
     remaining: tuple[IncomingFilter, ...],
     kpi: KpiSpec,
@@ -75,6 +78,7 @@ def bind_filters(
     return tuple(bound)
 
 
+@traced
 def split_for_duckdb(
     bound: tuple[BoundFilter, ...], emitted: tuple[CutSpec, ...]
 ) -> tuple[tuple[BoundFilter, ...], tuple[BoundFilter, ...]]:
@@ -90,6 +94,7 @@ def split_for_duckdb(
     return tuple(source), tuple(deferred)
 
 
+@traced
 def apply_cut_filters(frame, cut: CutSpec, deferred: tuple[BoundFilter, ...]):
     """Apply deferred IN filters on a Pandas frame, skipping this cut's ignore_filters."""
     work = frame

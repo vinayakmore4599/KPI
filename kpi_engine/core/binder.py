@@ -43,6 +43,7 @@ from kpi_engine.contracts import (
 )
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import require_ident
+from kpi_engine.runlog import traced
 
 
 def default_config_dir() -> Path:
@@ -54,6 +55,7 @@ def default_config_dir() -> Path:
     return here.parents[1] / "config"
 
 
+@traced
 def load_kpi(kpi_id: int | str, config_dir: Path | None = None) -> KpiSpec:
     """Load and parse config/kpis/<kpi_id>.yaml."""
     root = config_dir or default_config_dir()
@@ -64,6 +66,7 @@ def load_kpi(kpi_id: int | str, config_dir: Path | None = None) -> KpiSpec:
     return _parse_kpi(raw, expected_id=kpi_id)
 
 
+@traced
 def load_model(model_id: str, config_dir: Path | None = None) -> ModelSpec:
     """Load and parse config/models/<model_id>.yaml."""
     root = config_dir or default_config_dir()
@@ -73,6 +76,7 @@ def load_model(model_id: str, config_dir: Path | None = None) -> ModelSpec:
     return _parse_model(_read_yaml(path), expected_id=model_id)
 
 
+@traced
 def bind_datasets(
     model: ModelSpec, request: AdaptedRequest
 ) -> dict[str, DatasetBinding]:
@@ -124,6 +128,7 @@ def _path_defaults(model: ModelSpec) -> dict[str, tuple[str, str]]:
     return out
 
 
+@traced
 def assert_measure_keys(kpi: KpiSpec, requested: tuple[str, ...]) -> None:
     """Fail if the context asked for a measure_key not declared in KPI YAML."""
     known = {m.key for m in kpi.measures}

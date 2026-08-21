@@ -27,6 +27,7 @@ from typing import Any, Callable
 import duckdb
 
 from kpi_engine.exceptions import KPIEngineError
+from kpi_engine.runlog import traced
 
 # Copy-time: set this to the platform helper, e.g. "acme.runtime.duckdb:get_connection".
 # Runtime override: env KPI_ENGINE_DUCKDB_GETTER=module.path:function_name
@@ -47,6 +48,7 @@ def get_duckdb_connection() -> Any:
     return con
 
 
+@traced
 def acquire_connection(connection: Any | None = None) -> tuple[Any, bool]:
     """Return (connection, owned). owned=True only for the local test fallback.
 

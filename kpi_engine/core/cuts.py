@@ -22,8 +22,10 @@ from __future__ import annotations
 
 from kpi_engine.contracts import CutSpec, KpiSpec
 from kpi_engine.exceptions import BindError
+from kpi_engine.runlog import traced
 
 
+@traced
 def emitted_cuts(kpi: KpiSpec) -> tuple[CutSpec, ...]:
     """Walk default_cut and also_emit to get the full set of cuts for this request."""
     by_name = {c.name: c for c in kpi.cuts}
@@ -49,6 +51,7 @@ def cut_group_dims(cut: CutSpec, time_column: str) -> tuple[str, ...]:
     return tuple(c for c in cut.group_by if c != time_column)
 
 
+@traced
 def finest_grain(kpi: KpiSpec, emitted: tuple[CutSpec, ...]) -> tuple[str, ...]:
     """DuckDB GROUP BY: time column plus the union of dimensions, cuts, and join keys."""
     dims: list[str] = []

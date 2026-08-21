@@ -43,10 +43,12 @@ from kpi_engine.core.filters import apply_cut_filters
 from kpi_engine.core.model_sql import NON_ADDITIVE
 from kpi_engine.dates import add_periods, iso_period, period_range_inclusive
 from kpi_engine.exceptions import CatalogError, KPIEngineError
+from kpi_engine.runlog import log_measure, traced
 
 TREND_CELL_CAP = 50_000
 
 
+@traced
 def densify(
     frame: pd.DataFrame,
     *,
@@ -84,6 +86,7 @@ def densify(
     return merged
 
 
+@traced
 def compute_cuts(
     monthly: pd.DataFrame,
     *,
@@ -159,6 +162,11 @@ def compute_cuts(
                     row[key] = values
                 else:
                     row[key] = value
+                combo_vals = {
+                    dim: _json_value(combo[dim]) if dim in combo.index else None
+                    for dim in group_dims
+                }
+                log_measure(cut.name, key, spec.kind, combo_vals, row[key])
             rows.append(row)
     return rows, trend_axes
 

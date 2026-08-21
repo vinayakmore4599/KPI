@@ -125,6 +125,8 @@ Keep calling `udfs.sotif.main(context)` (or `kpi_engine.compute`). **Do not** ad
 
 DuckDB/ADLS stay on the platform. Set `kpi_engine.platform.HOST_DUCKDB_GETTER` to the existing helper (`module.path:function_name`) when you copy this tree in. The engine reuses that session and does not `duckdb.connect()` in production. Context `datasets.*.table_type` chooses `delta_scan` (DELTA) or `read_parquet` (PARQUET). In SQL models prefer `$alias_scan` so the same YAML works for both.
 
+Each `compute` / `validate` writes `logs/kpi-<kind>-<kpi_id>-<timestamp>.log` with every step, the full SQL, and function invoke/return. Override with `log_dir=`; disable with `KPI_ENGINE_LOG=0`.
+
 ---
 
 ## 3. Checklist (standard KPI)

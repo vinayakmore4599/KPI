@@ -20,8 +20,10 @@ import pandas as pd
 
 from kpi_engine.contracts import KpiSpec
 from kpi_engine.exceptions import BindError
+from kpi_engine.runlog import traced
 
 
+@traced
 def join_monthly(
     frames: dict[str, pd.DataFrame], kpi: KpiSpec
 ) -> pd.DataFrame:

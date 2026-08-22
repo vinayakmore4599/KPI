@@ -60,8 +60,12 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, t
             f"Month filter {claimed.code!r} must contain exactly one value "
             f"(got {len(claimed.values)})."
         )
-    raw_anchor = parse_date(claimed.values[0])
-    if kpi.time.grain == "day" and len(str(claimed.values[0]).strip()) < 10:
+    raw_anchor = parse_date(claimed.values[0], fmt=kpi.time.format)
+    if (
+        kpi.time.grain == "day"
+        and kpi.time.format is None
+        and len(str(claimed.values[0]).strip()) < 10
+    ):
         raise TimePlanError(
             f"time.grain=day requires a full date YYYY-MM-DD on {claimed.code!r}."
         )
@@ -131,7 +135,13 @@ def lookback_for(
     """
     if output.key in seen:
         return 0
-    if output.kind == "dimension":
+    if output.kind in {"dimension", "constant"}:
+        return 0
+    if output.kind == "rank":
+        if output.of and output.of in by_key:
+            return lookback_for(
+                by_key[output.of], by_key, time, anchor=anchor, seen=seen | {output.key}
+            )
         return 0
     if output.kind == "point":
         if not output.offset:

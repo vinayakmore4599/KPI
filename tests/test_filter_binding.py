@@ -41,6 +41,22 @@ def test_filter_named_like_a_column_binds_without_any_mapping(parquet_path, extr
     assert {row["reason_code"] for row in result["rows"]} == {"LATE_SUPPLIER"}
 
 
+def test_region_and_reason_code_spellings_are_the_same(parquet_path, extra_config):
+    """Region / region and Reason_code / reason_code bind and ignore the same way."""
+    write_yaml(extra_config / "kpis" / "9820.yaml", minimal_kpi(9820))
+    ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"], kpi_id=9820)
+    ctx["filters"]["Region"] = {"values": ["NA"], "input_text": "simple"}
+    ctx["filters"]["Reason_Code"] = {"values": ["LATE_SUPPLIER"], "input_text": "simple"}
+    planned = validate(ctx, config_dir=extra_config)
+    sql = " ".join(planned["sql"].split())
+    assert '"reason_code" IN (?)' in sql
+    assert '"region" IN' not in sql
+    result = compute(ctx, config_dir=extra_config)
+    assert {row["reason_code"] for row in result["rows"]} == {"LATE_SUPPLIER"}
+    r_regions = {row["region"] for row in result["rows"] if row["output_cut"] == "R"}
+    assert r_regions == {"NA"}
+
+
 def test_filter_codes_are_matched_ignoring_case_and_spaces(parquet_path, extra_config):
     """`Supplier Name`, `supplier name`, and `supplier_name` are the same filter."""
     write_yaml(extra_config / "kpis" / "9801.yaml", minimal_kpi(9801))

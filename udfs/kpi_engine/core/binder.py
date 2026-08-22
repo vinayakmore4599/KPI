@@ -408,12 +408,21 @@ def _parse_time(raw: Any) -> TimeSpec | None:
     fiscal_start = 4 if raw_fiscal_start is None else int(raw_fiscal_start)
     if fiscal_start < 1 or fiscal_start > 12:
         raise BindError("time.fiscal_start_month must be 1-12.")
+    raw_format = raw.get("format")
+    time_format = str(raw_format).strip() if raw_format else None
+    if time_format == "":
+        time_format = None
+    if time_format:
+        from kpi_engine.dates import resolve_time_format
+
+        resolve_time_format(time_format)
     return TimeSpec(
         column=require_ident(str(column), what="time.column"),
         grain=grain,  # type: ignore[arg-type]
         filter_code=filter_code,
         calendar=calendar,
         fiscal_start_month=fiscal_start,
+        format=time_format,
     )
 
 
@@ -425,6 +434,8 @@ def measure_dependencies(spec: OutputSpec) -> tuple[str, ...]:
         if spec.operands:
             return spec.operands
         return tuple(n for n in (spec.left, spec.right) if n)
+    if spec.kind == "rank" and spec.of:
+        return (spec.of,)
     return ()
 
 
@@ -442,11 +453,20 @@ def _assert_measure_graph(
                 f"measures.{spec.key} op={spec.kind} requires `of:` naming the base "
                 f"measure it aggregates. Declared base_measures: {sorted(known_bases)}."
             )
+        if spec.kind == "rank" and not spec.of:
+            raise BindError(f"measures.{spec.key} op=rank requires `of:`.")
         if spec.kind in {"point", "window", "trend", "hook"} and spec.of:
             if spec.of not in known_bases:
                 raise BindError(
                     f"measures.{spec.key} of={spec.of!r} is not a base measure. "
                     f"Declared base_measures: {sorted(known_bases)}."
+                )
+        if spec.kind == "rank" and spec.of:
+            if spec.of not in by_key and spec.of not in known_bases:
+                raise BindError(
+                    f"measures.{spec.key} of={spec.of!r} is not a measure or base "
+                    f"measure. Declared measures: {sorted(by_key)}; "
+                    f"base_measures: {sorted(known_bases)}."
                 )
         if spec.kind == "dimension" and spec.key not in dimensions:
             raise BindError(
@@ -454,11 +474,14 @@ def _assert_measure_graph(
                 f"dimensions: {sorted(dimensions)}."
             )
         for name in measure_dependencies(spec):
-            if name not in by_key:
-                raise BindError(
-                    f"measures.{spec.key} references unknown measure {name!r}. "
-                    f"Valid keys: {sorted(by_key)}."
-                )
+            if name in by_key:
+                continue
+            if spec.kind == "rank" and name in known_bases:
+                continue
+            raise BindError(
+                f"measures.{spec.key} references unknown measure {name!r}. "
+                f"Valid keys: {sorted(by_key)}."
+            )
 
     state: dict[str, int] = {}
 
@@ -475,7 +498,8 @@ def _assert_measure_graph(
         state[key] = 1
         trail.append(key)
         for name in measure_dependencies(by_key[key]):
-            walk(name, trail)
+            if name in by_key:
+                walk(name, trail)
         trail.pop()
         state[key] = 2
 
@@ -550,9 +574,28 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
     if not isinstance(raw, dict):
         raise BindError(f"measures.{key} must be an object.")
     kind = raw.get("kind") or raw.get("op")
-    if kind not in {"point", "window", "arithmetic", "trend", "dimension", "hook", "fn", "expr"}:
+    if kind not in {
+        "point",
+        "window",
+        "arithmetic",
+        "trend",
+        "dimension",
+        "hook",
+        "fn",
+        "expr",
+        "constant",
+        "rank",
+    }:
         raise BindError(f"measures.{key} has unknown op/kind {kind!r}.")
-    if raw.get("fn") is not None and kind in {"point", "window", "trend", "dimension", "expr"}:
+    if raw.get("fn") is not None and kind in {
+        "point",
+        "window",
+        "trend",
+        "dimension",
+        "expr",
+        "constant",
+        "rank",
+    }:
         raise BindError(
             f"measures.{key} op={kind} ignores `fn:`. "
             "Use op: fn with inputs:, or op: arithmetic, or op: hook."
@@ -667,6 +710,27 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
                 f"measures.{key} names unknown hook {hook!r}. "
                 "Register it in kpi_engine.extensions.hooks.REGISTRY."
             )
+    constant = None
+    if kind == "constant":
+        if raw.get("value") is None:
+            raise BindError(f"measures.{key} op=constant requires `value:`.")
+        try:
+            constant = float(raw["value"])
+        except (TypeError, ValueError) as exc:
+            raise BindError(
+                f"measures.{key} op=constant value must be a number (got {raw.get('value')!r})."
+            ) from exc
+    rank_order = None
+    rank_group_by: tuple[str, ...] = ()
+    if kind == "rank":
+        order = str(raw.get("order") or "desc").strip().lower()
+        if order not in {"asc", "desc"}:
+            raise BindError(f"measures.{key} op=rank order must be asc or desc.")
+        rank_order = order
+        raw_group = raw.get("group_by") or []
+        if not isinstance(raw_group, (list, tuple)):
+            raise BindError(f"measures.{key} op=rank group_by must be a list.")
+        rank_group_by = tuple(require_ident(str(c), what="rank group_by") for c in raw_group)
     return OutputSpec(
         key=str(key),
         kind=kind,
@@ -685,6 +749,9 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
         inputs=inputs,
         input_params=input_params,
         expr=expr,
+        constant=constant,
+        rank_order=rank_order,
+        rank_group_by=rank_group_by,
     )
 
 

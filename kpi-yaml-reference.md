@@ -98,6 +98,7 @@ The practical consequences:
 | `filter_code` | context filter key | required if `time:` is present | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month` — each KPI names its own filter. |
 | `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal affects `quarter` and `year` only |
 | `fiscal_start_month` | 1–12 | `4` | First month of the fiscal year |
+| `format` | `yyyy-mm-dd`, `yyyy-mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, or a strptime string | ISO `YYYY-MM` / `YYYY-MM-DD` | How the physical column and the context time filter are stored (`062026` → `format: mmyyyy`) |
 
 Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Snapshot KPIs may only use `point` (no offset), `dimension`, `arithmetic`, and `hook` without lookback. Windows, trends, and period offsets require `time:`.
 
@@ -105,8 +106,9 @@ Rules the engine enforces:
 
 - When `time:` is declared, that filter must carry **exactly one** value. Two values or zero values is an error, not a range.
 - A missing time filter on a time-based KPI is an error. The engine never defaults to "latest data" or to `business_date`.
-- `grain: day` requires a full `YYYY-MM-DD`. A `YYYY-MM` value is rejected.
-- Truncation happens in SQL (`date_trunc`), so a mid-period date anchors on the period start.
+- `grain: day` requires a full `YYYY-MM-DD` unless `time.format` says otherwise.
+- Truncation happens in SQL (`date_trunc` after the column is parsed with `time.format`), so a mid-period date anchors on the period start.
+- A `kind: sql` model may contain any number of CTEs. Context IN filters and the time range are applied on the **wrapper around the final SELECT**, not inside earlier CTEs. `Region` / `region` / `Reason_code` / `reason_code` are the same name.
 
 Fiscal example — with `fiscal_start_month: 4`, March 2026 belongs to fiscal year starting **2025-04-01** and to the fiscal quarter starting **2026-01-01**.
 
@@ -324,7 +326,30 @@ trend_12m:
 - Trends are emitted **only on the default cut** unless `cuts:` lists more. This is deliberate — a trend on a high-cardinality cut multiplies the payload.
 - Guardrail: rows × array length may not exceed **50,000 cells** per cut, otherwise the request fails and asks you to narrow `cuts`.
 
-`cuts:` is only honoured for trend measures; on other ops it is ignored.
+`cuts:` is honoured for **trend** and **rank**. On other ops it is ignored.
+
+### 5.3a `constant` — a literal number
+
+```yaml
+target:
+  op: constant
+  value: 0.98
+```
+
+The same scalar on every cut combo. Use it as `left` / `right` / `inputs` / `expr` for ratios against a goal. No extract and no lookback.
+
+### 5.3b `rank` — rank values on a cut
+
+```yaml
+reason_code_rank:
+  op: rank
+  of: current_value          # or a base measure (anchor point)
+  group_by: [reason_code]    # Reason_Code matches reason_code
+  order: desc                # desc (default) or asc
+  cuts: [G]
+```
+
+Pandas `RANK()` after the cut (ties share a rank; the next rank skips). Rank is across the whole cut when `group_by` is omitted or equals that cut's keys. A **subset** of the cut keys restarts the rank inside each group. Null sources stay null. Defaults to `default_cut` unless `cuts:` lists more.
 
 ### 5.4 `arithmetic` — combine measures
 

@@ -11,8 +11,9 @@ Where it is used
 Capabilities
     Unmapped filters fail hard. Empty IN list matches nothing (FALSE), not
     invalid SQL. Filters listed in a cut's ignore_filters stay out of DuckDB
-    so global cuts can still see all regions. On SQL/CTE models, only columns
-    declared in output_schema (the model SELECT) can be IN-filtered in DuckDB.
+    so global cuts can still see all regions. SQL and physical models share
+    the same bind/split rules. Names match after folding case/spaces
+    (Region = region, Reason_code = reason_code).
 
 When to use
     Change mapping rules if metadata mappings change. Hierarchy (heir) is
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 from kpi_engine.contracts import BoundFilter, CutSpec, DatasetBinding, IncomingFilter, KpiSpec, ModelSpec
 from kpi_engine.exceptions import FilterError
+from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.runlog import traced
 
 
@@ -33,11 +35,11 @@ def columns_for_source_filters(
     grain: tuple[str, ...],
     datasets: dict[str, DatasetBinding],
 ) -> set[str]:
-    """Columns DuckDB may IN-filter: model SELECT (output_schema) or physical table columns.
+    """Columns DuckDB may IN-filter: KPI grain/dims, output_schema, and dataset columns.
 
-    SQL models declare their SELECT as output_schema. Dim columns that exist only
-    inside a CTE (eligible, weight, …) are not filterable on the wrapped query.
-    Physical models expose every context dataset column.
+    SQL models wrap the whole CTE script; filters apply on that final SELECT.
+    Physical models expose every context dataset column. No exclusive
+    output_schema-only set — KPI-named and mapped columns stay filterable.
     """
     cols = set(grain) | set(kpi.dimensions)
     for measure in kpi.base_measures:
@@ -46,9 +48,9 @@ def columns_for_source_filters(
         cols.update(measure.columns)
         if measure.where is not None:
             cols.add(measure.where.column)
-    if model.kind == "sql" and model.output_schema:
-        cols.update(model.output_schema)
-        return cols
+    cols.update(model.output_schema)
+    if kpi.time is not None:
+        cols.add(kpi.time.column)
     for dataset in datasets.values():
         cols.update(dataset.columns)
     return cols
@@ -66,8 +68,8 @@ def bind_filters(
     bound: list[BoundFilter] = []
     for item in remaining:
         column = _resolve_column(item, mappings, kpi, extract_columns)
-        stage: str = "source" if column in extract_columns else "target"
-        if stage == "target":
+        canonical = match_name(column, extract_columns) or column
+        if match_name(canonical, extract_columns) is None:
             raise FilterError(
                 f"Filter {item.raw_key!r} does not bind to a source column. "
                 "Unmapped filters are a hard error."
@@ -75,7 +77,7 @@ def bind_filters(
         bound.append(
             BoundFilter(
                 code=item.code,
-                column=column,
+                column=canonical,
                 values=item.values,
                 stage="source",
                 input_text=item.input_text,
@@ -93,7 +95,12 @@ def split_for_duckdb(
     source: list[BoundFilter] = []
     deferred: list[BoundFilter] = []
     for item in bound:
-        if item.code in ignored or item.column in ignored or _norm(item.code) in ignored:
+        if (
+            item.code in ignored
+            or item.column in ignored
+            or norm_name(item.code) in ignored
+            or norm_name(item.column) in ignored
+        ):
             deferred.append(item)
         else:
             source.append(item)
@@ -104,21 +111,29 @@ def split_for_duckdb(
 def apply_cut_filters(frame, cut: CutSpec, deferred: tuple[BoundFilter, ...]):
     """Apply deferred IN filters on a Pandas frame, skipping this cut's ignore_filters."""
     work = frame
+    if work is None:
+        return work
     for item in deferred:
         if _is_ignored(cut, item):
             continue
-        if item.column not in work.columns:
+        col = match_name(item.column, work.columns)
+        if col is None:
             continue
         if not item.values:
             return work.iloc[0:0].copy()
-        work = work[work[item.column].isin(list(item.values))]
+        work = work[work[col].isin(list(item.values))]
     return work
 
 
 def _is_ignored(cut: CutSpec, item: BoundFilter) -> bool:
     """True if this cut lists the filter (by code or column) in ignore_filters."""
     names = _ignore_names(cut)
-    return item.code in names or item.column in names or _norm(item.code) in names
+    return (
+        item.code in names
+        or item.column in names
+        or norm_name(item.code) in names
+        or norm_name(item.column) in names
+    )
 
 
 def _ignore_names(cut: CutSpec) -> set[str]:
@@ -126,7 +141,7 @@ def _ignore_names(cut: CutSpec) -> set[str]:
     names: set[str] = set()
     for raw in cut.ignore_filters:
         names.add(raw)
-        names.add(_norm(raw))
+        names.add(norm_name(raw))
     return names
 
 
@@ -137,16 +152,16 @@ def _resolve_column(
     extract_columns: set[str],
 ) -> str:
     """Find the source column for a filter via mappings, YAML filter_map, or name match."""
-    mapped = mappings.get(_norm(item.code)) or mappings.get(_norm(item.raw_key))
+    mapped = mappings.get(norm_name(item.code)) or mappings.get(norm_name(item.raw_key))
     if mapped:
-        return mapped
-    yaml_map = {k.lower(): v for k, v in kpi.filter_map.items()}
-    if _norm(item.code) in yaml_map:
-        return yaml_map[_norm(item.code)]
-    if item.raw_key in extract_columns:
-        return item.raw_key
-    if item.code in extract_columns:
-        return item.code
+        return match_name(mapped, extract_columns) or mapped
+    yaml_map = {norm_name(k): v for k, v in kpi.filter_map.items()}
+    if norm_name(item.code) in yaml_map:
+        mapped = yaml_map[norm_name(item.code)]
+        return match_name(mapped, extract_columns) or mapped
+    hit = match_name(item.raw_key, extract_columns) or match_name(item.code, extract_columns)
+    if hit:
+        return hit
     raise FilterError(
         f"Filter {item.raw_key!r} has no column mapping and is not a source column."
     )
@@ -159,12 +174,7 @@ def _mapping_index(
     index: dict[str, str] = {}
     for dataset in datasets.values():
         for mapping in dataset.mappings:
-            index[_norm(mapping.filter_code)] = mapping.column_name
+            index[norm_name(mapping.filter_code)] = mapping.column_name
     for key, column in kpi.filter_map.items():
-        index[_norm(key)] = column
+        index[norm_name(key)] = column
     return index
-
-
-def _norm(value: str) -> str:
-    """Case-insensitive compare key (spaces become underscores)."""
-    return value.strip().lower().replace(" ", "_")

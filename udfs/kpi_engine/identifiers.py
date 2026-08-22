@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import re
+from collections.abc import Iterable
 from typing import Union
 
 from kpi_engine.exceptions import BindError
@@ -69,6 +70,20 @@ class Group:
 
 
 Expr = Union[Ident, Number, Unary, Binary, Group]
+
+
+def norm_name(value: str) -> str:
+    """Fold case, spaces, and underscores so Region / region / reason code match."""
+    return value.strip().lower().replace(" ", "_")
+
+
+def match_name(name: str, columns: Iterable[str]) -> str | None:
+    """Return the spelling already in `columns` whose folded name equals `name`."""
+    wanted = norm_name(name)
+    for col in columns:
+        if norm_name(str(col)) == wanted:
+            return str(col)
+    return None
 
 
 def require_ident(name: str, *, what: str = "identifier") -> str:

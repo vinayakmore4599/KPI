@@ -26,20 +26,33 @@ from typing import Any
 from kpi_engine.contracts import Offset, TimeSpec
 from kpi_engine.exceptions import TimePlanError
 
+_FORMAT_ALIASES: dict[str, str] = {
+    "yyyy-mm-dd": "%Y-%m-%d",
+    "yyyy-mm": "%Y-%m",
+    "yyyymmdd": "%Y%m%d",
+    "yyyymm": "%Y%m",
+    "mmyyyy": "%m%Y",
+    "mm-yyyy": "%m-%Y",
+    "dd-mm-yyyy": "%d-%m-%Y",
+    "dd/mm/yyyy": "%d/%m/%Y",
+}
 
-def parse_month(value: Any) -> date:
+
+def parse_month(value: Any, fmt: str | None = None) -> date:
     """Normalize `2026-08` or `2026-08-01` (or date/datetime) to first of month."""
-    parsed = parse_date(value)
+    parsed = parse_date(value, fmt=fmt)
     return date(parsed.year, parsed.month, 1)
 
 
-def parse_date(value: Any) -> date:
-    """Parse YYYY-MM, YYYY-MM-DD, date, or datetime to a DATE (day kept when present)."""
+def parse_date(value: Any, fmt: str | None = None) -> date:
+    """Parse a context or stored period using ISO defaults or `time.format`."""
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
         return value
     text = str(value).strip()
+    if fmt:
+        return _parse_with_format(text, fmt, original=value)
     if len(text) >= 10 and text[4] == "-" and text[7] == "-":
         try:
             return date(int(text[0:4]), int(text[5:7]), int(text[8:10]))
@@ -51,8 +64,70 @@ def parse_date(value: Any) -> date:
         except ValueError:
             pass
     raise TimePlanError(
-        f"Cannot parse date {value!r}. Expected YYYY-MM or YYYY-MM-DD."
+        f"Cannot parse date {value!r}. Expected YYYY-MM or YYYY-MM-DD, "
+        "or set time.format in the KPI YAML."
     )
+
+
+def resolve_time_format(fmt: str) -> tuple[str, int | None]:
+    """Return (strptime pattern, optional left-pad width) for a YAML time.format."""
+    raw = fmt.strip()
+    if not raw:
+        raise TimePlanError("time.format must not be empty.")
+    key = raw.lower().replace("_", "").replace(" ", "")
+    if key in _FORMAT_ALIASES:
+        pattern = _FORMAT_ALIASES[key]
+        return pattern, _strptime_pad_width(pattern)
+    if "%" in raw:
+        return raw, _strptime_pad_width(raw)
+    raise TimePlanError(
+        f"Unknown time.format {fmt!r}. Use yyyy-mm-dd, yyyy-mm, yyyymmdd, "
+        "yyyymm, mmyyyy, or a strptime string such as %d/%m/%Y."
+    )
+
+
+def duckdb_parse_time_sql(ident: str, fmt: str | None) -> str:
+    """DuckDB expression that turns a physical time column into a DATE."""
+    if not fmt:
+        return f"CAST({ident} AS DATE)"
+    pattern, width = resolve_time_format(fmt)
+    text = f"CAST({ident} AS VARCHAR)"
+    if width:
+        text = f"lpad({text}, {width}, '0')"
+    escaped = pattern.replace("'", "''")
+    return f"CAST(strptime({text}, '{escaped}') AS DATE)"
+
+
+def _parse_with_format(text: str, fmt: str, *, original: Any) -> date:
+    """strptime a string, left-padding digits when the format has a fixed width."""
+    pattern, width = resolve_time_format(fmt)
+    work = text
+    if width and work.isdigit():
+        work = work.zfill(width)
+    try:
+        parsed = datetime.strptime(work, pattern)
+    except ValueError as exc:
+        raise TimePlanError(
+            f"Cannot parse date {original!r} with time.format {fmt!r}."
+        ) from exc
+    return parsed.date()
+
+
+def _strptime_pad_width(pattern: str) -> int | None:
+    """Digit width for formats with only %Y/%m/%d (so 62026 pads to 062026)."""
+    width = 0
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "%" and i + 1 < len(pattern):
+            code = pattern[i + 1]
+            extra = {"Y": 4, "y": 2, "m": 2, "d": 2, "H": 2, "M": 2, "S": 2}.get(code)
+            if extra is None:
+                return None
+            width += extra
+            i += 2
+            continue
+        return None
+    return width or None
 
 
 def truncate_period(value: date, time: TimeSpec) -> date:

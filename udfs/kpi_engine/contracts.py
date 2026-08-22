@@ -28,7 +28,9 @@ from typing import Any, Literal
 AggName = Literal[
     "sum", "avg", "count", "count_distinct", "min", "max", "median", "percentile", "first", "last"
 ]
-OpName = Literal["point", "window", "arithmetic", "trend", "dimension", "hook", "fn", "expr"]
+OpName = Literal[
+    "point", "window", "arithmetic", "trend", "dimension", "hook", "fn", "expr", "constant", "rank"
+]
 GrainName = Literal["day", "month", "quarter", "year"]
 # Open set: any name registered in catalog.ops_impl.COLUMN_FNS.
 RowOpName = str
@@ -112,6 +114,7 @@ class TimeSpec:
     filter_code: str
     calendar: str = "gregorian"
     fiscal_start_month: int = 4
+    format: str | None = None
 
 
 @dataclass(frozen=True)
@@ -177,7 +180,7 @@ class Offset:
 
 @dataclass(frozen=True)
 class OutputSpec:
-    """One requestable measure (point, window, trend, arithmetic, fn, expr, hook, or dimension)."""
+    """One requestable measure (point, window, trend, arithmetic, fn, expr, hook, constant, rank, or dimension)."""
 
     key: str
     kind: OpName
@@ -196,6 +199,9 @@ class OutputSpec:
     inputs: tuple[str, ...] = ()
     input_params: tuple[str, ...] = ()
     expr: str | None = None
+    constant: float | None = None
+    rank_order: str | None = None
+    rank_group_by: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -44,6 +44,7 @@ from kpi_engine.core.filters import apply_cut_filters
 from kpi_engine.core.model_sql import NON_ADDITIVE
 from kpi_engine.dates import add_periods, iso_period, period_range_inclusive
 from kpi_engine.exceptions import CatalogError, KPIEngineError
+from kpi_engine.identifiers import norm_name
 from kpi_engine.runlog import log_measure, traced
 
 TREND_CELL_CAP = 50_000
@@ -128,10 +129,16 @@ def compute_cuts(
         trend_keys = [
             k
             for k in need
-            if measures[k].kind == "trend" and _trend_applies(measures[k], cut, kpi)
+            if measures[k].kind == "trend" and _cut_limited_applies(measures[k], cut, kpi)
+        ]
+        rank_keys = [
+            k
+            for k in need
+            if measures[k].kind == "rank" and _cut_limited_applies(measures[k], cut, kpi)
         ]
         _guard_trend_payload(len(combo_frame), trend_keys, measures, cut)
 
+        cut_rows: list[dict[str, Any]] = []
         for _, combo in combo_frame.iterrows():
             series = _combo_series(
                 cut_monthly, group_dims, combo, kpi.time.column if kpi.time else ""
@@ -148,7 +155,20 @@ def compute_cuts(
                     row[key] = row.get(key)
             for key in need:
                 spec = measures[key]
-                if spec.kind == "trend" and not _trend_applies(spec, cut, kpi):
+                if spec.kind in {"trend", "rank"} and not _cut_limited_applies(spec, cut, kpi):
+                    continue
+                if spec.kind == "rank":
+                    row[f"__rank_src_{key}"] = _rank_source(
+                        spec,
+                        series,
+                        kpi,
+                        plan,
+                        measures,
+                        cut_detail,
+                        combo,
+                        group_dims,
+                        memo,
+                    )
                     continue
                 value = evaluate(
                     spec,
@@ -172,7 +192,9 @@ def compute_cuts(
                     for dim in group_dims
                 }
                 log_measure(cut.name, key, spec.kind, combo_vals, row[key])
-            rows.append(row)
+            cut_rows.append(row)
+        _apply_ranks(cut_rows, rank_keys, measures, group_dims)
+        rows.extend(cut_rows)
     return rows, trend_axes
 
 
@@ -282,6 +304,8 @@ def _evaluate_uncached(
         if spec.kind == "fn":
             return call_measure_fn(spec.fn or "", values, spec.input_params)
         return call_measure_fn(spec.fn or "divide", values)
+    if spec.kind == "constant":
+        return spec.constant
     if spec.kind == "hook":
         from kpi_engine.extensions.hooks import run
 
@@ -289,6 +313,8 @@ def _evaluate_uncached(
         if not name:
             raise CatalogError(f"measures.{spec.key} op=hook requires `hook:`.")
         return run(name, series, kpi=kpi, plan=plan, spec=spec)
+    if spec.kind == "rank":
+        raise CatalogError(f"{spec.key} op=rank is assigned after every combo on the cut.")
     raise CatalogError(f"Cannot evaluate {spec.key} kind={spec.kind}.")
 
 
@@ -576,8 +602,111 @@ def _base(kpi: KpiSpec, name: str | None):
 
 def _trend_applies(spec: OutputSpec, cut: CutSpec, kpi: KpiSpec) -> bool:
     """Whether this trend should appear on this cut (default: default_cut only)."""
+    return _cut_limited_applies(spec, cut, kpi)
+
+
+def _cut_limited_applies(spec: OutputSpec, cut: CutSpec, kpi: KpiSpec) -> bool:
+    """Trend and rank default to default_cut unless measures.*.cuts lists more."""
     allowed = spec.cuts if spec.cuts is not None else (kpi.default_cut,)
     return cut.name in allowed
+
+
+def _rank_source(
+    spec: OutputSpec,
+    series: pd.DataFrame,
+    kpi: KpiSpec,
+    plan: TimePlan | None,
+    catalog: dict[str, OutputSpec],
+    detail: pd.DataFrame | None,
+    combo: pd.Series | None,
+    group_dims: list[str],
+    memo: dict[str, Any],
+) -> Any:
+    """Anchor value that this rank will order: another measure, or a base point."""
+    of = spec.of
+    if of and of in catalog:
+        return evaluate(
+            catalog[of],
+            series,
+            kpi,
+            plan,
+            catalog,
+            detail=detail,
+            combo=combo,
+            group_dims=group_dims,
+            memo=memo,
+        )
+    return evaluate(
+        OutputSpec(key=of or spec.key, kind="point", of=of),
+        series,
+        kpi,
+        plan,
+        catalog,
+        detail=detail,
+        combo=combo,
+        group_dims=group_dims,
+        memo=memo,
+    )
+
+
+def _apply_ranks(
+    cut_rows: list[dict[str, Any]],
+    rank_keys: list[str],
+    measures: dict[str, OutputSpec],
+    cut_dims: list[str],
+) -> None:
+    """Write SQL RANK() values onto cut rows (ties share a rank; next rank skips)."""
+    for key in rank_keys:
+        spec = measures[key]
+        src = f"__rank_src_{key}"
+        descending = (spec.rank_order or "desc") == "desc"
+        partition_keys = spec.rank_group_by
+        if {norm_name(n) for n in partition_keys} == {norm_name(n) for n in cut_dims}:
+            partition_keys = ()
+        partitions: dict[tuple[Any, ...], list[int]] = {}
+        for i, row in enumerate(cut_rows):
+            part = _rank_partition(row, partition_keys)
+            partitions.setdefault(part, []).append(i)
+        for indexes in partitions.values():
+            values = [cut_rows[i].get(src) for i in indexes]
+            ranks = _sql_rank(values, descending=descending)
+            for i, rank in zip(indexes, ranks):
+                cut_rows[i][key] = rank
+                cut_rows[i].pop(src, None)
+                log_measure(
+                    cut_rows[i].get("output_cut") or "",
+                    key,
+                    "rank",
+                    {dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+                    rank,
+                )
+
+
+def _rank_partition(row: dict[str, Any], group_by: tuple[str, ...]) -> tuple[Any, ...]:
+    """Partition key for rank; empty group_by is one list for the whole cut."""
+    if not group_by:
+        return ()
+    by_norm = {norm_name(str(k)): v for k, v in row.items()}
+    return tuple(by_norm.get(norm_name(name)) for name in group_by)
+
+
+def _sql_rank(values: list[Any], *, descending: bool) -> list[int | None]:
+    """RANK(): equal values share a rank; the next rank skips (1, 2, 2, 4)."""
+    ranked: list[int | None] = [None] * len(values)
+    order = [
+        (i, v)
+        for i, v in enumerate(values)
+        if v is not None and not (isinstance(v, float) and pd.isna(v))
+    ]
+    order.sort(key=lambda item: item[1], reverse=descending)
+    last_value: Any = object()
+    rank = 0
+    for pos, (i, value) in enumerate(order):
+        if pos == 0 or value != last_value:
+            rank = pos + 1
+            last_value = value
+        ranked[i] = rank
+    return ranked
 
 
 def _guard_trend_payload(

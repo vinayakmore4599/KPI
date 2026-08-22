@@ -15,7 +15,6 @@ When to use
 import pandas as pd
 
 from kpi_engine import compute, validate
-from kpi_engine.exceptions import FilterError
 from tests.conftest import find_row, make_context
 from tests.test_sql_cte_model import _CTE_SQL, _write_dims, _write_multi_model
 
@@ -71,8 +70,8 @@ def test_cte_select_columns_are_filtered_in_duckdb(parquet_path, extra_config, t
     assert g["current_value"] == 60.0
 
 
-def test_cte_filter_omitted_from_select_is_rejected(parquet_path, extra_config, tmp_path):
-    """A context filter whose column is not in the CTE SELECT cannot go into DuckDB."""
+def test_cte_filter_omitted_from_output_schema_still_binds(parquet_path, extra_config, tmp_path):
+    """A mapped filter does not need to be listed in output_schema to sit on the wrapper."""
     regions_path, suppliers_path = _write_dims(tmp_path)
     schema_without_supplier = [
         {"name": "event_month", "type": "date"},
@@ -80,30 +79,30 @@ def test_cte_filter_omitted_from_select_is_rejected(parquet_path, extra_config, 
         {"name": "reason_code", "type": "varchar"},
         {"name": "amount", "type": "decimal"},
     ]
-    cte = _CTE_SQL.replace("f.supplier_name,\n  f.amount * r.weight AS amount", "f.amount * r.weight AS amount")
-    _write_multi_model(extra_config, cte)
-    # overwrite schema so supplier_name is not declared on the model SELECT
+    _write_multi_model(extra_config, _CTE_SQL)
     import yaml
 
     model_path = extra_config / "models" / "sotif_multi.yaml"
     spec = yaml.safe_load(model_path.read_text())
     spec["output_schema"] = schema_without_supplier
-    spec["sql"] = cte.strip("\n") + "\n"
     model_path.write_text(yaml.dump(spec, sort_keys=False), encoding="utf-8")
 
     ctx = _cte_context(parquet_path, regions_path, suppliers_path, supplier=["ABC"])
-    try:
-        validate(ctx, config_dir=extra_config)
-    except FilterError as exc:
-        assert "supplier_name" in str(exc) or "Supplier Name" in str(exc)
-    else:
-        raise AssertionError("expected FilterError")
+    planned = validate(ctx, config_dir=extra_config)
+    sql = " ".join(planned["sql"].split())
+    assert '"supplier_name" IN (?)' in sql
+    assert sql.startswith("SELECT")
+    assert "WITH regions AS" in planned["sql"]
 
 
-def test_dim_column_not_in_cte_select_is_not_pushed(parquet_path, extra_config, tmp_path):
-    """eligible exists on the dim parquet and inside the CTE, but not in the outer SELECT."""
+def test_mapped_dim_filter_is_applied_on_the_cte_wrapper(parquet_path, extra_config, tmp_path):
+    """A mapped filter becomes IN on the wrapper around the whole CTE script."""
     regions_path, suppliers_path = _write_dims(tmp_path)
-    _write_multi_model(extra_config, _CTE_SQL)
+    cte = _CTE_SQL.replace(
+        "  f.supplier_name,\n  f.amount * r.weight AS amount",
+        "  f.supplier_name,\n  r.eligible,\n  f.amount * r.weight AS amount",
+    )
+    _write_multi_model(extra_config, cte)
     ctx = _cte_context(
         parquet_path,
         regions_path,
@@ -118,13 +117,10 @@ def test_dim_column_not_in_cte_select_is_not_pushed(parquet_path, extra_config, 
             "operator": "in",
         }
     ]
-    try:
-        validate(ctx, config_dir=extra_config)
-    except FilterError as exc:
-        text = str(exc)
-        assert "eligible" in text
-    else:
-        raise AssertionError("expected FilterError")
+    planned = validate(ctx, config_dir=extra_config)
+    sql = " ".join(planned["sql"].split())
+    assert '"eligible" IN (?)' in sql
+    assert '"supplier_name" IN (?)' in sql
 
 
 def test_reason_code_in_select_is_filtered_in_duckdb(parquet_path, extra_config, tmp_path):

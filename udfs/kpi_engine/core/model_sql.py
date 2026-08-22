@@ -35,8 +35,9 @@ from kpi_engine.contracts import (
     ModelSpec,
     TimePlan,
 )
-from kpi_engine.exceptions import BindError, FilterError, KPIEngineError
-from kpi_engine.identifiers import quote_ident
+from kpi_engine.dates import duckdb_parse_time_sql
+from kpi_engine.exceptions import BindError, KPIEngineError
+from kpi_engine.identifiers import match_name, norm_name, quote_ident
 from kpi_engine.runlog import log_sql, traced
 
 
@@ -106,13 +107,14 @@ def compile_extract(
         usable = tuple(
             f
             for f in source_filters
-            if f.column in filter_columns or (time_col is not None and f.column == time_col)
+            if match_name(f.column, filter_columns)
+            or (time_col is not None and norm_name(f.column) == norm_name(time_col))
         )
     where_sql, where_params = _where_clause(
-        usable, kpi, plan, model=model
+        usable, kpi, plan, model=model, datasets=datasets
     )
     params.extend(where_params)
-    select_sql = _select_model_columns(kpi, grain, model=model)
+    select_sql = _select_model_columns(kpi, grain, model=model, datasets=datasets)
     sql = f"SELECT {select_sql}\nFROM {from_sql}\nWHERE {where_sql}"
     _assert_no_month_in(sql, plan)
     return sql, tuple(params)
@@ -214,33 +216,26 @@ def _where_clause(
     kpi: KpiSpec,
     plan: TimePlan | None,
     model: ModelSpec | None = None,
+    datasets: dict[str, DatasetBinding] | None = None,
 ) -> tuple[str, list[Any]]:
     """Time range (>= span_start, < span_end) plus source IN filters. Empty IN is FALSE.
 
-    Snapshot KPIs omit the range and keep only IN filters (or TRUE).
+    Snapshot KPIs omit the range and keep only IN filters (or TRUE). SQL models
+    apply IN on the wrapper around the whole CTE script (the final SELECT).
     """
-    selectable = set(model.output_schema) if model and model.kind == "sql" and model.output_schema else None
     parts: list[str] = []
     params: list[Any] = []
-    time_col = kpi.time.column if kpi.time is not None else None
     if kpi.time is not None and plan is not None:
-        time_expr = _time_bucket_expr(kpi, model=model)
+        time_expr = _time_bucket_expr(kpi, model=model, datasets=datasets)
         parts.append(f"{time_expr} >= ?")
         params.append(plan.span_start)
         parts.append(f"{time_expr} < ?")
         params.append(plan.span_end_exclusive)
     prefix = _source_prefix(model)
+    catalog = _physical_catalog(model, datasets)
     for item in source_filters:
-        if (
-            selectable is not None
-            and item.column not in selectable
-            and item.column != time_col
-        ):
-            raise FilterError(
-                f"Filter {item.code!r} maps to {item.column!r}, which is not in the "
-                "model SELECT (output_schema). Expose that column in the CTE to filter it in DuckDB."
-            )
-        col = f"{prefix}{quote_ident(item.column)}"
+        physical = match_name(item.column, catalog) or item.column
+        col = f"{prefix}{quote_ident(physical)}"
         if not item.values:
             parts.append("FALSE")
             continue
@@ -260,41 +255,52 @@ def _source_prefix(model: ModelSpec | None) -> str:
 
 
 def _select_model_columns(
-    kpi: KpiSpec, grain: tuple[str, ...], model: ModelSpec | None = None
+    kpi: KpiSpec,
+    grain: tuple[str, ...],
+    model: ModelSpec | None = None,
+    datasets: dict[str, DatasetBinding] | None = None,
 ) -> str:
     """SELECT time bucket, dims, and physical columns named by KPI YAML. No aggs."""
     from kpi_engine.catalog.ops_impl import input_columns
 
     time_col = kpi.time.column if kpi.time is not None else None
-    prefix = _source_prefix(model)
     parts: list[str] = []
     seen: set[str] = set()
     for col in grain:
         ident = quote_ident(col)
         if col == time_col:
-            parts.append(f"{_time_bucket_expr(kpi, model=model)} AS {ident}")
+            parts.append(
+                f"{_time_bucket_expr(kpi, model=model, datasets=datasets)} AS {ident}"
+            )
         else:
-            parts.append(f"{prefix}{ident}")
+            parts.append(_select_physical(col, model, datasets, alias=col))
         seen.add(col)
     if time_col and any(m.agg in {"first", "last"} for m in kpi.base_measures):
-        raw_time = f"{prefix}{quote_ident(time_col)}"
-        parts.append(f"CAST({raw_time} AS DATE) AS {quote_ident('__event_time')}")
+        raw_time = _physical_ident(time_col, model, datasets)
+        parsed = duckdb_parse_time_sql(
+            raw_time, kpi.time.format if kpi.time is not None else None
+        )
+        parts.append(f"{parsed} AS {quote_ident('__event_time')}")
         seen.add("__event_time")
     for measure in kpi.base_measures:
         for col in input_columns(measure):
             if col in seen:
                 continue
-            parts.append(f"{prefix}{quote_ident(col)}")
+            parts.append(_select_physical(col, model, datasets, alias=col))
             seen.add(col)
     return ", ".join(parts)
 
 
-def _time_bucket_expr(kpi: KpiSpec, model: ModelSpec | None = None) -> str:
+def _time_bucket_expr(
+    kpi: KpiSpec,
+    model: ModelSpec | None = None,
+    datasets: dict[str, DatasetBinding] | None = None,
+) -> str:
     """SQL expression that truncates the time column to the KPI grain (DATE)."""
     if kpi.time is None:
         raise BindError("Cannot build a time bucket: this KPI has no time: block.")
-    ident = f"{_source_prefix(model)}{quote_ident(kpi.time.column)}"
-    casted = f"CAST({ident} AS DATE)"
+    ident = _physical_ident(kpi.time.column, model, datasets)
+    casted = duckdb_parse_time_sql(ident, kpi.time.format)
     grain = kpi.time.grain
     if kpi.time.calendar == "fiscal" and grain in {"quarter", "year"}:
         shift = kpi.time.fiscal_start_month - 1
@@ -309,6 +315,42 @@ def _time_bucket_expr(kpi: KpiSpec, model: ModelSpec | None = None) -> str:
         )
     unit = {"day": "day", "month": "month", "quarter": "quarter", "year": "year"}[grain]
     return f"CAST(date_trunc('{unit}', {casted}) AS DATE)"
+
+
+def _physical_catalog(
+    model: ModelSpec | None, datasets: dict[str, DatasetBinding] | None
+) -> list[str]:
+    """Known physical column spellings from the model SELECT and context datasets."""
+    names: list[str] = []
+    if model is not None:
+        names.extend(model.output_schema)
+    if datasets:
+        for dataset in datasets.values():
+            names.extend(dataset.columns)
+    return names
+
+
+def _physical_ident(
+    name: str, model: ModelSpec | None, datasets: dict[str, DatasetBinding] | None
+) -> str:
+    """Quoted physical column, using the table/CTE spelling when case differs."""
+    physical = match_name(name, _physical_catalog(model, datasets)) or name
+    return f"{_source_prefix(model)}{quote_ident(physical)}"
+
+
+def _select_physical(
+    name: str,
+    model: ModelSpec | None,
+    datasets: dict[str, DatasetBinding] | None,
+    *,
+    alias: str,
+) -> str:
+    """SELECT physical column, aliased to the KPI YAML name when they differ."""
+    physical = match_name(name, _physical_catalog(model, datasets)) or name
+    expr = f"{_source_prefix(model)}{quote_ident(physical)}"
+    if physical != alias:
+        return f"{expr} AS {quote_ident(alias)}"
+    return expr
 
 
 def _assert_no_month_in(sql: str, plan: TimePlan | None) -> None:

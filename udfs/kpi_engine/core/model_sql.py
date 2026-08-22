@@ -44,7 +44,9 @@ from kpi_engine.identifiers import match_name, norm_name, quote_ident
 from kpi_engine.runlog import log_sql, traced
 
 
-NON_ADDITIVE = {"count_distinct", "median", "percentile", "first", "last"}
+from kpi_engine.contracts import NON_ADDITIVE_AGGS
+
+NON_ADDITIVE = set(NON_ADDITIVE_AGGS)
 _PATH_TOKEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)_path")
 _SCAN_TOKEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)_scan")
 

@@ -1,0 +1,131 @@
+value:
+  role: platform
+  enabled: true
+  aliases: [identity]
+  description: Pass one retrieved column through unchanged.
+  example: |
+    amount:
+      columns: [amount]
+      op: value
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: value
+
+abs:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Absolute value of one numeric column.
+  example: |
+    abs_delta:
+      columns: [delta]
+      op: abs
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: abs_columns
+
+sum:
+  role: platform
+  enabled: true
+  aliases: [add]
+  description: Row-wise sum of two or more columns.
+  example: |
+    total:
+      columns: [a, b]
+      op: sum
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: sum_columns
+
+subtract:
+  role: platform
+  enabled: true
+  aliases: [sub]
+  description: Row-wise left-to-right subtraction.
+  example: |
+    net:
+      columns: [gross, returns]
+      op: subtract
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: subtract_columns
+
+multiply:
+  role: platform
+  enabled: true
+  aliases: [mul, product]
+  description: Row-wise product of two or more columns.
+  example: |
+    ontime_full:
+      columns: [ontime, fullqty]
+      op: multiply
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: multiply_columns
+
+divide:
+  role: platform
+  enabled: true
+  aliases: [div, ratio]
+  description: Row-wise numerator / denominator. Zero denominator is null.
+  example: |
+    rate:
+      columns: [shipped, ordered]
+      op: divide
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: divide_columns
+
+percent_of:
+  role: platform
+  enabled: true
+  aliases: [share]
+  description: Row-wise share of whole, scaled to 0-100.
+  example: |
+    fill_pct:
+      columns: [filled, ordered]
+      op: percent_of
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: percent_of_columns
+
+min:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Row-wise minimum of two or more columns.
+  example: |
+    lower:
+      columns: [a, b]
+      op: min
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: min_columns
+
+max:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Row-wise maximum of two or more columns.
+  example: |
+    upper:
+      columns: [a, b]
+      op: max
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: max_columns
+
+avg:
+  role: platform
+  enabled: true
+  aliases: [mean]
+  description: Row-wise mean of two or more columns.
+  example: |
+    mid:
+      columns: [a, b]
+      op: avg
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: avg_columns
+
+coalesce:
+  role: platform
+  enabled: true
+  aliases: []
+  description: First non-null value on each row.
+  example: |
+    picked:
+      columns: [preferred, fallback]
+      op: coalesce
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: coalesce_columns

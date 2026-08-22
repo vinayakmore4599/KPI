@@ -1,0 +1,6 @@
+# Engine architecture — do not change for a new KPI capability.
+/udfs/kpi_engine/core/ @kpi-engine-maintainers
+
+# New functions, ops, and hooks land here.
+/udfs/kpi_engine/capabilities/ @kpi-capability-reviewers
+/udfs/kpi_engine/registries/ @kpi-capability-reviewers

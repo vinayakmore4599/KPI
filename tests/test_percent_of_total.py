@@ -13,7 +13,7 @@ When to use
 from kpi_engine import compute
 from kpi_engine.contracts import OutputSpec
 from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.calc_engine import _apply_percent_of_total
+from kpi_engine.capabilities.ops.cut import PercentOfTotal
 from kpi_engine.exceptions import BindError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 
@@ -100,7 +100,7 @@ def test_percent_of_total_zero_total_is_null():
         {"output_cut": "G", "reason_code": "A", "__cut_src_percent_gt": 0},
         {"output_cut": "G", "reason_code": "B", "__cut_src_percent_gt": 0},
     ]
-    _apply_percent_of_total(rows, ["percent_gt"], {"percent_gt": spec}, ["reason_code"])
+    PercentOfTotal().apply_to_cut(rows, spec, ["reason_code"])
     assert rows[0]["percent_gt"] is None
     assert rows[1]["percent_gt"] is None
     assert "__cut_src_percent_gt" not in rows[0]

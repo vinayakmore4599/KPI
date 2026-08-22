@@ -25,8 +25,17 @@ When to use
 
 from __future__ import annotations
 
+import warnings
 from types import MappingProxyType
 from typing import Mapping
+
+warnings.warn(
+    "kpi_engine.extensions.functions is a compatibility shim. "
+    "Add functions under capabilities/functions/ and registries/functions/. "
+    "This import path will be removed in the next release.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from kpi_engine.catalog.ops_impl import (
     COLUMN_FNS,

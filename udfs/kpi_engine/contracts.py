@@ -22,20 +22,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 
 AggName = Literal[
     "sum", "avg", "count", "count_distinct", "min", "max", "median", "percentile", "first", "last"
 ]
-OpName = Literal[
-    "point", "window", "arithmetic", "trend", "dimension", "hook", "fn", "expr",
-    "constant", "rank", "percent_of_total",
-]
 GrainName = Literal["day", "month", "quarter", "year"]
-# Open set: any name registered in catalog.ops_impl.COLUMN_FNS.
+# Open set: any name enabled in registries/ops.yaml.
+OpName = str
+# Open set: any name registered in registries/functions/column.yaml.
 RowOpName = str
 WindowRangeName = Literal["trailing", "leading", "cumulative"]
+NON_ADDITIVE_AGGS = frozenset({"count_distinct", "median", "percentile", "first", "last"})
 
 
 @dataclass(frozen=True)
@@ -221,6 +220,7 @@ class OutputSpec:
     constant: float | None = None
     rank_order: str | None = None
     rank_group_by: tuple[str, ...] = ()
+    params: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

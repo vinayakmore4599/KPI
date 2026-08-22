@@ -18,11 +18,20 @@ When to use
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from typing import Any
 
 from kpi_engine.exceptions import CatalogError
 from kpi_engine.runlog import traced
+
+warnings.warn(
+    "kpi_engine.extensions.hooks is a compatibility shim. "
+    "Add hooks under capabilities/hooks/ and registries/hooks.yaml. "
+    "This import path will be removed in the next release.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 Hook = Callable[..., Any]
 

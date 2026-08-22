@@ -21,9 +21,16 @@ dev = ["pytest>=8.0"]
 [tool.setuptools.packages.find]
 include = ["udfs*"]
 
+[tool.setuptools.package-data]
+"kpi_engine" = ["registries/*.yaml", "registries/**/*.yaml", "registries/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "udfs"]
+filterwarnings = [
+    "ignore:kpi_engine.extensions.functions is a compatibility shim:DeprecationWarning",
+    "ignore:kpi_engine.extensions.hooks is a compatibility shim:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

@@ -1,0 +1,139 @@
+point:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Value at the selected period, optional calendar offset.
+  example: |
+    previous_year_value:
+      op: point
+      of: sotif_value
+      offset: { years: 1 }
+  module: kpi_engine.capabilities.ops.combo
+  attr: Point
+
+window:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Trailing, leading, or cumulative aggregate of a base measure.
+  example: |
+    value_3m:
+      op: window
+      of: sotif_value
+      trailing: { months: 3 }
+      inclusive: true
+  module: kpi_engine.capabilities.ops.combo
+  attr: Window
+
+trend:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Fixed-length period array plus a shared axis for graphs.
+  example: |
+    trend_12m:
+      op: trend
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.ops.combo
+  attr: Trend
+
+arithmetic:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Combine other measures with a registered measure function (default divide).
+  example: |
+    ratio:
+      op: arithmetic
+      of: [current_value, previous_year_value]
+      fn: divide
+  module: kpi_engine.capabilities.ops.combo
+  attr: Arithmetic
+
+fn:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Feed other measures' scalars into a named measure function.
+  example: |
+    yoy:
+      op: fn
+      fn: growth_pct
+      inputs: [current_value, previous_year_value]
+  module: kpi_engine.capabilities.ops.combo
+  attr: Fn
+
+expr:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Formula over other measures using + - * /.
+  example: |
+    blended:
+      op: expr
+      expr: (current_value + previous_year_value) / 2
+  module: kpi_engine.capabilities.ops.combo
+  attr: Expr
+
+constant:
+  role: platform
+  enabled: true
+  aliases: []
+  description: A literal number on every row.
+  example: |
+    target:
+      op: constant
+      value: 95
+  module: kpi_engine.capabilities.ops.combo
+  attr: Constant
+
+dimension:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Echo a grouping field as a requestable measure key.
+  example: |
+    region:
+      op: dimension
+  module: kpi_engine.capabilities.ops.combo
+  attr: Dimension
+
+hook:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Call an allowlisted Python hook for logic the catalog cannot express.
+  example: |
+    custom:
+      op: hook
+      hook: seasonal_index
+      of: sotif_value
+  module: kpi_engine.capabilities.ops.combo
+  attr: Hook
+
+rank:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Rank groups on a cut. Ties share a rank; the next rank skips.
+  example: |
+    reason_rank:
+      op: rank
+      of: current_value
+      order: desc
+  module: kpi_engine.capabilities.ops.cut
+  attr: Rank
+
+percent_of_total:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Share of all groups on this cut (source * 100 / partition sum).
+  example: |
+    share:
+      op: percent_of_total
+      of: current_value
+      partition_by: [region]
+  module: kpi_engine.capabilities.ops.cut
+  attr: PercentOfTotal

@@ -1,0 +1,116 @@
+growth_pct:
+  role: platform
+  enabled: true
+  aliases: [yoy, mom, percent_change]
+  description: Percent change between two scalars. Null or zero base yields null.
+  example: |
+    yoy:
+      op: fn
+      fn: growth_pct
+      inputs: [current_value, previous_year_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: growth_pct
+
+divide:
+  role: platform
+  enabled: true
+  aliases: [div, ratio]
+  description: Ratio of two scalars. Zero or null denominator is null.
+  example: |
+    rate:
+      op: fn
+      fn: divide
+      inputs: [shipped, ordered]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: divide_scalars
+
+percent:
+  role: platform
+  enabled: true
+  aliases: [percent_of, share]
+  description: Share of whole, scaled to 0-100.
+  example: |
+    share:
+      op: fn
+      fn: percent
+      inputs: [part, whole]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: percent_scalars
+
+sum:
+  role: platform
+  enabled: true
+  aliases: [add]
+  description: Sum of two or more measure scalars. Any null yields null.
+  example: |
+    total:
+      op: fn
+      fn: sum
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: sum_scalars
+
+subtract:
+  role: platform
+  enabled: true
+  aliases: [sub]
+  description: Left-to-right subtraction of measure scalars.
+  example: |
+    net:
+      op: fn
+      fn: subtract
+      inputs: [gross, returns]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: subtract_scalars
+
+multiply:
+  role: platform
+  enabled: true
+  aliases: [mul, product]
+  description: Product of two or more measure scalars.
+  example: |
+    weighted:
+      op: fn
+      fn: multiply
+      inputs: [qty, price]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: multiply_scalars
+
+min:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Minimum of the non-null measure scalars.
+  example: |
+    lower:
+      op: fn
+      fn: min
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: min_scalars
+
+max:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Maximum of the non-null measure scalars.
+  example: |
+    upper:
+      op: fn
+      fn: max
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: max_scalars
+
+avg:
+  role: platform
+  enabled: true
+  aliases: [mean]
+  description: Mean of the non-null measure scalars.
+  example: |
+    mid:
+      op: fn
+      fn: avg
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: avg_scalars

@@ -668,19 +668,43 @@ sql: |
 
 ## 13. Custom functions (only when YAML is not enough)
 
-Register at process startup. YAML may only name allowlisted entries — never a dotted import path.
+**Prefer reuse.** Read [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) (generated from the YAML registries) or call `kpi_engine.list_capabilities()`.
+
+Decision tree:
+
+1. Enabled name already in the registries? → KPI YAML only. Do not open `core/`.
+2. New column math? → append in `capabilities/functions/column/impl.py` + a key in `registries/functions/column.yaml` (`role: addon`).
+3. New scalar math? → `capabilities/functions/measure/impl.py` + `registries/functions/measure.yaml`.
+4. One-group custom series logic? → `capabilities/hooks/impl.py` + `registries/hooks.yaml`.
+5. New cut/combo shape? → `OpPlugin` in `capabilities/ops/` + `registries/ops.yaml`. Review like a core change.
+6. New filter operator, agg, time format, or pipeline stage? → platform work in `core/`. Escalate.
+
+YAML may only name allowlisted entries — never a dotted import path. `compute(context)` stays the only entry point.
+
+`enabled: false` on an **add-on** turns it off for the whole process (restart required). Run `kpi_engine.core.loader.impact_check("name")` first (lists `config/kpis/` and test YAML that mention it). Platform names (`point`, `window`, `fn`, `hook`, shipped functions) cannot be disabled.
 
 ### Column function — `base_measures.op`
 
 Receives one numeric pandas Series per `columns:` entry; must return a Series of the same length.
 
 ```python
-from kpi_engine.extensions.functions import register_column_fn
-
+# capabilities/functions/column/impl.py
 def weighted_score(hits, weight):
     return hits * weight * 10
+```
 
-register_column_fn("weighted_score", weighted_score)
+```yaml
+# registries/functions/column.yaml
+weighted_score:
+  role: addon
+  enabled: true
+  description: Weighted score of hits × weight × 10.
+  example: |
+    score:
+      columns: { hits: ontime, weight: fullqty }
+      op: weighted_score
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: weighted_score
 ```
 
 ```yaml
@@ -693,22 +717,11 @@ base_measures:
 
 ### Measure function — `measures.fn` / `arithmetic`
 
-Receives one scalar per `inputs:`; return a number or `None`.
-
-```python
-from kpi_engine.extensions.functions import register_measure_fn
-
-def safe_ratio(numerator, denominator):
-    if numerator is None or not denominator:
-        return None
-    return float(numerator) / float(denominator)
-
-register_measure_fn("safe_ratio", safe_ratio)
-```
+Same pattern under `capabilities/functions/measure/` and `registries/functions/measure.yaml`.
 
 ### Hook — last resort
 
-Needs the densified period series. Register in `kpi_engine.extensions.hooks`. Declare `offset:` or `trailing:` so the planner scans enough history. Must not open DuckDB or read storage.
+Needs the densified period series. Add the function in `capabilities/hooks/impl.py` and a key in `registries/hooks.yaml`. Declare `offset:` or `trailing:` so the planner scans enough history. Must not open DuckDB or read storage.
 
 ---
 

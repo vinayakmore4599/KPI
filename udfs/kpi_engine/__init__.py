@@ -16,6 +16,9 @@ When to use
     directly. Change this file only when adding a new public function.
 """
 
+from kpi_engine.core.loader import ensure_loaded, list_capabilities
 from kpi_engine.core.orchestrator import compute, validate
 
-__all__ = ["compute", "validate"]
+ensure_loaded()
+
+__all__ = ["compute", "validate", "list_capabilities"]

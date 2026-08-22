@@ -153,66 +153,16 @@ def lookback_for(
     """
     if output.key in seen:
         return 0
-    if output.kind in {"dimension", "constant"}:
-        return 0
-    if output.kind in {"rank", "percent_of_total"}:
-        if output.of and output.of in by_key:
-            return lookback_for(
-                by_key[output.of], by_key, time, anchor=anchor, seen=seen | {output.key}
-            )
-        return 0
-    if output.kind == "point":
-        if not output.offset:
-            return 0
-        if time is None or (
-            time.grain == "month"
-            and output.offset.days == 0
-            and output.offset.quarters == 0
-        ):
-            return output.offset.total_months
-        return _offset_periods(output, time)
-    if output.kind == "hook":
-        if output.offset:
-            if time is None or time.grain == "month":
-                return output.offset.total_months
-            return _offset_periods(output, time)
-        if output.trailing_months:
-            n = output.trailing_months
-            return max(n - 1, 0) if output.inclusive else n
-        return 0
-    if output.kind in {"window", "trend"}:
-        kind = output.window_range or "trailing"
-        if kind == "leading":
-            return 0
-        if kind == "cumulative":
-            if time is None:
-                return 0
-            from datetime import date as date_cls
+    from kpi_engine.core.op_registry import get_op
+    from kpi_engine.exceptions import CatalogError
 
-            ref = truncate_period(anchor or date_cls(2021, 12, 15), time)
-            start = year_start(ref, time)
-            return periods_between(start, ref, time)
-        n = output.trailing_months or 1
-        if output.trailing_unit == "day" and time is not None and time.grain != "day":
-            from datetime import date as date_cls
-
-            ref = truncate_period(anchor or date_cls(2021, 6, 15), time)
-            start = add_days(ref, -(n - 1 if output.inclusive else n))
-            return periods_between(truncate_period(start, time), ref, time)
-        if output.inclusive:
-            return max(n - 1, 0)
-        return n
-    if output.kind in {"arithmetic", "fn", "expr"}:
-        deeper = seen | {output.key}
-        return max(
-            (
-                lookback_for(by_key[n], by_key, time, anchor=anchor, seen=deeper)
-                for n in _operand_keys(output)
-                if n in by_key
-            ),
-            default=0,
-        )
-    raise TimePlanError(f"Cannot plan lookback for {output.key} kind={output.kind}.")
+    try:
+        plugin = get_op(output.kind)
+    except CatalogError as exc:
+        raise TimePlanError(
+            f"Cannot plan lookback for {output.key} kind={output.kind}."
+        ) from exc
+    return plugin.lookback(output, by_key, time, anchor, seen, lookback_for)
 
 
 def lookforward_for(
@@ -223,20 +173,9 @@ def lookforward_for(
     """How many grain periods after the anchor a leading window needs."""
     if output.key in seen:
         return 0
-    if output.kind in {"window", "trend"} and (output.window_range or "trailing") == "leading":
-        n = output.trailing_months or 1
-        return max(n - 1, 0) if output.inclusive else n
-    if output.kind in {"arithmetic", "fn", "expr"}:
-        deeper = seen | {output.key}
-        return max(
-            (
-                lookforward_for(by_key[n], by_key, seen=deeper)
-                for n in _operand_keys(output)
-                if n in by_key
-            ),
-            default=0,
-        )
-    return 0
+    from kpi_engine.core.op_registry import get_op
+
+    return get_op(output.kind).lookforward(output, by_key, seen, lookforward_for)
 
 
 def _operand_keys(output: OutputSpec) -> list[str]:

@@ -470,52 +470,6 @@ def _fold(step: Callable[[Any, Any], Any], args: tuple[Any, ...]) -> Any:
     return result
 
 
-def _side_by_side(columns: tuple[pd.Series, ...]) -> pd.DataFrame:
-    """Line the operands up as columns so a row-wise reducer can run across them."""
-    return pd.concat(columns, axis=1)
-
-
-def _value(column: pd.Series) -> pd.Series:
-    """Pass one column through unchanged."""
-    return column
-
-
-def _divide_columns(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
-    """Divide row by row, treating a zero denominator as null rather than inf."""
-    return numerator / denominator.replace(0, pd.NA)
-
-
-def _percent_of_columns(part: pd.Series, whole: pd.Series) -> pd.Series:
-    """Share of `whole`, scaled to 0-100."""
-    return _divide_columns(part, whole) * 100
-
-
-register_column_fn("value", _value, aliases=("identity",))
-register_column_fn("abs", lambda column: column.abs())
-register_column_fn(
-    "sum", lambda *columns: _fold(lambda a, b: a + b, columns), min_columns=2, aliases=("add",)
-)
-register_column_fn(
-    "subtract", lambda *columns: _fold(lambda a, b: a - b, columns), min_columns=2, aliases=("sub",)
-)
-register_column_fn(
-    "multiply",
-    lambda *columns: _fold(lambda a, b: a * b, columns),
-    min_columns=2,
-    aliases=("mul", "product"),
-)
-register_column_fn("divide", _divide_columns, aliases=("div", "ratio"))
-register_column_fn("percent_of", _percent_of_columns, aliases=("share",))
-register_column_fn("min", lambda *columns: _side_by_side(columns).min(axis=1), min_columns=2)
-register_column_fn("max", lambda *columns: _side_by_side(columns).max(axis=1), min_columns=2)
-register_column_fn(
-    "avg", lambda *columns: _side_by_side(columns).mean(axis=1), min_columns=2, aliases=("mean",)
-)
-register_column_fn(
-    "coalesce", lambda *columns: _fold(lambda a, b: a.fillna(b), columns), min_columns=2
-)
-
-
 def call_measure_fn(fn: str, values: list[Any], params: tuple[str, ...] = ()) -> Any:
     """Call a registered measure function with one argument per input measure.
 
@@ -538,64 +492,6 @@ def call_measure_fn(fn: str, values: list[Any], params: tuple[str, ...] = ()) ->
     if measure_fn_meta(fn).max_args == 2 and len(values) > 2:
         return _fold(step, tuple(values))
     return step(*values)
-
-
-def _growth_pct(current: Any, previous: Any) -> float | None:
-    """Relative change from `previous` to `current`. A zero or null base yields null."""
-    if current is None or previous in (None, 0):
-        return None
-    return float((current - previous) / previous)
-
-
-def _divide(numerator: Any, denominator: Any) -> float | None:
-    """Ratio. A zero or null denominator yields null, never inf."""
-    if numerator is None or denominator in (None, 0):
-        return None
-    return float(numerator / denominator)
-
-
-def _percent(part: Any, whole: Any) -> float | None:
-    """Share of `whole`, scaled to 0-100."""
-    value = _divide(part, whole)
-    return None if value is None else float(value * 100)
-
-
-def _numeric_fold(op: Callable[[Any, Any], Any]) -> MeasureFn:
-    """Wrap a two-scalar operation as a variadic fold where any null yields null."""
-
-    def step(*values: Any) -> float | None:
-        """Apply the operation left to right unless an operand is null."""
-        if any(value is None for value in values):
-            return None
-        return float(_fold(op, values))
-
-    return step
-
-
-def _numeric_pick(choose: Callable[[list[Any]], Any]) -> MeasureFn:
-    """Wrap a reducer that ignores nulls and yields null only when nothing is left."""
-
-    def step(*values: Any) -> float | None:
-        """Reduce the non-null operands."""
-        present = [value for value in values if value is not None]
-        return None if not present else float(choose(present))
-
-    return step
-
-
-register_measure_fn("growth_pct", _growth_pct, aliases=("yoy", "mom", "percent_change"))
-register_measure_fn("divide", _divide, aliases=("div", "ratio"))
-register_measure_fn("percent", _percent, aliases=("percent_of", "share"))
-register_measure_fn("sum", _numeric_fold(lambda a, b: a + b), min_inputs=2, aliases=("add",))
-register_measure_fn("subtract", _numeric_fold(lambda a, b: a - b), min_inputs=2, aliases=("sub",))
-register_measure_fn(
-    "multiply", _numeric_fold(lambda a, b: a * b), min_inputs=2, aliases=("mul", "product")
-)
-register_measure_fn("min", _numeric_pick(min), min_inputs=2)
-register_measure_fn("max", _numeric_pick(max), min_inputs=2)
-register_measure_fn(
-    "avg", _numeric_pick(lambda vs: sum(vs) / len(vs)), min_inputs=2, aliases=("mean",)
-)
 
 
 def _sum_or_null(series: pd.Series) -> float:
@@ -669,3 +565,13 @@ def collapse_pandas_detail(
         return out.to_frame().T if isinstance(out, pd.Series) else out.reset_index(drop=True)
     grouped = work.groupby(keys, dropna=False, as_index=False).agg(aggs)
     return grouped
+
+
+def _autoload() -> None:
+    """Fill COLUMN_FNS / MEASURE_FNS from registries/ on first import."""
+    from kpi_engine.core.loader import ensure_loaded
+
+    ensure_loaded()
+
+
+_autoload()

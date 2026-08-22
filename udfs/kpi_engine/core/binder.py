@@ -60,14 +60,17 @@ from kpi_engine.identifiers import (
 )
 from kpi_engine.catalog.ops_impl import (
     COLUMN_FNS,
-    MEASURE_FNS,
     WHERE_OPS,
     column_op_error,
-    measure_fn_error,
 )
 from kpi_engine.core.compose import parse_compose_block
 from kpi_engine.core.filter_ops import canonicalize_op
+from kpi_engine.core.loader import ensure_loaded
+from kpi_engine.core.op_protocol import CommonMeasureFields
+from kpi_engine.core.op_registry import get_op, require_op
 from kpi_engine.runlog import traced
+
+ensure_loaded()
 
 
 def default_config_dir() -> Path:
@@ -262,7 +265,8 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     if not measures:
         raise BindError("measures cannot be empty.")
     _assert_measure_graph(measures, tuple(b.name for b in bases), dimensions)
-    _assert_partition_keys(measures, cuts, dimensions)
+    if time is None:
+        _assert_snapshot_measures(measures)
 
     filter_map = {
         str(k): require_ident(str(v), what="filter_map column")
@@ -288,10 +292,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
             "Base measures span multiple models; declare model_relations to join them."
         )
 
-    if time is None:
-        _assert_snapshot_measures(measures)
-
-    return KpiSpec(
+    kpi = KpiSpec(
         kpi_id=kpi_id,
         version=int(raw.get("version") or 1),
         model_id=str(raw.get("model")),
@@ -307,6 +308,9 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         model_relations=relations,
         dimension_specs=dim_specs,
     )
+    for spec in kpi.measures:
+        get_op(spec.kind).validate(spec, kpi)
+    return kpi
 
 
 def _parse_dimension(raw: Any) -> DimensionSpec:
@@ -513,16 +517,8 @@ def _parse_time(raw: Any) -> TimeSpec | None:
 
 
 def measure_dependencies(spec: OutputSpec) -> tuple[str, ...]:
-    """Measure keys this measure consumes (fn/expr inputs, arithmetic operands)."""
-    if spec.kind in {"fn", "expr"}:
-        return spec.inputs
-    if spec.kind == "arithmetic":
-        if spec.operands:
-            return spec.operands
-        return tuple(n for n in (spec.left, spec.right) if n)
-    if spec.kind in {"rank", "percent_of_total"} and spec.of:
-        return (spec.of,)
-    return ()
+    """Measure keys this measure consumes (plugin-declared)."""
+    return get_op(spec.kind).dependencies(spec)
 
 
 def _assert_measure_graph(
@@ -534,49 +530,17 @@ def _assert_measure_graph(
     by_key = {m.key: m for m in measures}
     known_bases = set(base_names)
     for spec in measures:
-        if spec.kind in {"point", "window", "trend"} and not spec.of:
-            raise BindError(
-                f"measures.{spec.key} op={spec.kind} requires `of:` naming the base "
-                f"measure it aggregates. Declared base_measures: {sorted(known_bases)}."
-            )
-        if spec.kind in {"rank", "percent_of_total"} and not spec.of:
-            raise BindError(
-                f"measures.{spec.key} op={spec.kind} requires `of:` naming a measure "
-                f"or base_measure. Declared measures: {sorted(by_key)}; "
-                f"base_measures: {sorted(known_bases)}."
-            )
-        if spec.kind in {"point", "window", "trend", "hook"} and spec.of:
-            if spec.of not in known_bases:
-                raise BindError(
-                    f"measures.{spec.key} of={spec.of!r} is not a base measure. "
-                    f"Declared base_measures: {sorted(known_bases)}."
-                )
-        if spec.kind in {"rank", "percent_of_total"} and spec.of:
-            if spec.of not in by_key and spec.of not in known_bases:
-                raise BindError(
-                    f"measures.{spec.key} of={spec.of!r} is not a measure or base "
-                    f"measure. Declared measures: {sorted(by_key)}; "
-                    f"base_measures: {sorted(known_bases)}."
-                )
-        if spec.kind == "dimension" and spec.key not in dimensions:
-            raise BindError(
-                f"measures.{spec.key} is a dimension measure but {spec.key!r} is not in "
-                f"dimensions: {sorted(dimensions)}."
-            )
         for name in measure_dependencies(spec):
             if name in by_key:
                 dep = by_key[name]
-                if dep.kind in {"rank", "percent_of_total"} and spec.kind not in {
-                    "rank",
-                    "percent_of_total",
-                }:
+                if get_op(dep.kind).phase == "cut" and get_op(spec.kind).phase != "cut":
                     raise BindError(
                         f"measures.{spec.key} cannot use {name!r} (op={dep.kind}) as an "
                         "input. Rank and percent_of_total are assigned after every row "
                         "on the cut."
                     )
                 continue
-            if spec.kind in {"rank", "percent_of_total"} and name in known_bases:
+            if get_op(spec.kind).phase == "cut" and name in known_bases:
                 continue
             raise BindError(
                 f"measures.{spec.key} references unknown measure {name!r}. "
@@ -607,41 +571,19 @@ def _assert_measure_graph(
         walk(spec.key, [])
 
 
-def _assert_partition_keys(
-    measures: tuple[OutputSpec, ...],
-    cuts: tuple[CutSpec, ...],
-    dimensions: tuple[str, ...],
-) -> None:
-    """Fail when rank / percent_of_total partition_by is not a cut or dimension name."""
-    allowed = {norm_name(name): name for name in dimensions}
-    for cut in cuts:
-        for name in cut.group_by:
-            allowed.setdefault(norm_name(name), name)
-    valid = sorted(allowed.values())
-    for spec in measures:
-        if spec.kind not in {"rank", "percent_of_total"}:
-            continue
-        for name in spec.rank_group_by:
-            if norm_name(name) in allowed:
-                continue
-            raise BindError(
-                f"measures.{spec.key} partition_by {name!r} is not a cut group_by "
-                f"or dimension. Valid: {valid}."
-            )
-
-
 def _assert_snapshot_measures(measures: tuple[OutputSpec, ...]) -> None:
     """Window/trend/offset ops need a time column; snapshot KPIs cannot declare them."""
     bad: list[str] = []
     for spec in measures:
-        if spec.kind in {"window", "trend"}:
-            bad.append(f"{spec.key} ({spec.kind})")
-        elif spec.kind == "point" and _offset_is_nonzero(spec.offset):
+        plugin = get_op(spec.kind)
+        if spec.kind == "point" and _offset_is_nonzero(spec.offset):
             bad.append(f"{spec.key} (point offset)")
         elif spec.kind == "hook" and (
             _offset_is_nonzero(spec.offset) or spec.trailing_months
         ):
             bad.append(f"{spec.key} (hook lookback)")
+        elif plugin.requires_time:
+            bad.append(f"{spec.key} ({spec.kind})")
     if bad:
         raise BindError(
             "This KPI has no time: block, so measures cannot use windows, trends, "
@@ -760,45 +702,17 @@ def _parse_relation(raw: Any) -> ModelRelation:
 
 
 def _parse_measure(key: str, raw: Any) -> OutputSpec:
-    """Parse one requestable measure (point / window / trend / arithmetic / fn / hook / dimension)."""
+    """Parse one requestable measure via the registered OpPlugin."""
     if not isinstance(raw, dict):
         raise BindError(f"measures.{key} must be an object.")
     kind = raw.get("kind") or raw.get("op")
-    if kind not in {
-        "point",
-        "window",
-        "arithmetic",
-        "trend",
-        "dimension",
-        "hook",
-        "fn",
-        "expr",
-        "constant",
-        "rank",
-        "percent_of_total",
-    }:
-        hint = ""
-        if kind in {"percent_of_cut_total", "percent_gt", "share_of_total"}:
-            hint = " For share of all groups on a cut, use op: percent_of_total."
-        raise BindError(f"measures.{key} has unknown op/kind {kind!r}.{hint}")
-    if raw.get("fn") is not None and kind in {
-        "point",
-        "window",
-        "trend",
-        "dimension",
-        "expr",
-        "constant",
-        "rank",
-        "percent_of_total",
-    }:
-        raise BindError(
-            f"measures.{key} op={kind} ignores `fn:`. "
-            "Use op: fn with inputs:, or op: arithmetic, or op: hook."
-        )
-    if raw.get("inputs") is not None and kind not in {"fn", "expr"}:
-        raise BindError(f"measures.{key} op={kind} ignores `inputs:`. Use op: fn or op: expr.")
-    if raw.get("expr") is not None and kind not in {"expr"}:
-        raise BindError(f"measures.{key} op={kind} ignores `expr:`. Use op: expr.")
+    hint = ""
+    if kind in {"percent_of_cut_total", "percent_gt", "share_of_total"}:
+        hint = " For share of all groups on a cut, use op: percent_of_total."
+    try:
+        plugin = require_op(str(kind), what=f"measures.{key}")
+    except BindError as exc:
+        raise BindError(f"{exc}{hint}") from exc
     offset = None
     if raw.get("offset"):
         off = raw["offset"]
@@ -837,115 +751,20 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
         operands = tuple(str(x) for x in of_raw)
     elif of_raw is not None:
         of = str(of_raw)
-    inputs: tuple[str, ...] = ()
-    input_params: tuple[str, ...] = ()
-    if kind == "fn":
-        raw_inputs = raw.get("inputs")
-        if not raw_inputs:
-            raise BindError(
-                f"measures.{key} op=fn requires `inputs:` listing the measures to feed it."
-            )
-        inputs, input_params = _parse_fn_inputs(key, raw_inputs)
-        if not raw.get("fn"):
-            raise BindError(
-                f"measures.{key} op=fn requires `fn:` (a registered measure function)."
-            )
-        fn_name = str(raw["fn"])
-        if fn_name not in MEASURE_FNS:
-            raise BindError(
-                f"measures.{key} names unknown fn {fn_name!r}. Registered: "
-                f"{sorted(MEASURE_FNS)}. Register it with "
-                "kpi_engine.extensions.functions.register_measure_fn."
-            )
-        problem = measure_fn_error(fn_name, len(inputs), input_params)
-        if problem:
-            raise BindError(f"measures.{key} fn {problem}")
-    if kind == "arithmetic":
-        arithmetic_fn = str(raw.get("fn") or "divide")
-        if arithmetic_fn not in MEASURE_FNS:
-            raise BindError(
-                f"measures.{key} names unknown fn {arithmetic_fn!r}. Registered: "
-                f"{sorted(MEASURE_FNS)}. Register it with "
-                "kpi_engine.extensions.functions.register_measure_fn."
-            )
-        operand_count = len(operands) or len([n for n in (raw.get("left"), raw.get("right")) if n])
-        problem = measure_fn_error(arithmetic_fn, operand_count or 2)
-        if problem:
-            raise BindError(f"measures.{key} fn {problem}")
-    expr = None
-    if kind == "expr":
-        expr_raw = raw.get("expr")
-        if not expr_raw or not str(expr_raw).strip():
-            raise BindError(f"measures.{key} op=expr requires `expr:` with a formula.")
-        expr = str(expr_raw).strip()
-        node = parse_expression(expr, what=f"measures.{key}.expr")
-        names = expression_columns(node)
-        if not names:
-            raise BindError(f"measures.{key} expr must name at least one other measure.")
-        if raw.get("inputs"):
-            inputs, input_params = _parse_fn_inputs(key, raw.get("inputs"))
-            bindable = input_params or inputs
-            unknown = [n for n in names if n not in bindable]
-            if unknown:
-                raise BindError(
-                    f"measures.{key} expr names {unknown[0]!r}, which is not in inputs: {list(bindable)}."
-                )
-        else:
-            inputs, input_params = names, ()
     cuts = tuple(raw["cuts"]) if raw.get("cuts") is not None else None
-    hook = raw.get("hook")
-    if kind == "hook":
-        hook = hook or raw.get("fn")
-        if not hook:
-            raise BindError(f"measures.{key} op=hook requires `hook:` (an allowlisted name).")
-        from kpi_engine.extensions.hooks import REGISTRY
-
-        if str(hook) not in REGISTRY:
-            raise BindError(
-                f"measures.{key} names unknown hook {hook!r}. "
-                "Register it in kpi_engine.extensions.hooks.REGISTRY."
-            )
-    constant = None
-    if kind == "constant":
-        if raw.get("value") is None:
-            raise BindError(f"measures.{key} op=constant requires `value:`.")
-        try:
-            constant = float(raw["value"])
-        except (TypeError, ValueError) as exc:
-            raise BindError(
-                f"measures.{key} op=constant value must be a number (got {raw.get('value')!r})."
-            ) from exc
-    rank_order = None
-    rank_group_by: tuple[str, ...] = ()
-    if kind == "rank":
-        order = str(raw.get("order") or "desc").strip().lower()
-        if order not in {"asc", "desc"}:
-            raise BindError(f"measures.{key} op=rank order must be asc or desc.")
-        rank_order = order
-        rank_group_by = _parse_partition_by(key, kind, raw)
-    if kind == "percent_of_total":
-        rank_group_by = _parse_partition_by(key, kind, raw)
-    return OutputSpec(
-        key=str(key),
-        kind=kind,
-        of=of,
-        offset=offset,
-        trailing_months=trailing,
-        inclusive=bool(raw.get("inclusive", True)),
-        fn=raw.get("fn"),
-        hook=str(hook) if hook else None,
-        left=raw.get("left"),
-        right=raw.get("right"),
-        cuts=cuts,
-        window_range=window_range,
-        trailing_unit=trailing_unit,
-        operands=operands,
-        inputs=inputs,
-        input_params=input_params,
-        expr=expr,
-        constant=constant,
-        rank_order=rank_order,
-        rank_group_by=rank_group_by,
+    return plugin.parse(
+        key,
+        CommonMeasureFields(
+            of=of,
+            operands=operands,
+            offset=offset,
+            trailing_months=trailing,
+            trailing_unit=trailing_unit,
+            inclusive=bool(raw.get("inclusive", True)),
+            cuts=cuts,
+            window_range=window_range,
+            raw=raw,
+        ),
     )
 
 

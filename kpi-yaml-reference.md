@@ -6,6 +6,7 @@ Use this document while writing `udfs/config/kpis/<kpi_id>.yaml` and `udfs/confi
 
 Related docs:
 
+- [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) — generated catalog of ops, functions, and hooks (`enabled`, examples)
 - [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — write a KPI YAML: function catalog, columns vs expressions, when to use what, current limits
 - [kpi-onboarding-guide.md](kpi-onboarding-guide.md) — the step-by-step process and which files to change
 - [README.md](README.md) — folders, install, request path
@@ -738,7 +739,9 @@ Work down this list and stop at the first row that fits.
 | Maths over other measures' results | **Measure function** — register it, then `op: fn` + `inputs:` |
 | A one-off algorithm needing the whole period series | **Hook** |
 
-Registering a function never requires an engine change. Both registries are validated at bind time, so a typo names the registered alternatives instead of failing mid-request.
+Registering a function never requires an engine change. Add the Python under `capabilities/` and a row in the matching file under `registries/`. Both registries are validated at bind time, so a typo names the registered alternatives instead of failing mid-request. See [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md).
+
+This registry does **not** cover filter operators, compose templates, time format aliases, or aggregations — those stay platform code in `core/`.
 
 ### 10.1 Column functions — `base_measures.op`
 

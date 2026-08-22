@@ -136,6 +136,141 @@ share:
   partition_by: [region]
 ```
 
+### `ntile`
+
+Bucket groups into N tiles using RANK-style ties.  
+`role: addon` · `enabled: on`
+
+```yaml
+value_quartile:
+  op: ntile
+  of: current_value
+  tiles: 4
+  order: desc
+```
+
+### `dense_rank`
+
+Rank groups on a cut. Ties share a rank; the next rank does not skip.  
+`role: addon` · `enabled: on`
+
+```yaml
+reason_dense_rank:
+  op: dense_rank
+  of: current_value
+  order: desc
+```
+
+### `row_number`
+
+Unique 1..n order on a cut. Nulls sort last.  
+`role: addon` · `enabled: on`
+
+```yaml
+reason_row:
+  op: row_number
+  of: current_value
+  order: desc
+```
+
+### `cumulative_share`
+
+Running share of of (Pareto). Last row in desc order is 100.  
+`role: addon` · `enabled: on`
+
+```yaml
+pareto:
+  op: cumulative_share
+  of: current_value
+  order: desc
+```
+
+### `running_total`
+
+Ordered running sum of of on the cut.  
+`role: addon` · `enabled: on`
+
+```yaml
+running:
+  op: running_total
+  of: current_value
+  order: desc
+```
+
+### `contribution`
+
+Share of the cut's (of - vs) change. Who drove the movement.  
+`role: addon` · `enabled: on`
+
+```yaml
+yoy_contrib:
+  op: contribution
+  of: current_value
+  vs: previous_year_value
+```
+
+### `lag`
+
+Value of a base, point, or window measure at offset before the anchor.  
+`role: addon` · `enabled: on`
+
+```yaml
+value_3m_ly:
+  op: lag
+  of: value_3m
+  offset: { years: 1 }
+```
+
+### `lead`
+
+Value of a base, point, or window measure at offset after the anchor.  
+`role: addon` · `enabled: on`
+
+```yaml
+next_month:
+  op: lead
+  of: current_value
+  offset: { months: 1 }
+```
+
+### `index`
+
+of / lagged of × 100. 100 means unchanged vs the offset period.  
+`role: addon` · `enabled: on`
+
+```yaml
+volume_index:
+  op: index
+  of: current_value
+  offset: { years: 1 }
+```
+
+### `vs_target`
+
+Compare of to a target measure or literal (gap or percent).  
+`role: addon` · `enabled: on`
+
+```yaml
+gap:
+  op: vs_target
+  of: current_value
+  vs: target
+  as: gap
+```
+
+### `threshold`
+
+1 if of meets cmp vs a literal or measure, else 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+hit_sla:
+  op: threshold
+  of: current_value
+  cmp: gte
+  value: 95
+```
+
 ## Column functions (`base_measures.op`)
 
 ### `value` (aliases: identity)
@@ -369,6 +504,133 @@ mid:
   inputs: [a, b]
 ```
 
+### `abs`
+
+Absolute value of one measure scalar.  
+`role: addon` · `enabled: on`
+
+```yaml
+magnitude:
+  op: fn
+  fn: abs
+  inputs: [gap]
+```
+
+### `clamp`
+
+Clamp a scalar into [lo, hi].  
+`role: addon` · `enabled: on`
+
+```yaml
+bounded:
+  op: fn
+  fn: clamp
+  inputs: [current_value, floor, cap]
+```
+
+### `attainment`
+
+actual / target × 100. Null or zero target is null.  
+`role: addon` · `enabled: on`
+
+```yaml
+vs_goal:
+  op: fn
+  fn: attainment
+  inputs: [current_value, target]
+```
+
 ## Hooks (`measures.hook`)
 
-_None registered._
+### `seasonal_index`
+
+Anchor vs the average of the same calendar month in prior years.  
+`role: addon` · `enabled: on`
+
+```yaml
+seasonal:
+  op: hook
+  hook: seasonal_index
+  of: sotif_value
+  trailing: { months: 36 }
+```
+
+### `ewma`
+
+Recency-weighted average of period values. Alpha = 2 / (N + 1).  
+`role: addon` · `enabled: on`
+
+```yaml
+smoothed:
+  op: hook
+  hook: ewma
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `period_max`
+
+Largest period value in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+best_month:
+  op: hook
+  hook: period_max
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `period_min`
+
+Smallest period value in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+worst_month:
+  op: hook
+  hook: period_min
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `period_median`
+
+Median of period values in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+typical_month:
+  op: hook
+  hook: period_median
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `hit_rate`
+
+Percent of observed periods whose value is >= value.  
+`role: addon` · `enabled: on`
+
+```yaml
+months_on_sla:
+  op: hook
+  hook: hit_rate
+  of: sotif_value
+  trailing: { months: 12 }
+  value: 95
+```
+
+### `streak`
+
+Consecutive periods ending at the anchor whose value is >= value.  
+`role: addon` · `enabled: on`
+
+```yaml
+sla_streak:
+  op: hook
+  hook: streak
+  of: sotif_value
+  trailing: { months: 12 }
+  value: 95
+```

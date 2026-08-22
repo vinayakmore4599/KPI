@@ -114,3 +114,42 @@ avg:
       inputs: [a, b]
   module: kpi_engine.capabilities.functions.measure.impl
   attr: avg_scalars
+
+abs:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Absolute value of one measure scalar.
+  example: |
+    magnitude:
+      op: fn
+      fn: abs
+      inputs: [gap]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: abs_scalar
+
+clamp:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Clamp a scalar into [lo, hi].
+  example: |
+    bounded:
+      op: fn
+      fn: clamp
+      inputs: [current_value, floor, cap]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: clamp_scalars
+
+attainment:
+  role: addon
+  enabled: true
+  aliases: []
+  description: actual / target × 100. Null or zero target is null.
+  example: |
+    vs_goal:
+      op: fn
+      fn: attainment
+      inputs: [current_value, target]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: attainment

@@ -220,6 +220,109 @@ def agg_detail(
     return None
 
 
+def dense_rank(values: list[Any], *, descending: bool) -> list[int | None]:
+    """DENSE_RANK(): equal values share a rank; the next rank does not skip."""
+    ranked: list[int | None] = [None] * len(values)
+    order = [
+        (i, v)
+        for i, v in enumerate(values)
+        if v is not None and not (isinstance(v, float) and pd.isna(v))
+    ]
+    order.sort(key=lambda item: item[1], reverse=descending)
+    last_value: Any = object()
+    rank = 0
+    for i, value in order:
+        if value != last_value:
+            rank += 1
+            last_value = value
+        ranked[i] = rank
+    return ranked
+
+
+def row_numbers(
+    values: list[Any],
+    *,
+    descending: bool,
+    tie_keys: list[tuple[Any, ...]],
+) -> list[int]:
+    """Unique 1..n. Nulls sort last; remaining ties use `tie_keys`."""
+    indexed = list(enumerate(values))
+
+    def sort_key(item: tuple[int, Any]) -> tuple:
+        i, value = item
+        number = numeric_or_none(value)
+        null = number is None
+        ordered = 0.0 if null else (-number if descending else number)
+        return (null, ordered, tie_keys[i])
+
+    order = sorted(indexed, key=sort_key)
+    out = [0] * len(values)
+    for pos, (i, _) in enumerate(order, start=1):
+        out[i] = pos
+    return out
+
+
+def ntile_from_ranks(ranks: list[int | None], tiles: int) -> list[int | None]:
+    """Map RANK() onto 1..tiles via ceil(rank * tiles / n)."""
+    import math
+
+    n = sum(1 for rank in ranks if rank is not None)
+    if n == 0:
+        return [None] * len(ranks)
+    out: list[int | None] = []
+    for rank in ranks:
+        if rank is None:
+            out.append(None)
+        else:
+            out.append(int(math.ceil(rank * tiles / n)))
+    return out
+
+
+def negate_offset(offset):
+    """Flip a calendar offset (point/lag treat YAML offset as backwards)."""
+    from dataclasses import replace
+
+    if offset is None:
+        return None
+    return replace(
+        offset,
+        days=-offset.days,
+        months=-offset.months,
+        years=-offset.years,
+        quarters=-offset.quarters,
+    )
+
+
+def shifted_anchor(anchor: date, offset, kpi: KpiSpec, *, backward: bool) -> date:
+    """Anchor plus or minus `offset`, truncated to the KPI grain."""
+    from kpi_engine.dates import apply_offset, truncate_period
+
+    if offset is None:
+        return truncate_period_safe(anchor, kpi)
+    applied = negate_offset(offset) if backward else offset
+    target = apply_offset(anchor, applied)
+    if kpi.time is None:
+        return target
+    return truncate_period(target, kpi.time)
+
+
+def offset_lookback(offset, time, anchor) -> int:
+    """Grain periods an offset reaches behind the anchor."""
+    if offset is None:
+        return 0
+    if time is None or (
+        time.grain == "month" and offset.days == 0 and offset.quarters == 0
+    ):
+        return offset.total_months
+    from kpi_engine.dates import apply_offset, periods_between, truncate_period
+    from datetime import date as date_cls
+
+    dummy = date_cls(2021, 6, 15)
+    dummy_t = truncate_period(dummy, time)
+    target = truncate_period(apply_offset(dummy, negate_offset(offset)), time)
+    return periods_between(target, dummy_t, time)
+
+
 def sql_rank(values: list[Any], *, descending: bool) -> list[int | None]:
     """RANK(): equal values share a rank; the next rank skips (1, 2, 2, 4)."""
     ranked: list[int | None] = [None] * len(values)

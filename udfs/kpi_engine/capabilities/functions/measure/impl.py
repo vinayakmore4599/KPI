@@ -61,3 +61,22 @@ multiply_scalars = _numeric_fold(lambda a, b: a * b)
 min_scalars = _numeric_pick(min)
 max_scalars = _numeric_pick(max)
 avg_scalars = _numeric_pick(lambda vs: sum(vs) / len(vs))
+
+
+def abs_scalar(value: Any) -> float | None:
+    """Absolute value of one measure scalar."""
+    if value is None:
+        return None
+    return abs(float(value))
+
+
+def clamp_scalars(value: Any, lo: Any, hi: Any) -> float | None:
+    """Clamp `value` into [lo, hi]. Any null yields null."""
+    if value is None or lo is None or hi is None:
+        return None
+    return float(min(max(value, lo), hi))
+
+
+def attainment(actual: Any, target: Any) -> float | None:
+    """actual / target * 100. Null or zero target yields null."""
+    return percent_scalars(actual, target)

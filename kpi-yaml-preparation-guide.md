@@ -668,7 +668,7 @@ sql: |
 
 ## 13. Custom functions (only when YAML is not enough)
 
-**Prefer reuse.** Read [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) (generated from the YAML registries) or call `kpi_engine.list_capabilities()`.
+**Prefer reuse.** Read [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) (generated from the YAML registries) or call `kpi_engine.list_capabilities()`. Add-on kinds (`ntile`, `lag`, …) and hooks (`ewma`, `hit_rate`, …) are listed there with `role: addon`.
 
 Decision tree:
 

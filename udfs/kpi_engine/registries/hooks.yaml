@@ -1,1 +1,99 @@
-{}
+seasonal_index:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Anchor vs the average of the same calendar month in prior years.
+  example: |
+    seasonal:
+      op: hook
+      hook: seasonal_index
+      of: sotif_value
+      trailing: { months: 36 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: seasonal_index
+
+ewma:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Recency-weighted average of period values. Alpha = 2 / (N + 1).
+  example: |
+    smoothed:
+      op: hook
+      hook: ewma
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: ewma
+
+period_max:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Largest period value in the trailing window.
+  example: |
+    best_month:
+      op: hook
+      hook: period_max
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_max
+
+period_min:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Smallest period value in the trailing window.
+  example: |
+    worst_month:
+      op: hook
+      hook: period_min
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_min
+
+period_median:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Median of period values in the trailing window.
+  example: |
+    typical_month:
+      op: hook
+      hook: period_median
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_median
+
+hit_rate:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Percent of observed periods whose value is >= value.
+  example: |
+    months_on_sla:
+      op: hook
+      hook: hit_rate
+      of: sotif_value
+      trailing: { months: 12 }
+      value: 95
+  module: kpi_engine.capabilities.hooks.impl
+  attr: hit_rate
+
+streak:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Consecutive periods ending at the anchor whose value is >= value.
+  example: |
+    sla_streak:
+      op: hook
+      hook: streak
+      of: sotif_value
+      trailing: { months: 12 }
+      value: 95
+  module: kpi_engine.capabilities.hooks.impl
+  attr: streak

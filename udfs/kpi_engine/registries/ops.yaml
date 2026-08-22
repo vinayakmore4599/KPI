@@ -137,3 +137,149 @@ percent_of_total:
       partition_by: [region]
   module: kpi_engine.capabilities.ops.cut
   attr: PercentOfTotal
+
+ntile:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Bucket groups into N tiles using RANK-style ties.
+  example: |
+    value_quartile:
+      op: ntile
+      of: current_value
+      tiles: 4
+      order: desc
+  module: kpi_engine.capabilities.ops.cut
+  attr: Ntile
+
+dense_rank:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Rank groups on a cut. Ties share a rank; the next rank does not skip.
+  example: |
+    reason_dense_rank:
+      op: dense_rank
+      of: current_value
+      order: desc
+  module: kpi_engine.capabilities.ops.cut
+  attr: DenseRank
+
+row_number:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Unique 1..n order on a cut. Nulls sort last.
+  example: |
+    reason_row:
+      op: row_number
+      of: current_value
+      order: desc
+  module: kpi_engine.capabilities.ops.cut
+  attr: RowNumber
+
+cumulative_share:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Running share of of (Pareto). Last row in desc order is 100.
+  example: |
+    pareto:
+      op: cumulative_share
+      of: current_value
+      order: desc
+  module: kpi_engine.capabilities.ops.cut
+  attr: CumulativeShare
+
+running_total:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Ordered running sum of of on the cut.
+  example: |
+    running:
+      op: running_total
+      of: current_value
+      order: desc
+  module: kpi_engine.capabilities.ops.cut
+  attr: RunningTotal
+
+contribution:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Share of the cut's (of - vs) change. Who drove the movement.
+  example: |
+    yoy_contrib:
+      op: contribution
+      of: current_value
+      vs: previous_year_value
+  module: kpi_engine.capabilities.ops.cut
+  attr: Contribution
+
+lag:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Value of a base, point, or window measure at offset before the anchor.
+  example: |
+    value_3m_ly:
+      op: lag
+      of: value_3m
+      offset: { years: 1 }
+  module: kpi_engine.capabilities.ops.period
+  attr: Lag
+
+lead:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Value of a base, point, or window measure at offset after the anchor.
+  example: |
+    next_month:
+      op: lead
+      of: current_value
+      offset: { months: 1 }
+  module: kpi_engine.capabilities.ops.period
+  attr: Lead
+
+index:
+  role: addon
+  enabled: true
+  aliases: []
+  description: of / lagged of × 100. 100 means unchanged vs the offset period.
+  example: |
+    volume_index:
+      op: index
+      of: current_value
+      offset: { years: 1 }
+  module: kpi_engine.capabilities.ops.period
+  attr: Index
+
+vs_target:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Compare of to a target measure or literal (gap or percent).
+  example: |
+    gap:
+      op: vs_target
+      of: current_value
+      vs: target
+      as: gap
+  module: kpi_engine.capabilities.ops.period
+  attr: VsTarget
+
+threshold:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1 if of meets cmp vs a literal or measure, else 0.
+  example: |
+    hit_sla:
+      op: threshold
+      of: current_value
+      cmp: gte
+      value: 95
+  module: kpi_engine.capabilities.ops.period
+  attr: Threshold

@@ -345,7 +345,7 @@ class Dimension(OpPlugin):
 
 class Hook(OpPlugin):
     name = "hook"
-    extra_keys = frozenset({"hook", "fn"})
+    extra_keys = frozenset({"hook", "fn", "value"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -360,13 +360,27 @@ class Hook(OpPlugin):
                 f"measures.{key} names unknown hook {hook!r}. "
                 "Register it in registries/hooks.yaml."
             )
-        return OutputSpec(**{**spec.__dict__, "hook": str(hook), "fn": raw.get("fn")})
+        constant = spec.constant
+        if raw.get("value") is not None:
+            try:
+                constant = float(raw["value"])
+            except (TypeError, ValueError) as exc:
+                raise BindError(
+                    f"measures.{key} op=hook value must be a number."
+                ) from exc
+        return OutputSpec(
+            **{**spec.__dict__, "hook": str(hook), "fn": raw.get("fn"), "constant": constant}
+        )
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         if spec.of:
             support.require_base_of(spec, kpi)
         if kpi.time is None and (_offset_nonzero(spec.offset) or spec.trailing_months):
             raise BindError(f"measures.{spec.key} (hook lookback) needs a time: block.")
+        if spec.hook in {"hit_rate", "streak"} and spec.constant is None:
+            raise BindError(
+                f"measures.{spec.key} hook={spec.hook} requires `value:` (the bar)."
+            )
 
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
         if spec.offset:

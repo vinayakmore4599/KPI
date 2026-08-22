@@ -304,6 +304,56 @@ class Contribution(_CutBase):
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_contribution)
 
 
+class PercentRank(_CutBase):
+    name = "percent_rank"
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_percent_rank)
+
+
+class GapToLeader(_CutBase):
+    name = "gap_to_leader"
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_gap_to_leader)
+
+
+class GapToAvg(_CutBase):
+    name = "gap_to_avg"
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_gap_to_avg)
+
+
+class ZScore(_CutBase):
+    name = "zscore"
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_zscore)
+
+
+class RunningAvg(_CutBase):
+    name = "running_avg"
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_running_avg)
+
+
+class TopN(_CutBase):
+    name = "top_n"
+    extra_keys = _CutBase.extra_keys | frozenset({"n"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        n = common.raw.get("n")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise BindError(f"measures.{key} op=top_n requires integer n: >= 1.")
+        return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "n": n}})
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_top_n)
+
+
 def _tie_key(row: dict[str, Any], spec: OutputSpec) -> tuple[Any, ...]:
     return (spec.key, tuple((dim, row.get(dim)) for dim in spec.rank_group_by), id(row))
 
@@ -451,4 +501,143 @@ def _write_contribution(cut_rows, spec: OutputSpec, src: str, indexes: list[int]
             result=share,
             of=spec.of,
             inputs={"delta": delta, "total": total},
+        )
+
+
+def _write_percent_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+    values = [cut_rows[i].get(src) for i in indexes]
+    descending = (spec.rank_order or "desc") == "desc"
+    ranks = support.sql_rank(values, descending=descending)
+    n = sum(1 for rank in ranks if rank is not None)
+    for i, rank, source in zip(indexes, ranks, values):
+        if rank is None:
+            value = None
+        elif n <= 1:
+            value = 0.0
+        else:
+            value = float(rank - 1) * 100.0 / float(n - 1)
+        cut_rows[i][spec.key] = value
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="percent_rank",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=value,
+            of=spec.of,
+            inputs={spec.of or src: source},
+        )
+
+
+def _write_gap_to_leader(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+    values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
+    observed = [v for v in values if v is not None]
+    leader = max(observed) if observed else None
+    for i, source in zip(indexes, values):
+        value = None if source is None or leader is None else float(source) - float(leader)
+        cut_rows[i][spec.key] = value
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="gap_to_leader",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=value,
+            of=spec.of,
+            inputs={spec.of or src: source, "leader": leader},
+        )
+
+
+def _write_gap_to_avg(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+    values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
+    observed = [v for v in values if v is not None]
+    mean = sum(observed) / float(len(observed)) if observed else None
+    for i, source in zip(indexes, values):
+        value = None if source is None or mean is None else float(source) - float(mean)
+        cut_rows[i][spec.key] = value
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="gap_to_avg",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=value,
+            of=spec.of,
+            inputs={spec.of or src: source, "mean": mean},
+        )
+
+
+def _write_zscore(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+    values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
+    observed = [v for v in values if v is not None]
+    moments = support.sample_mean_var(observed)
+    mean = moments[0] if moments else None
+    stdev = (moments[1] ** 0.5) if moments else None
+    for i, source in zip(indexes, values):
+        if source is None or mean is None or stdev is None:
+            value = None
+        elif stdev == 0:
+            value = 0.0
+        else:
+            value = (float(source) - float(mean)) / float(stdev)
+        cut_rows[i][spec.key] = value
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="zscore",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=value,
+            of=spec.of,
+            inputs={spec.of or src: source, "mean": mean, "stdev": stdev},
+        )
+
+
+def _write_running_avg(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+    values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
+    descending = (spec.rank_order or "desc") == "desc"
+    running = 0.0
+    count = 0
+    for pos in _ordered_indexes(values, indexes, descending=descending):
+        i = indexes[pos]
+        source = values[pos]
+        if source is None:
+            avg = None
+        else:
+            running += source
+            count += 1
+            avg = float(running) / float(count)
+        cut_rows[i][spec.key] = avg
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="running_avg",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=avg,
+            of=spec.of,
+            inputs={spec.of or src: source},
+        )
+
+
+def _write_top_n(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+    values = [cut_rows[i].get(src) for i in indexes]
+    descending = (spec.rank_order or "desc") == "desc"
+    ranks = support.sql_rank(values, descending=descending)
+    n = int(spec.params["n"])
+    for i, rank, source in zip(indexes, ranks, values):
+        if rank is None:
+            flag = None
+        else:
+            flag = 1.0 if rank <= n else 0.0
+        cut_rows[i][spec.key] = flag
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="top_n",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=flag,
+            of=spec.of,
+            inputs={spec.of or src: source, "n": n},
         )

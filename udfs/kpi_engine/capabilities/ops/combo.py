@@ -377,7 +377,9 @@ class Hook(OpPlugin):
             support.require_base_of(spec, kpi)
         if kpi.time is None and (_offset_nonzero(spec.offset) or spec.trailing_months):
             raise BindError(f"measures.{spec.key} (hook lookback) needs a time: block.")
-        if spec.hook in {"hit_rate", "streak"} and spec.constant is None:
+        from kpi_engine.extensions.hooks import requires_value
+
+        if requires_value(spec.hook) and spec.constant is None:
             raise BindError(
                 f"measures.{spec.key} hook={spec.hook} requires `value:` (the bar)."
             )

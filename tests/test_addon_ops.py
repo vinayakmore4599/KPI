@@ -20,11 +20,19 @@ ADDON_OPS = {
     "cumulative_share": "cut",
     "running_total": "cut",
     "contribution": "cut",
+    "percent_rank": "cut",
+    "gap_to_leader": "cut",
+    "gap_to_avg": "cut",
+    "zscore": "cut",
+    "running_avg": "cut",
+    "top_n": "cut",
     "lag": "combo",
     "lead": "combo",
     "index": "combo",
     "vs_target": "combo",
     "threshold": "combo",
+    "diff": "combo",
+    "pct_change": "combo",
 }
 
 ADDON_HOOKS = {
@@ -35,8 +43,18 @@ ADDON_HOOKS = {
     "period_median",
     "period_avg",
     "period_sum",
+    "period_stdev",
+    "period_var",
+    "period_cv",
+    "period_range",
+    "period_count",
     "hit_rate",
     "streak",
+    "miss_rate",
+    "miss_streak",
+    "longest_streak",
+    "cagr",
+    "slope",
 }
 
 
@@ -51,6 +69,9 @@ def test_addon_ops_and_hooks_boot_from_packaged_yaml():
     for name in ADDON_HOOKS:
         assert hooks[name]["role"] == "addon"
         assert hooks[name]["enabled"] is True
+    for name in ("hit_rate", "streak", "miss_rate", "miss_streak", "longest_streak"):
+        assert hooks[name]["requires_value"] is True
+    assert hooks["ewma"]["requires_value"] is False
 
 
 @pytest.mark.parametrize("kind", sorted(ADDON_OPS))
@@ -61,7 +82,9 @@ def test_unknown_key_on_each_addon_kind(extra_config, kind):
         body["tiles"] = 4
     if kind == "contribution":
         body["vs"] = "current_value"
-    if kind in {"lag", "lead", "index"}:
+    if kind == "top_n":
+        body["n"] = 1
+    if kind in {"lag", "lead", "index", "diff", "pct_change"}:
         body["offset"] = {"months": 1}
     if kind == "vs_target":
         body["value"] = 1
@@ -151,6 +174,49 @@ def test_cut_addons_compute(parquet_path, extra_config):
     assert other["contrib"] == 0.0
 
 
+def test_recommended_cut_ops_compute(parquet_path, extra_config):
+    spec = minimal_kpi(9912)
+    spec["measures"]["pct_rank"] = {
+        "op": "percent_rank",
+        "of": "current_value",
+        "order": "desc",
+    }
+    spec["measures"]["vs_best"] = {"op": "gap_to_leader", "of": "current_value"}
+    spec["measures"]["vs_mean"] = {"op": "gap_to_avg", "of": "current_value"}
+    spec["measures"]["z"] = {"op": "zscore", "of": "current_value"}
+    spec["measures"]["run_avg"] = {
+        "op": "running_avg",
+        "of": "current_value",
+        "order": "desc",
+    }
+    spec["measures"]["top"] = {"op": "top_n", "of": "current_value", "n": 1, "order": "desc"}
+    write_yaml(extra_config / "kpis" / "9912.yaml", spec)
+    result = compute(
+        make_context(
+            parquet_path,
+            measures=["current_value", "pct_rank", "vs_best", "vs_mean", "z", "run_avg", "top"],
+            supplier=["ABC"],
+            kpi_id=9912,
+        ),
+        config_dir=extra_config,
+    )
+    late = find_row(result, cut="G", reason="LATE_SUPPLIER")
+    other = find_row(result, cut="G", reason="OTHER")
+    assert late["pct_rank"] == 0.0
+    assert other["pct_rank"] == 100.0
+    assert late["vs_best"] == 0.0
+    assert other["vs_best"] == -39.0
+    assert late["vs_mean"] == 19.5
+    assert other["vs_mean"] == -19.5
+    stdev = 760.5 ** 0.5
+    assert abs(late["z"] - (19.5 / stdev)) < 1e-9
+    assert abs(other["z"] - (-19.5 / stdev)) < 1e-9
+    assert late["run_avg"] == 45.0
+    assert other["run_avg"] == 25.5
+    assert late["top"] == 1.0
+    assert other["top"] == 0.0
+
+
 def test_lag_lead_index_vs_target_threshold(parquet_path, extra_config):
     spec = minimal_kpi(9904)
     spec["measures"]["previous_year_value"] = {
@@ -188,6 +254,25 @@ def test_lag_lead_index_vs_target_threshold(parquet_path, extra_config):
     assert late["gap"] == 5.0
     assert abs(late["gap_pct"] - 12.5) < 1e-9
     assert late["hit"] == 0.0
+    spec["measures"]["yoy_gap"] = {"op": "diff", "of": "current_value", "offset": {"years": 1}}
+    spec["measures"]["yoy_pct"] = {
+        "op": "pct_change",
+        "of": "current_value",
+        "offset": {"years": 1},
+    }
+    write_yaml(extra_config / "kpis" / "9904.yaml", spec)
+    shifted = compute(
+        make_context(
+            parquet_path,
+            measures=["yoy_gap", "yoy_pct"],
+            supplier=["ABC"],
+            kpi_id=9904,
+        ),
+        config_dir=extra_config,
+    )
+    late_shift = find_row(shifted, cut="G", reason="LATE_SUPPLIER")
+    assert late_shift["yoy_gap"] == 30.0
+    assert abs(late_shift["yoy_pct"] - 2.0) < 1e-9
 
     spec["measures"]["next_month"] = {
         "op": "lead",
@@ -297,6 +382,69 @@ def test_hooks_series_formulas(parquet_path, extra_config):
         "trailing": {"months": 3},
         "value": 30,
     }
+    spec["measures"]["vol"] = {
+        "op": "hook",
+        "hook": "period_stdev",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
+    spec["measures"]["variance"] = {
+        "op": "hook",
+        "hook": "period_var",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
+    spec["measures"]["rel_vol"] = {
+        "op": "hook",
+        "hook": "period_cv",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
+    spec["measures"]["spread"] = {
+        "op": "hook",
+        "hook": "period_range",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
+    spec["measures"]["seen"] = {
+        "op": "hook",
+        "hook": "period_count",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
+    spec["measures"]["off_bar"] = {
+        "op": "hook",
+        "hook": "miss_rate",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+        "value": 30,
+    }
+    spec["measures"]["off_run"] = {
+        "op": "hook",
+        "hook": "miss_streak",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+        "value": 30,
+    }
+    spec["measures"]["best_run"] = {
+        "op": "hook",
+        "hook": "longest_streak",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+        "value": 30,
+    }
+    spec["measures"]["annualized"] = {
+        "op": "hook",
+        "hook": "cagr",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
+    spec["measures"]["tilt"] = {
+        "op": "hook",
+        "hook": "slope",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
     write_yaml(extra_config / "kpis" / "9906.yaml", spec)
     result = compute(
         make_context(
@@ -311,6 +459,16 @@ def test_hooks_series_formulas(parquet_path, extra_config):
                 "total",
                 "on_bar",
                 "held",
+                "vol",
+                "variance",
+                "rel_vol",
+                "spread",
+                "seen",
+                "off_bar",
+                "off_run",
+                "best_run",
+                "annualized",
+                "tilt",
             ],
             supplier=["ABC"],
             kpi_id=9906,
@@ -327,13 +485,24 @@ def test_hooks_series_formulas(parquet_path, extra_config):
     assert late["total"] == 90.0
     assert abs(late["on_bar"] - (2.0 / 3.0) * 100) < 1e-9
     assert late["held"] == 2.0
+    assert late["vol"] == 15.0
+    assert late["variance"] == 225.0
+    assert late["rel_vol"] == 50.0
+    assert late["spread"] == 30.0
+    assert late["seen"] == 3.0
+    assert abs(late["off_bar"] - (1.0 / 3.0) * 100) < 1e-9
+    assert late["off_run"] == 0.0
+    assert late["best_run"] == 2.0
+    assert abs(late["annualized"] - (3.0 ** 6 - 1.0)) < 1e-9
+    assert late["tilt"] == 15.0
 
 
-def test_hit_rate_requires_value(extra_config):
+@pytest.mark.parametrize("hook", ["hit_rate", "miss_rate", "miss_streak", "longest_streak"])
+def test_bar_hooks_require_value(extra_config, hook):
     spec = minimal_kpi(9907)
     spec["measures"]["on_bar"] = {
         "op": "hook",
-        "hook": "hit_rate",
+        "hook": hook,
         "of": "sotif_value",
         "trailing": {"months": 3},
     }
@@ -349,4 +518,7 @@ def test_generated_catalog_includes_addons():
     assert "`ewma`" in text
     assert "`period_avg`" in text
     assert "`period_sum`" in text
+    assert "`percent_rank`" in text
+    assert "`diff`" in text
+    assert "`cagr`" in text
     assert "role: addon" in text

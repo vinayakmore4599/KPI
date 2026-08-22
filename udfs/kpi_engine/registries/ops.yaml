@@ -283,3 +283,105 @@ threshold:
       value: 95
   module: kpi_engine.capabilities.ops.period
   attr: Threshold
+
+percent_rank:
+  role: addon
+  enabled: true
+  aliases: []
+  description: RANK-style percent rank on a cut, scaled 0-100. One group is 0.
+  example: |
+    reason_pct_rank:
+      op: percent_rank
+      of: current_value
+      order: desc
+  module: kpi_engine.capabilities.ops.cut
+  attr: PercentRank
+
+gap_to_leader:
+  role: addon
+  enabled: true
+  aliases: []
+  description: of minus the partition max. The leader is 0.
+  example: |
+    vs_best:
+      op: gap_to_leader
+      of: current_value
+  module: kpi_engine.capabilities.ops.cut
+  attr: GapToLeader
+
+gap_to_avg:
+  role: addon
+  enabled: true
+  aliases: []
+  description: of minus the partition mean.
+  example: |
+    vs_typical:
+      op: gap_to_avg
+      of: current_value
+  module: kpi_engine.capabilities.ops.cut
+  attr: GapToAvg
+
+zscore:
+  role: addon
+  enabled: true
+  aliases: []
+  description: (of - mean) / sample stdev on the partition. Zero stdev is 0.
+  example: |
+    reason_z:
+      op: zscore
+      of: current_value
+  module: kpi_engine.capabilities.ops.cut
+  attr: ZScore
+
+running_avg:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Ordered running mean of of on the cut.
+  example: |
+    running_mean:
+      op: running_avg
+      of: current_value
+      order: desc
+  module: kpi_engine.capabilities.ops.cut
+  attr: RunningAvg
+
+top_n:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1 if RANK() is <= n, else 0. Ties can produce more than n ones.
+  example: |
+    top_reason:
+      op: top_n
+      of: current_value
+      n: 3
+      order: desc
+  module: kpi_engine.capabilities.ops.cut
+  attr: TopN
+
+diff:
+  role: addon
+  enabled: true
+  aliases: []
+  description: of minus the same measure at offset before the anchor.
+  example: |
+    vs_last_year:
+      op: diff
+      of: current_value
+      offset: { years: 1 }
+  module: kpi_engine.capabilities.ops.period
+  attr: Diff
+
+pct_change:
+  role: addon
+  enabled: true
+  aliases: []
+  description: growth_pct(of, lagged of) at offset. Same scale as fn growth_pct.
+  example: |
+    yoy:
+      op: pct_change
+      of: current_value
+      offset: { years: 1 }
+  module: kpi_engine.capabilities.ops.period
+  attr: PctChange

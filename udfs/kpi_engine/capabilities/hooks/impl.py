@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 
 from kpi_engine.capabilities.ops import support
-from kpi_engine.dates import period_range_inclusive
+from kpi_engine.dates import period_range_inclusive, periods_between
 from kpi_engine.exceptions import CatalogError
 
 
@@ -153,3 +153,123 @@ def streak(series, *, kpi, plan, spec, **_):
             break
         count += 1
     return float(count)
+
+
+def period_stdev(series, *, kpi, plan, spec, **_):
+    """Sample standard deviation of observed period values."""
+    values = [v for _, v in _observed_pairs(series, kpi, plan, spec)]
+    moments = support.sample_mean_var(values)
+    return None if moments is None else float(moments[1] ** 0.5)
+
+
+def period_var(series, *, kpi, plan, spec, **_):
+    """Sample variance of observed period values."""
+    values = [v for _, v in _observed_pairs(series, kpi, plan, spec)]
+    moments = support.sample_mean_var(values)
+    return None if moments is None else float(moments[1])
+
+
+def period_cv(series, *, kpi, plan, spec, **_):
+    """Sample stdev / mean × 100. Null when mean is 0 or fewer than two values."""
+    values = [v for _, v in _observed_pairs(series, kpi, plan, spec)]
+    moments = support.sample_mean_var(values)
+    if moments is None or moments[0] == 0:
+        return None
+    return float(moments[1] ** 0.5) * 100.0 / float(moments[0])
+
+
+def period_range(series, *, kpi, plan, spec, **_):
+    """Largest minus smallest observed period value."""
+    values = [v for _, v in _observed_pairs(series, kpi, plan, spec)]
+    if not values:
+        return None
+    return float(max(values) - min(values))
+
+
+def period_count(series, *, kpi, plan, spec, **_):
+    """Count of observed (non-null) periods in the trailing window."""
+    return float(len(_observed_pairs(series, kpi, plan, spec)))
+
+
+def miss_rate(series, *, kpi, plan, spec, **_):
+    """Percent of observed periods whose value is below value."""
+    bar = _require_bar(spec)
+    values = [v for _, v in _observed_pairs(series, kpi, plan, spec)]
+    if not values:
+        return None
+    misses = sum(1 for v in values if v < bar)
+    return float(misses) * 100.0 / float(len(values))
+
+
+def miss_streak(series, *, kpi, plan, spec, **_):
+    """Consecutive misses (value < bar) ending at the anchor. 0 if the anchor hits."""
+    if kpi.time is None or plan is None or not spec.of:
+        return None
+    bar = _require_bar(spec)
+    anchor = support.truncate_period_safe(plan.anchor, kpi)
+    current = _at(series, kpi.time.column, spec.of, anchor)
+    if current is None:
+        return None
+    dates = list(reversed(_window_dates(kpi, plan, spec)))
+    count = 0
+    for month in dates:
+        value = _at(series, kpi.time.column, spec.of, month)
+        if value is None:
+            if month == anchor:
+                return None
+            break
+        if value >= bar:
+            break
+        count += 1
+    return float(count)
+
+
+def longest_streak(series, *, kpi, plan, spec, **_):
+    """Longest run of observed periods >= value anywhere in the window."""
+    bar = _require_bar(spec)
+    best = 0
+    run = 0
+    for _, value in _observed_pairs(series, kpi, plan, spec):
+        if value >= bar:
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+    return float(best)
+
+
+def cagr(series, *, kpi, plan, spec, **_):
+    """Compound annual growth from first to last observed value (same scale as growth_pct)."""
+    if kpi.time is None:
+        return None
+    pairs = _observed_pairs(series, kpi, plan, spec)
+    if len(pairs) < 2:
+        return None
+    first_date, first = pairs[0]
+    last_date, last = pairs[-1]
+    if first in (None, 0) or last is None:
+        return None
+    steps = periods_between(first_date, last_date, kpi.time)
+    if steps == 0:
+        return None
+    per_year = {"day": 365, "month": 12, "quarter": 4, "year": 1}[kpi.time.grain]
+    years = float(steps) / float(per_year)
+    return float(last / first) ** (1.0 / years) - 1.0
+
+
+def slope(series, *, kpi, plan, spec, **_):
+    """Least-squares slope of value vs 0..n-1 observed period index."""
+    pairs = _observed_pairs(series, kpi, plan, spec)
+    n = len(pairs)
+    if n < 2:
+        return None
+    xs = list(range(n))
+    ys = [value for _, value in pairs]
+    sum_x = float(sum(xs))
+    sum_y = float(sum(ys))
+    sum_xx = float(sum(x * x for x in xs))
+    sum_xy = float(sum(x * y for x, y in zip(xs, ys)))
+    den = n * sum_xx - sum_x * sum_x
+    if den == 0:
+        return None
+    return (n * sum_xy - sum_x * sum_y) / den

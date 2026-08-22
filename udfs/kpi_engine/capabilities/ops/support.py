@@ -427,6 +427,15 @@ def used_points(
     return out
 
 
+def sample_mean_var(values: list[float]) -> tuple[float, float] | None:
+    """Sample mean and variance. Needs at least two values."""
+    if len(values) < 2:
+        return None
+    mean = sum(values) / float(len(values))
+    var = sum((v - mean) ** 2 for v in values) / float(len(values) - 1)
+    return mean, var
+
+
 def numeric_or_none(value: Any) -> float | None:
     """Coerce a stashed source to float; null/NaN stay None."""
     if value is None:

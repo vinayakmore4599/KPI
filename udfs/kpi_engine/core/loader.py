@@ -58,7 +58,7 @@ def _reset() -> None:
     global _loaded, _entries, _skipped_addons
     from kpi_engine.core.fn_apply import COLUMN_FNS, MEASURE_FNS, _COLUMN_META, _MEASURE_META
     from kpi_engine.core.op_registry import OP_KINDS, _ALIASES
-    from kpi_engine.extensions.hooks import REGISTRY
+    from kpi_engine.extensions.hooks import REGISTRY, REQUIRES_VALUE
 
     COLUMN_FNS.clear()
     MEASURE_FNS.clear()
@@ -70,8 +70,10 @@ def _reset() -> None:
     for item in _entries:
         if item.get("type") == "hook":
             REGISTRY.pop(item["name"], None)
+            REQUIRES_VALUE.pop(item["name"], None)
             for alias in item.get("aliases") or []:
                 REGISTRY.pop(alias, None)
+                REQUIRES_VALUE.pop(alias, None)
     _entries = []
     _skipped_addons = {}
     _loaded = False
@@ -110,6 +112,9 @@ def _normalize(kind: str, name: str, spec: dict[str, Any], *, source: str) -> di
     example = str(spec.get("example") or "").strip()
     if not description or not example:
         raise CatalogError(f"{source} {name!r} needs description and example.")
+    requires_value = spec.get("requires_value", False)
+    if requires_value not in {True, False}:
+        raise CatalogError(f"{source} {name!r} requires_value must be true or false.")
     return {
         "type": kind,
         "name": name,
@@ -121,6 +126,7 @@ def _normalize(kind: str, name: str, spec: dict[str, Any], *, source: str) -> di
         "module": spec.get("module"),
         "attr": spec.get("attr"),
         "source": source,
+        "requires_value": bool(requires_value) if kind == "hook" else False,
     }
 
 
@@ -189,9 +195,10 @@ def _register_one(item: dict[str, Any]) -> None:
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} hook must be callable.")
-        register(item["name"], obj)
+        requires_value = bool(item.get("requires_value"))
+        register(item["name"], obj, requires_value=requires_value)
         for alias in aliases:
-            register(alias, obj)
+            register(alias, obj, requires_value=requires_value)
         return
     if kind == "op":
         from kpi_engine.core.op_protocol import OpPlugin
@@ -231,6 +238,8 @@ def list_capabilities() -> list[dict[str, Any]]:
             "enabled": item["enabled"],
             "role": item["role"],
         }
+        if item["type"] == "hook":
+            row["requires_value"] = bool(item.get("requires_value"))
         plugin = OP_KINDS.get(item["name"])
         if plugin is not None:
             row["phase"] = plugin.phase

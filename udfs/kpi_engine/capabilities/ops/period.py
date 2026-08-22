@@ -53,7 +53,7 @@ def _assert_shift_source(spec: OutputSpec, kpi: KpiSpec) -> None:
         )
     if child.kind not in {"point", "window"}:
         raise BindError(
-            f"measures.{spec.key} op={spec.kind} can only lag/lead a base, "
+            f"measures.{spec.key} op={spec.kind} can only shift a base, "
             f"point, or window measure (got op={child.kind})."
         )
 
@@ -360,5 +360,61 @@ class Threshold(OpPlugin):
             result=value,
             of=ctx.spec.of,
             inputs={"actual": actual, "bar": bar},
+        )
+        return value
+
+
+class Diff(_Shift):
+    name = "diff"
+    backward = True
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        if ctx.plan is None:
+            raise CatalogError(f"{ctx.spec.key} op=diff needs a time plan.")
+        current = _eval_named(ctx, ctx.spec.of or "")
+        target = support.shifted_anchor(
+            ctx.plan.anchor, ctx.spec.offset, ctx.kpi, backward=True
+        )
+        baseline = _recompute_at(ctx, ctx.spec.of or "", target)
+        if current is None or baseline is None:
+            value = None
+        else:
+            value = float(current) - float(baseline)
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="diff",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"current": current, "baseline": baseline},
+        )
+        return value
+
+
+class PctChange(_Shift):
+    name = "pct_change"
+    backward = True
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        if ctx.plan is None:
+            raise CatalogError(f"{ctx.spec.key} op=pct_change needs a time plan.")
+        current = _eval_named(ctx, ctx.spec.of or "")
+        target = support.shifted_anchor(
+            ctx.plan.anchor, ctx.spec.offset, ctx.kpi, backward=True
+        )
+        baseline = _recompute_at(ctx, ctx.spec.of or "", target)
+        if current is None or baseline in (None, 0):
+            value = None
+        else:
+            value = float(current - baseline) / float(baseline)
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="pct_change",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"current": current, "baseline": baseline},
         )
         return value

@@ -100,6 +100,7 @@ hit_rate:
   role: addon
   enabled: true
   aliases: []
+  requires_value: true
   description: Percent of observed periods whose value is >= value.
   example: |
     months_on_sla:
@@ -115,6 +116,7 @@ streak:
   role: addon
   enabled: true
   aliases: []
+  requires_value: true
   description: Consecutive periods ending at the anchor whose value is >= value.
   example: |
     sla_streak:
@@ -125,3 +127,149 @@ streak:
       value: 95
   module: kpi_engine.capabilities.hooks.impl
   attr: streak
+
+period_stdev:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Sample standard deviation of period values in the trailing window.
+  example: |
+    volatility:
+      op: hook
+      hook: period_stdev
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_stdev
+
+period_var:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Sample variance of period values in the trailing window.
+  example: |
+    variance:
+      op: hook
+      hook: period_var
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_var
+
+period_cv:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Sample stdev / mean × 100 of period values in the trailing window.
+  example: |
+    relative_vol:
+      op: hook
+      hook: period_cv
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_cv
+
+period_range:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Largest minus smallest period value in the trailing window.
+  example: |
+    spread:
+      op: hook
+      hook: period_range
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_range
+
+period_count:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Count of observed periods in the trailing window.
+  example: |
+    months_seen:
+      op: hook
+      hook: period_count
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_count
+
+miss_rate:
+  role: addon
+  enabled: true
+  aliases: []
+  requires_value: true
+  description: Percent of observed periods whose value is below value.
+  example: |
+    months_off_sla:
+      op: hook
+      hook: miss_rate
+      of: sotif_value
+      trailing: { months: 12 }
+      value: 95
+  module: kpi_engine.capabilities.hooks.impl
+  attr: miss_rate
+
+miss_streak:
+  role: addon
+  enabled: true
+  aliases: []
+  requires_value: true
+  description: Consecutive periods ending at the anchor whose value is below value.
+  example: |
+    off_sla_run:
+      op: hook
+      hook: miss_streak
+      of: sotif_value
+      trailing: { months: 12 }
+      value: 95
+  module: kpi_engine.capabilities.hooks.impl
+  attr: miss_streak
+
+longest_streak:
+  role: addon
+  enabled: true
+  aliases: []
+  requires_value: true
+  description: Longest run of periods >= value anywhere in the trailing window.
+  example: |
+    best_run:
+      op: hook
+      hook: longest_streak
+      of: sotif_value
+      trailing: { months: 12 }
+      value: 95
+  module: kpi_engine.capabilities.hooks.impl
+  attr: longest_streak
+
+cagr:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Compound annual growth from first to last observed value (growth_pct scale).
+  example: |
+    annualized:
+      op: hook
+      hook: cagr
+      of: sotif_value
+      trailing: { months: 36 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: cagr
+
+slope:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Least-squares slope of value vs observed period index (0..n-1).
+  example: |
+    trend_slope:
+      op: hook
+      hook: slope
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: slope

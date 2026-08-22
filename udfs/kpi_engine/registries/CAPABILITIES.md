@@ -271,6 +271,100 @@ hit_sla:
   value: 95
 ```
 
+### `percent_rank`
+
+RANK-style percent rank on a cut, scaled 0-100. One group is 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+reason_pct_rank:
+  op: percent_rank
+  of: current_value
+  order: desc
+```
+
+### `gap_to_leader`
+
+of minus the partition max. The leader is 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+vs_best:
+  op: gap_to_leader
+  of: current_value
+```
+
+### `gap_to_avg`
+
+of minus the partition mean.  
+`role: addon` · `enabled: on`
+
+```yaml
+vs_typical:
+  op: gap_to_avg
+  of: current_value
+```
+
+### `zscore`
+
+(of - mean) / sample stdev on the partition. Zero stdev is 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+reason_z:
+  op: zscore
+  of: current_value
+```
+
+### `running_avg`
+
+Ordered running mean of of on the cut.  
+`role: addon` · `enabled: on`
+
+```yaml
+running_mean:
+  op: running_avg
+  of: current_value
+  order: desc
+```
+
+### `top_n`
+
+1 if RANK() is <= n, else 0. Ties can produce more than n ones.  
+`role: addon` · `enabled: on`
+
+```yaml
+top_reason:
+  op: top_n
+  of: current_value
+  n: 3
+  order: desc
+```
+
+### `diff`
+
+of minus the same measure at offset before the anchor.  
+`role: addon` · `enabled: on`
+
+```yaml
+vs_last_year:
+  op: diff
+  of: current_value
+  offset: { years: 1 }
+```
+
+### `pct_change`
+
+growth_pct(of, lagged of) at offset. Same scale as fn growth_pct.  
+`role: addon` · `enabled: on`
+
+```yaml
+yoy:
+  op: pct_change
+  of: current_value
+  offset: { years: 1 }
+```
+
 ## Column functions (`base_measures.op`)
 
 ### `value` (aliases: identity)
@@ -659,4 +753,137 @@ sla_streak:
   of: sotif_value
   trailing: { months: 12 }
   value: 95
+```
+
+### `period_stdev`
+
+Sample standard deviation of period values in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+volatility:
+  op: hook
+  hook: period_stdev
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `period_var`
+
+Sample variance of period values in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+variance:
+  op: hook
+  hook: period_var
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `period_cv`
+
+Sample stdev / mean × 100 of period values in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+relative_vol:
+  op: hook
+  hook: period_cv
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `period_range`
+
+Largest minus smallest period value in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+spread:
+  op: hook
+  hook: period_range
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `period_count`
+
+Count of observed periods in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+months_seen:
+  op: hook
+  hook: period_count
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `miss_rate`
+
+Percent of observed periods whose value is below value.  
+`role: addon` · `enabled: on`
+
+```yaml
+months_off_sla:
+  op: hook
+  hook: miss_rate
+  of: sotif_value
+  trailing: { months: 12 }
+  value: 95
+```
+
+### `miss_streak`
+
+Consecutive periods ending at the anchor whose value is below value.  
+`role: addon` · `enabled: on`
+
+```yaml
+off_sla_run:
+  op: hook
+  hook: miss_streak
+  of: sotif_value
+  trailing: { months: 12 }
+  value: 95
+```
+
+### `longest_streak`
+
+Longest run of periods >= value anywhere in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+best_run:
+  op: hook
+  hook: longest_streak
+  of: sotif_value
+  trailing: { months: 12 }
+  value: 95
+```
+
+### `cagr`
+
+Compound annual growth from first to last observed value (growth_pct scale).  
+`role: addon` · `enabled: on`
+
+```yaml
+annualized:
+  op: hook
+  hook: cagr
+  of: sotif_value
+  trailing: { months: 36 }
+```
+
+### `slope`
+
+Least-squares slope of value vs observed period index (0..n-1).  
+`role: addon` · `enabled: on`
+
+```yaml
+trend_slope:
+  op: hook
+  hook: slope
+  of: sotif_value
+  trailing: { months: 12 }
 ```

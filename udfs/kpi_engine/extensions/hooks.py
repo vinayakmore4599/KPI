@@ -36,26 +36,16 @@ warnings.warn(
 Hook = Callable[..., Any]
 
 REGISTRY: dict[str, Hook] = {}
-REQUIRES_VALUE: dict[str, bool] = {}
 
 
-def register(name: str, fn: Hook, *, requires_value: bool = False) -> None:
+def register(name: str, fn: Hook) -> None:
     """Register a named hook. KPI YAML may only call names present here."""
     REGISTRY[name] = fn
-    REQUIRES_VALUE[name] = bool(requires_value)
 
 
 def unregister(name: str) -> None:
     """Remove a hook (used by tests to restore the allowlist)."""
     REGISTRY.pop(name, None)
-    REQUIRES_VALUE.pop(name, None)
-
-
-def requires_value(name: str | None) -> bool:
-    """True when YAML must supply `value:` for this hook."""
-    if not name:
-        return False
-    return bool(REQUIRES_VALUE.get(name))
 
 
 @traced

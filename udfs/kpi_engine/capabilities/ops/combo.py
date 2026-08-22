@@ -348,11 +348,11 @@ class Hook(OpPlugin):
     extra_keys = frozenset({"hook", "fn", "value"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
-        spec = super().parse(key, common)
         raw = common.raw
         hook = raw.get("hook") or raw.get("fn")
         if not hook:
             raise BindError(f"measures.{key} op=hook requires `hook:` (an allowlisted name).")
+        from kpi_engine.core.loader import capability_extras
         from kpi_engine.extensions.hooks import REGISTRY
 
         if str(hook) not in REGISTRY:
@@ -360,6 +360,8 @@ class Hook(OpPlugin):
                 f"measures.{key} names unknown hook {hook!r}. "
                 "Register it in registries/hooks.yaml."
             )
+        extra_keys = tuple(capability_extras("hook", str(hook)).get("extra_keys") or ())
+        spec = super().parse(key, common, extra_allowed=extra_keys)
         constant = spec.constant
         if raw.get("value") is not None:
             try:
@@ -368,8 +370,18 @@ class Hook(OpPlugin):
                 raise BindError(
                     f"measures.{key} op=hook value must be a number."
                 ) from exc
+        params = {**spec.params}
+        for name in extra_keys:
+            if name in raw:
+                params[name] = raw[name]
         return OutputSpec(
-            **{**spec.__dict__, "hook": str(hook), "fn": raw.get("fn"), "constant": constant}
+            **{
+                **spec.__dict__,
+                "hook": str(hook),
+                "fn": raw.get("fn"),
+                "constant": constant,
+                "params": params,
+            }
         )
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
@@ -377,9 +389,9 @@ class Hook(OpPlugin):
             support.require_base_of(spec, kpi)
         if kpi.time is None and (_offset_nonzero(spec.offset) or spec.trailing_months):
             raise BindError(f"measures.{spec.key} (hook lookback) needs a time: block.")
-        from kpi_engine.extensions.hooks import requires_value
+        from kpi_engine.core.loader import capability_extras
 
-        if requires_value(spec.hook) and spec.constant is None:
+        if capability_extras("hook", spec.hook).get("requires_value") and spec.constant is None:
             raise BindError(
                 f"measures.{spec.key} hook={spec.hook} requires `value:` (the bar)."
             )

@@ -13,82 +13,51 @@ from kpi_engine.core.op_registry import get_op
 from kpi_engine.exceptions import BindError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 
-ADDON_OPS = {
-    "ntile": "cut",
-    "dense_rank": "cut",
-    "row_number": "cut",
-    "cumulative_share": "cut",
-    "running_total": "cut",
-    "contribution": "cut",
-    "percent_rank": "cut",
-    "gap_to_leader": "cut",
-    "gap_to_avg": "cut",
-    "zscore": "cut",
-    "running_avg": "cut",
-    "top_n": "cut",
-    "lag": "combo",
-    "lead": "combo",
-    "index": "combo",
-    "vs_target": "combo",
-    "threshold": "combo",
-    "diff": "combo",
-    "pct_change": "combo",
-}
 
-ADDON_HOOKS = {
-    "seasonal_index",
-    "ewma",
-    "period_max",
-    "period_min",
-    "period_median",
-    "period_avg",
-    "period_sum",
-    "period_stdev",
-    "period_var",
-    "period_cv",
-    "period_range",
-    "period_count",
-    "hit_rate",
-    "streak",
-    "miss_rate",
-    "miss_streak",
-    "longest_streak",
-    "cagr",
-    "slope",
-}
+def _addon_rows(kind: str) -> list[dict]:
+    reload_packaged()
+    return [
+        row
+        for row in list_capabilities()
+        if row["role"] == "addon" and row["type"] == kind
+    ]
 
 
 def test_addon_ops_and_hooks_boot_from_packaged_yaml():
-    reload_packaged()
-    rows = list_capabilities()
-    ops = {row["name"]: row for row in rows if row["type"] == "op"}
-    hooks = {row["name"]: row for row in rows if row["type"] == "hook"}
-    for name, phase in ADDON_OPS.items():
-        assert ops[name]["role"] == "addon"
-        assert get_op(name).phase == phase
-    for name in ADDON_HOOKS:
-        assert hooks[name]["role"] == "addon"
-        assert hooks[name]["enabled"] is True
-    for name in ("hit_rate", "streak", "miss_rate", "miss_streak", "longest_streak"):
-        assert hooks[name]["requires_value"] is True
-    assert hooks["ewma"]["requires_value"] is False
+    from kpi_engine.core.loader import skipped_addons
+    from kpi_engine.extensions.hooks import REGISTRY
+
+    ops = _addon_rows("op")
+    hooks = _addon_rows("hook")
+    assert ops and hooks
+    skipped = skipped_addons()
+    for row in ops:
+        assert row["name"] not in skipped
+        assert get_op(row["name"]).phase in {"cut", "combo"}
+        assert row["enabled"] is True
+    for row in hooks:
+        assert row["name"] not in skipped
+        assert row["name"] in REGISTRY
+        assert row["enabled"] is True
+    by_name = {row["name"]: row for row in hooks}
+    assert by_name["hit_rate"]["requires_value"] is True
+    assert by_name["ewma"]["requires_value"] is False
 
 
-@pytest.mark.parametrize("kind", sorted(ADDON_OPS))
+@pytest.mark.parametrize("kind", [row["name"] for row in _addon_rows("op")])
 def test_unknown_key_on_each_addon_kind(extra_config, kind):
     spec = minimal_kpi(9900)
-    body = {"op": kind, "of": "current_value", "foo": 1}
-    if kind == "ntile":
-        body["tiles"] = 4
-    if kind == "contribution":
-        body["vs"] = "current_value"
-    if kind == "top_n":
-        body["n"] = 1
-    if kind in {"lag", "lead", "index", "diff", "pct_change"}:
-        body["offset"] = {"months": 1}
-    if kind == "vs_target":
-        body["value"] = 1
-    if kind == "threshold":
+    spec["measures"]["trial"] = {"op": kind, "of": "current_value", "foo": 1}
+    write_yaml(extra_config / "kpis" / "9900.yaml", spec)
+    with pytest.raises(BindError, match="does not accept 'foo'"):
+        load_kpi(9900, extra_config)
+
+
+@pytest.mark.parametrize("row", _addon_rows("hook"), ids=lambda row: row["name"])
+def test_unknown_key_on_each_addon_hook(extra_config, row):
+    spec = minimal_kpi(9900)
+    body = {"op": "hook", "hook": row["name"], "of": "sotif_value", "foo": 1}
+    if row["requires_value"]:
         body["value"] = 1
     spec["measures"]["trial"] = body
     write_yaml(extra_config / "kpis" / "9900.yaml", spec)
@@ -497,7 +466,10 @@ def test_hooks_series_formulas(parquet_path, extra_config):
     assert late["tilt"] == 15.0
 
 
-@pytest.mark.parametrize("hook", ["hit_rate", "miss_rate", "miss_streak", "longest_streak"])
+@pytest.mark.parametrize(
+    "hook",
+    [row["name"] for row in _addon_rows("hook") if row["requires_value"]],
+)
 def test_bar_hooks_require_value(extra_config, hook):
     spec = minimal_kpi(9907)
     spec["measures"]["on_bar"] = {

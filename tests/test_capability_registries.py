@@ -8,6 +8,7 @@ import pytest
 
 from kpi_engine.core.binder import load_kpi
 from kpi_engine.core.loader import (
+    _normalize,
     assert_named_capability,
     ensure_loaded,
     generate_capabilities_markdown,
@@ -203,6 +204,38 @@ def test_generated_catalog_mentions_point():
     dest = write_generated_docs()
     assert dest.exists()
     assert "point" in dest.read_text()
+
+
+def test_committed_catalog_matches_generate():
+    committed = (registries_dir() / "CAPABILITIES.md").read_text()
+    assert committed == generate_capabilities_markdown()
+
+
+def test_unknown_registry_extra_is_catalog_error():
+    with pytest.raises(CatalogError, match="min_argz"):
+        _normalize(
+            "column_fn",
+            "sum",
+            {
+                "role": "platform",
+                "enabled": True,
+                "aliases": [],
+                "description": "x",
+                "example": "op: sum",
+                "module": "kpi_engine.capabilities.functions.column.impl",
+                "attr": "sum_columns",
+                "min_argz": 2,
+            },
+            source="test",
+        )
+
+
+def test_loader_has_no_arity_name_list():
+    import kpi_engine.core.loader as loader
+
+    text = Path(loader.__file__).read_text()
+    assert '{"sum", "subtract"' not in text
+    assert "min_columns = 2 if item" not in text
 
 
 def test_registries_dir_has_four_files():

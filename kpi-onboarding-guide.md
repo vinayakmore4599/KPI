@@ -166,7 +166,7 @@ Work **top-down**. Stop at the first row that fits.
 | Change | Do not change |
 |---|---|
 | `udfs/config/models/<name>.yaml` (`kind: physical` or `sql`) | KPI `measures` math (keep catalog ops) |
-| KPI `model:` pointer | `calc_engine.py` unless a new op is required |
+| KPI `model:` pointer | `core/` (a new measure name is capabilities + registries) |
 
 Put messy SQL in the **model**, not in `measures.sql` (that field is a **column name** only).
 
@@ -204,35 +204,28 @@ value_9m:
 
 No engine change.
 
-### 4.4 New reusable op (all KPIs will need it)
+### 4.4 New reusable op, hook, or function
 
-**Examples:** rolling median over a custom window, fiscal YTD, a new ratio family.
+**Examples:** a new measure kind, a series hook, a named column/measure function.
 
-Check the [reference](kpi-yaml-reference.md#4-base_measures--the-built-in-aggregations) first — `count_distinct`, `median`, `percentile`, fiscal calendars and day/quarter/year grains already exist.
+Check [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) first — the name may already exist.
 
-This is an **engine** change. Do it once in the catalog, then every KPI YAML can use it.
+A new **name** is not an engine change. Add the body under `capabilities/` and the allowlist key under `registries/`. Then regenerate `registries/CAPABILITIES.md`. KPI YAML can name it immediately (section 4.3).
 
 | Change | Do not change |
 |---|---|
-| `kpi_engine/core/calc_engine.py` — implement the op | A one-off `if kpi_id == 3004` |
-| `kpi_engine/core/binder.py` — allow the new `op` / `agg` | Copy-paste the formula into each KPI file as Python |
-| `kpi_engine/core/time_planner.py` — `lookback_for` if the op needs extra history | `udfs/sotif/main.py` |
-| `kpi-yaml-reference.md` — document the kind | Context JSON schema |
-| `tests/test_span.py` and a behaviour test | |
+| `capabilities/ops/` + `registries/ops.yaml` | `core/`, `extensions/`, `contracts.py` |
+| `capabilities/hooks/` + `registries/hooks.yaml` (`requires_value` / `extra_keys` if needed) | `importlib` of a path from YAML |
+| `capabilities/functions/` + `registries/functions/` (`min_args` if the fn is variadic and not the default 2) | A one-off `if kpi_id == 3004` |
+| Optional: a `compute()` test under `tests/` | `udfs/sotif/main.py` |
 
-Then onboard KPIs with YAML only (section 4.3).
-
-**Still do not change** for a new op: `adapter.py` (unless context shape changed), `identifiers.py`, dataset path handling.
+**Still engine work** (not a new catalog name): a new `agg:`, filter operator, compose template, time format, or a new *common* measure field like `offset`. A new extras allowlist key (`min_args`, `requires_value`, `extra_keys`) is a rare one-line loader change.
 
 ### 4.5 Logic the catalog cannot express
 
 **Examples:** cohort survival curve, custom allocation, iterative algorithm.
 
-| Change | Do not change |
-|---|---|
-| `kpi_engine/extensions/hooks.py` — `register("my_hook", fn)` | `importlib` of `context.udf.module_path` from YAML |
-| KPI YAML: `op: hook` with `hook: my_hook` | DuckDB connection or ADLS credentials inside the hook |
-| `tests/` for that hook | `orchestrator` request order |
+Same two folders as 4.4: add a hook function and a `hooks.yaml` key. KPI YAML uses `op: hook` with `hook: my_hook`.
 
 Hooks receive **already aggregated / aligned** frames. They must not scan ADLS. Declare `offset:` or `trailing:` on the measure so the planner scans enough history.
 
@@ -274,17 +267,17 @@ Only if metadata **must** call `udfs.<something>.main`.
 | File | Change when | Do not use for |
 |---|---|---|
 | `core/adapter.py` | Context JSON shape | KPI formulas |
-| `core/binder.py` | YAML schema (new op fields) | Per-KPI special cases |
-| `core/time_planner.py` | Lookback rules for a new op | Applying month as IN |
+| `core/binder.py` | A new *common* measure field (shared by every kind) | A new measure name |
+| `core/time_planner.py` | A new time format / grain | Lookback for one catalog name |
 | `core/filters.py` | Filter bind / ignore_filters | Hierarchy expansion (upstream) |
 | `core/model_sql.py` | DuckDB retrieve (scans, joins, filters, model columns) | KPI YAML formulas |
 | `core/cuts.py` | Cut walk / finest grain | Listing G/R in Python |
-| `core/calc_engine.py` | New catalog op implementation | One KPI’s one-off SQL |
+| `core/calc_engine.py` | Pipeline dispatch (not a new op body) | A new measure kind |
 | `core/fn_apply.py` | Function maps and Pandas apply (engine) | New function bodies |
 | `core/orchestrator.py` | Pipeline order | Business metrics |
 | `capabilities/functions/` + `registries/functions/` | A function every KPI should reuse | Per-KPI formulas |
 | `capabilities/ops/` + `registries/ops.yaml` | A new measure kind | Per-KPI formulas |
-| `capabilities/hooks/` + `registries/hooks.yaml` | Named custom functions | Import paths from context |
+| `capabilities/hooks/` + `registries/hooks.yaml` | A new named hook | Import paths from context |
 | `udfs/sotif/main.py` | Never, except shim signature | Calculations |
 | `contracts.py` | New typed fields for YAML/context | Parsing or SQL |
 
@@ -307,10 +300,10 @@ Need a new KPI?
   │    → udfs/config/models/<id>.yaml + KPI YAML
   ├─ New combo of point/window/trend/arithmetic?
   │    → KPI YAML measures only
-  ├─ New math every KPI will reuse?
-  │    → calc_engine + binder + lookback + reference doc + tests, then YAML
+  ├─ New named op / function / hook?
+  │    → capabilities/ + registries/ + regenerate CAPABILITIES.md; not core/
   ├─ One-off algorithm?
-  │    → extensions/hooks.py (register) + tests; not core forks
+  │    → capabilities/hooks/ + registries/hooks.yaml; not core forks
   └─ Context JSON changed?
        → adapter.py + test_adapter.py
 ```
@@ -344,12 +337,11 @@ value_9m:
 
 ### C. Need a new op `rolling_median`
 
-1. Implement in `calc_engine.py` (`evaluate` + helper).
-2. Allow `op: rolling_median` in `binder.py`.
-3. Set lookback in `time_planner.lookback_for`.
-4. Document the kind in `kpi-yaml-reference.md`.
-5. Test with a small parquet.
-6. After that, KPIs only add YAML `op: rolling_median`.
+1. Add a class under `capabilities/ops/` (`extra_keys` on the class if it has its own YAML fields).
+2. Add a row in `registries/ops.yaml`.
+3. Regenerate `registries/CAPABILITIES.md`.
+4. Optional: a `compute()` test under `tests/`.
+5. After that, KPIs only add YAML `op: rolling_median`. No `core/` edit.
 
 ---
 

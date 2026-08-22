@@ -41,6 +41,7 @@ sum:
   role: platform
   enabled: true
   aliases: [add]
+  min_args: 2
   description: Sum of two or more measure scalars. Any null yields null.
   example: |
     total:
@@ -54,6 +55,7 @@ subtract:
   role: platform
   enabled: true
   aliases: [sub]
+  min_args: 2
   description: Left-to-right subtraction of measure scalars.
   example: |
     net:
@@ -67,6 +69,7 @@ multiply:
   role: platform
   enabled: true
   aliases: [mul, product]
+  min_args: 2
   description: Product of two or more measure scalars.
   example: |
     weighted:
@@ -80,6 +83,7 @@ min:
   role: platform
   enabled: true
   aliases: []
+  min_args: 2
   description: Minimum of the non-null measure scalars.
   example: |
     lower:
@@ -93,6 +97,7 @@ max:
   role: platform
   enabled: true
   aliases: []
+  min_args: 2
   description: Maximum of the non-null measure scalars.
   example: |
     upper:
@@ -106,6 +111,7 @@ avg:
   role: platform
   enabled: true
   aliases: [mean]
+  min_args: 2
   description: Mean of the non-null measure scalars.
   example: |
     mid:

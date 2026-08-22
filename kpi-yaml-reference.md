@@ -6,7 +6,7 @@ Use this document while writing `udfs/config/kpis/<kpi_id>.yaml` and `udfs/confi
 
 Related docs:
 
-- [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) — generated catalog of ops, functions, and hooks (`enabled`, examples)
+- [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) — live catalog of every op, function, and hook. New names go in `capabilities/` + `registries/` only; do not edit `core/`.
 - [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — write a KPI YAML: function catalog, columns vs expressions, when to use what, current limits
 - [kpi-onboarding-guide.md](kpi-onboarding-guide.md) — the step-by-step process and which files to change
 - [README.md](README.md) — folders, install, request path
@@ -824,9 +824,7 @@ Reach for a hook when the calculation needs the whole period series rather than 
 Register the function by **name**. Dotted import paths and `context.udf.module_path` are rejected on purpose — YAML may only call the allowlist.
 
 ```python
-# kpi_engine/extensions/hooks.py  (or any module imported at startup)
-from kpi_engine.extensions.hooks import register
-
+# udfs/kpi_engine/capabilities/hooks/blend.py
 def blend_mom(series, *, kpi, plan, spec, **_):
     """0.5 × current period + 0.5 × previous period."""
     current = _at(series, kpi.time.column, spec.of, plan.anchor)
@@ -834,15 +832,15 @@ def blend_mom(series, *, kpi, plan, spec, **_):
     if current is None or prior is None:
         return None
     return 0.5 * current + 0.5 * prior
-
-register("blend_mom", blend_mom)
 ```
+
+Then allowlist it in `registries/hooks.yaml` (`module` / `attr`, plus `requires_value` or `extra_keys` if needed). Do not edit `core/` or `extensions/`.
 
 ```yaml
 measures:
   blended:
     op: hook
-    hook: blend_mom          # must exist in REGISTRY, or bind fails
+    hook: blend_mom          # must be allowlisted in registries/hooks.yaml
     of: sotif_value
     offset: { months: 1 }    # declares how much history to scan
 ```

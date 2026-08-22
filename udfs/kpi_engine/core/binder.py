@@ -576,13 +576,7 @@ def _assert_snapshot_measures(measures: tuple[OutputSpec, ...]) -> None:
     bad: list[str] = []
     for spec in measures:
         plugin = get_op(spec.kind)
-        if spec.kind == "point" and _offset_is_nonzero(spec.offset):
-            bad.append(f"{spec.key} (point offset)")
-        elif spec.kind == "hook" and (
-            _offset_is_nonzero(spec.offset) or spec.trailing_months
-        ):
-            bad.append(f"{spec.key} (hook lookback)")
-        elif plugin.requires_time:
+        if plugin.needs_time(spec):
             bad.append(f"{spec.key} ({spec.kind})")
     if bad:
         raise BindError(
@@ -591,13 +585,6 @@ def _assert_snapshot_measures(measures: tuple[OutputSpec, ...]) -> None:
             "or keep only current-period point / dimension / arithmetic / "
             "percent_of_total measures."
         )
-
-
-def _offset_is_nonzero(offset: Offset | None) -> bool:
-    """True when a point/hook offset actually shifts the anchor."""
-    if offset is None:
-        return False
-    return bool(offset.months or offset.years or offset.days or offset.quarters)
 
 
 def _parse_filters(raw: Any) -> tuple[FilterApplySpec, ...]:

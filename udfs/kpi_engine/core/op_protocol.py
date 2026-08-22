@@ -52,6 +52,13 @@ class CommonMeasureFields:
     raw: Mapping[str, Any] = field(default_factory=dict)
 
 
+def offset_is_nonzero(offset: Offset | None) -> bool:
+    """True when a calendar offset actually shifts the anchor."""
+    if offset is None:
+        return False
+    return bool(offset.months or offset.years or offset.days or offset.quarters)
+
+
 class OpPlugin:
     """One measure kind. Register via registries/ops.yaml, not by editing core."""
 
@@ -64,9 +71,18 @@ class OpPlugin:
     echo_dimension: bool = False
     extra_keys: frozenset[str] = frozenset()
 
-    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+    def needs_time(self, spec: OutputSpec) -> bool:
+        """True when this measure cannot run on a snapshot KPI (no time: block)."""
+        return self.requires_time or offset_is_nonzero(spec.offset) or bool(spec.trailing_months)
+
+    def parse(
+        self,
+        key: str,
+        common: CommonMeasureFields,
+        extra_allowed: frozenset[str] | tuple[str, ...] = (),
+    ) -> OutputSpec:
         """Build OutputSpec from shared fields plus this kind's extras."""
-        self.assert_known_keys(key, common)
+        self.assert_known_keys(key, common, extra_allowed=extra_allowed)
         return OutputSpec(
             key=str(key),
             kind=self.name,
@@ -80,9 +96,14 @@ class OpPlugin:
             operands=common.operands,
         )
 
-    def assert_known_keys(self, key: str, common: CommonMeasureFields) -> None:
+    def assert_known_keys(
+        self,
+        key: str,
+        common: CommonMeasureFields,
+        extra_allowed: frozenset[str] | tuple[str, ...] = (),
+    ) -> None:
         """Reject YAML keys this kind does not understand."""
-        allowed = self.extra_keys | {
+        allowed = self.extra_keys | frozenset(extra_allowed) | {
             "kind",
             "op",
             "of",

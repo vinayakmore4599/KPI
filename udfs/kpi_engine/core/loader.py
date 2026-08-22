@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,15 @@ REGISTRY_FILES = (
     ("op", "ops.yaml"),
     ("hook", "hooks.yaml"),
 )
+_KNOWN_SPEC_KEYS = frozenset(
+    {"role", "enabled", "aliases", "description", "example", "module", "attr"}
+)
+_EXTRAS_ALLOWED = {
+    "column_fn": frozenset({"min_args"}),
+    "measure_fn": frozenset({"min_args"}),
+    "hook": frozenset({"requires_value", "extra_keys"}),
+    "op": frozenset(),
+}
 
 _loaded = False
 _loading = False
@@ -58,7 +68,7 @@ def _reset() -> None:
     global _loaded, _entries, _skipped_addons
     from kpi_engine.core.fn_apply import COLUMN_FNS, MEASURE_FNS, _COLUMN_META, _MEASURE_META
     from kpi_engine.core.op_registry import OP_KINDS, _ALIASES
-    from kpi_engine.extensions.hooks import REGISTRY, REQUIRES_VALUE
+    from kpi_engine.extensions.hooks import REGISTRY
 
     COLUMN_FNS.clear()
     MEASURE_FNS.clear()
@@ -70,10 +80,8 @@ def _reset() -> None:
     for item in _entries:
         if item.get("type") == "hook":
             REGISTRY.pop(item["name"], None)
-            REQUIRES_VALUE.pop(item["name"], None)
             for alias in item.get("aliases") or []:
                 REGISTRY.pop(alias, None)
-                REQUIRES_VALUE.pop(alias, None)
     _entries = []
     _skipped_addons = {}
     _loaded = False
@@ -112,9 +120,7 @@ def _normalize(kind: str, name: str, spec: dict[str, Any], *, source: str) -> di
     example = str(spec.get("example") or "").strip()
     if not description or not example:
         raise CatalogError(f"{source} {name!r} needs description and example.")
-    requires_value = spec.get("requires_value", False)
-    if requires_value not in {True, False}:
-        raise CatalogError(f"{source} {name!r} requires_value must be true or false.")
+    extras = _parse_extras(kind, name, spec, source=source)
     return {
         "type": kind,
         "name": name,
@@ -126,8 +132,53 @@ def _normalize(kind: str, name: str, spec: dict[str, Any], *, source: str) -> di
         "module": spec.get("module"),
         "attr": spec.get("attr"),
         "source": source,
-        "requires_value": bool(requires_value) if kind == "hook" else False,
+        "extras": extras,
     }
+
+
+def _parse_extras(kind: str, name: str, spec: dict[str, Any], *, source: str) -> dict[str, Any]:
+    """Keep only the extras this registry type allows. Anything else is a typo."""
+    allowed = _EXTRAS_ALLOWED.get(kind, frozenset())
+    unknown = sorted(set(spec) - _KNOWN_SPEC_KEYS - allowed)
+    if unknown:
+        raise CatalogError(
+            f"{source} {name!r} does not accept {unknown[0]!r}."
+        )
+    extras: dict[str, Any] = {}
+    if "min_args" in spec:
+        min_args = spec["min_args"]
+        if not isinstance(min_args, int) or isinstance(min_args, bool) or min_args < 1:
+            raise CatalogError(f"{source} {name!r} min_args must be an integer >= 1.")
+        extras["min_args"] = min_args
+    if "requires_value" in spec:
+        if spec["requires_value"] not in {True, False}:
+            raise CatalogError(f"{source} {name!r} requires_value must be true or false.")
+        extras["requires_value"] = bool(spec["requires_value"])
+    if "extra_keys" in spec:
+        raw_keys = spec["extra_keys"]
+        if isinstance(raw_keys, str):
+            raw_keys = [raw_keys]
+        if not isinstance(raw_keys, (list, tuple)) or not all(
+            isinstance(item, str) and item for item in raw_keys
+        ):
+            raise CatalogError(f"{source} {name!r} extra_keys must be a list of names.")
+        extras["extra_keys"] = [str(item) for item in raw_keys]
+    return extras
+
+
+def capability_extras(kind: str, name: str | None) -> dict[str, Any]:
+    """Registry extras for a loaded name or alias. Missing rows return {}."""
+    if not name:
+        return {}
+    ensure_loaded()
+    for item in _entries:
+        if item.get("type") != kind:
+            continue
+        aliases = item.get("aliases") or ()
+        if item.get("name") == name or name in aliases:
+            extras = item.get("extras")
+            return dict(extras) if isinstance(extras, dict) else {}
+    return {}
 
 
 def _load_entries(entries: list[dict[str, Any]]) -> None:
@@ -179,26 +230,27 @@ def _register_one(item: dict[str, Any]) -> None:
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} column function must be callable.")
-        min_columns = 2 if item["name"] in {"sum", "subtract", "multiply", "min", "max", "avg", "coalesce"} else None
-        register_column_fn(item["name"], obj, min_columns=min_columns, aliases=aliases)
+        register_column_fn(
+            item["name"], obj, min_columns=_fn_min_args(obj, item), aliases=aliases
+        )
         return
     if kind == "measure_fn":
         from kpi_engine.core.fn_apply import register_measure_fn
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} measure function must be callable.")
-        min_inputs = 2 if item["name"] in {"sum", "subtract", "multiply", "min", "max", "avg"} else None
-        register_measure_fn(item["name"], obj, min_inputs=min_inputs, aliases=aliases)
+        register_measure_fn(
+            item["name"], obj, min_inputs=_fn_min_args(obj, item), aliases=aliases
+        )
         return
     if kind == "hook":
         from kpi_engine.extensions.hooks import register
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} hook must be callable.")
-        requires_value = bool(item.get("requires_value"))
-        register(item["name"], obj, requires_value=requires_value)
+        register(item["name"], obj)
         for alias in aliases:
-            register(alias, obj, requires_value=requires_value)
+            register(alias, obj)
         return
     if kind == "op":
         from kpi_engine.core.op_protocol import OpPlugin
@@ -238,8 +290,9 @@ def list_capabilities() -> list[dict[str, Any]]:
             "enabled": item["enabled"],
             "role": item["role"],
         }
+        extras = item.get("extras") if isinstance(item.get("extras"), dict) else {}
         if item["type"] == "hook":
-            row["requires_value"] = bool(item.get("requires_value"))
+            row["requires_value"] = bool(extras.get("requires_value"))
         plugin = OP_KINDS.get(item["name"])
         if plugin is not None:
             row["phase"] = plugin.phase
@@ -333,6 +386,20 @@ def generate_capabilities_markdown() -> str:
             lines.append("```")
             lines.append("")
     return "\n".join(lines)
+
+
+def _fn_min_args(obj: Any, item: dict[str, Any]) -> int | None:
+    """YAML min_args, or 2 when the function is variadic and YAML omitted it."""
+    extras = item.get("extras") if isinstance(item.get("extras"), dict) else {}
+    if extras.get("min_args") is not None:
+        return int(extras["min_args"])
+    try:
+        params = inspect.signature(obj).parameters.values()
+    except (TypeError, ValueError):
+        return None
+    if any(param.kind is param.VAR_POSITIONAL for param in params):
+        return 2
+    return None
 
 
 def write_generated_docs(path: Path | None = None) -> Path:

@@ -26,6 +26,7 @@ sum:
   role: platform
   enabled: true
   aliases: [add]
+  min_args: 2
   description: Row-wise sum of two or more columns.
   example: |
     total:
@@ -38,6 +39,7 @@ subtract:
   role: platform
   enabled: true
   aliases: [sub]
+  min_args: 2
   description: Row-wise left-to-right subtraction.
   example: |
     net:
@@ -50,6 +52,7 @@ multiply:
   role: platform
   enabled: true
   aliases: [mul, product]
+  min_args: 2
   description: Row-wise product of two or more columns.
   example: |
     ontime_full:
@@ -86,6 +89,7 @@ min:
   role: platform
   enabled: true
   aliases: []
+  min_args: 2
   description: Row-wise minimum of two or more columns.
   example: |
     lower:
@@ -98,6 +102,7 @@ max:
   role: platform
   enabled: true
   aliases: []
+  min_args: 2
   description: Row-wise maximum of two or more columns.
   example: |
     upper:
@@ -110,6 +115,7 @@ avg:
   role: platform
   enabled: true
   aliases: [mean]
+  min_args: 2
   description: Row-wise mean of two or more columns.
   example: |
     mid:
@@ -122,6 +128,7 @@ coalesce:
   role: platform
   enabled: true
   aliases: []
+  min_args: 2
   description: First non-null value on each row.
   example: |
     picked:

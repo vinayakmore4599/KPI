@@ -34,7 +34,7 @@ tests/                  Local parquet tests (no ADLS) — not deployed
 | Add or change a KPI | `udfs/config/kpis/<id>.yaml` |
 | Change how source tables join | `udfs/config/models/<name>.yaml` |
 | Understand a request failure | `udfs/kpi_engine/core/` (adapter, binder, time_planner) |
-| Add a reusable calc | `udfs/kpi_engine/core/calc_engine.py` |
+| Add a reusable calc | `udfs/kpi_engine/capabilities/` + `registries/` ([catalog](udfs/kpi_engine/registries/CAPABILITIES.md)) |
 
 ---
 
@@ -84,12 +84,12 @@ Example: `udfs/config/kpis/3004.yaml`.
 
 **`base_measures`** — internal fact from the table, e.g. `sotif_value` from column `amount` with `agg: sum` (Pandas). The UI does not request this name. Aggregations: `sum`, `avg`, `count`, `min`, `max`, `count_distinct`, `median`, `percentile`.
 
-**`measures`** — calculated columns the UI can request via `measure_key`:
+**`measures`** — calculated columns the UI can request via `measure_key`. The live list of ops, functions, and hooks is [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md). Common kinds:
 
 - `point` — one period (current, previous year)
 - `window` — trailing 3 / 6 / 12 periods (and similar)
 - `trend` — array of per-period values for a graph
-- `arithmetic` — YoY / ratio of two measures
+- `arithmetic` / `fn` / `expr` — combine other measures
 - `dimension` — only if the context still sends a dimension as `measure_key`
 - `hook` — an allowlisted Python function for logic the catalog cannot express
 

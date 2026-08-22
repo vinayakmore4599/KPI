@@ -102,10 +102,11 @@ The practical consequences:
 |---|---|---|---|
 | `column` | column name | required if `time:` is present | Date or timestamp on the extract |
 | `grain` | `day`, `month`, `quarter`, `year` | `month` | The period every measure counts in |
-| `filter_code` | context filter key | required if `time:` is present | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month` — each KPI names its own filter. |
+| `filter_code` | context filter key | required if `time:` is present | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month` — each KPI names its own filter. When `compose:` is set, this is the **synthetic** name after concat (need not exist on the context). |
 | `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal affects `quarter` and `year` only |
 | `fiscal_start_month` | 1–12 | `4` | First month of the fiscal year |
-| `format` | `yyyy-mm-dd`, `yyyy-mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, or a strptime string | ISO `YYYY-MM` / `YYYY-MM-DD` | How the physical column and the context time filter are stored (`062026` → `format: mmyyyy`) |
+| `format` | `yyyy-mm-dd`, `yyyy-mm`, `yyyy/mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, or a strptime string | ISO `YYYY-MM` / `YYYY-MM-DD` | How the physical column and the context time filter are stored (`062026` → `format: mmyyyy`) |
+| `compose` | `{ template: "{year}{month:02}" }` | omitted | Build `filter_code` from segregated context keys. Literals between `{placeholders}` are kept (`{year}/{month:02}` → `2026/04`). `{month:02}` zero-pads. The part keys are then removed so they are not leftover `IN` filters. If `filter_code` is already on the context, that scalar wins. |
 
 Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Snapshot KPIs may only use `point` (no offset), `dimension`, `arithmetic`, `rank`, `percent_of_total`, and `hook` without lookback. Windows, trends, and period offsets require `time:`.
 
@@ -127,6 +128,20 @@ time:
   calendar: fiscal
   fiscal_start_month: 4
 ```
+
+When the host sends `year` / `month` (and optionally `day`) instead of one period key, concatenate them. `time.format` must parse the **result**. Lookback still widens from requested measures.
+
+```yaml
+time:
+  column: posting_date
+  grain: month
+  filter_code: reporting_month
+  format: yyyy/mm
+  compose:
+    template: "{year}/{month:02}"   # 2026 + / + 04 → 2026/04
+```
+
+`"{year}{month:02}"` → `202607` with `format: yyyymm`. `"{year}-{month:02}-{day:02}"` for a day grain. Do not `IN` the part keys onto the extract.
 
 A dimension can rewrite retrieved codes in Pandas (`from` + `map` + `default`) or truncate a date column (`grain:`). Joins stay in the model YAML; this is not SQL in the KPI file.
 
@@ -525,7 +540,7 @@ Use `anchor_only` when the page should list only what is active now; use `span_u
 
 ## 7. Filters
 
-YEAR / MONTH belong on `time.filter_code` (one selected period → a date range plus lookback). Do not also send year and month as `IN` filters.
+YEAR / MONTH belong on `time.filter_code` (one selected period → a date range plus lookback), or on `time.compose.template` when the host sends segregated keys (`year` + `month` → `202607` / `2026/04`). Do not also leave year and month as leftover `IN` filters — compose strips them.
 
 Other predicates are **row filters**. Values come from the **context**. KPI YAML `filters:` says **how** and **at which of three stages**.
 
@@ -546,6 +561,13 @@ filters:
     column: reason_code
     op: in
     apply: result           # drop JSON rows after measures; denominators stay unfiltered
+
+  posting_key:
+    column: posting_key
+    op: eq
+    apply: extract
+    compose:
+      template: "{year}/{month}"   # only when this is NOT the KPI time column
 ```
 
 | `apply` | Where | Affects SUM / `percent_of_total`? | Use when |
@@ -942,7 +964,8 @@ pytest -q
 | Message | Cause | Fix |
 |---|---|---|
 | `Unknown measure_key(s) [...]` | Context asked for a key not under `measures:` | Add the measure, or correct metadata |
-| `Missing month filter '<code>'` | `time.filter_code` does not match the context filter | Set `time.filter_code` to the actual filter key, or omit `time:` for a snapshot KPI |
+| `Missing month filter '<code>'` | `time.filter_code` does not match the context filter | Set `time.filter_code` to the actual filter key, add `time.compose.template`, or omit `time:` for a snapshot KPI |
+| `Compose placeholder 'year' is missing` | A `{placeholder}` was not on the context | Send that filter, or send the composed `filter_code` as one scalar |
 | `Month filter must contain exactly one value` | The page sent a multi-select for the period | Metadata — the anchor is a single period |
 | `time.grain=day requires a full date` | Day-grain KPI received `YYYY-MM` | Send `YYYY-MM-DD` |
 | `Filter '<x>' has no column mapping` | No context mapping and no matching column | Add `filter_column_mappings` or `filter_map` |

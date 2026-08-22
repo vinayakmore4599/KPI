@@ -165,20 +165,25 @@ Required:
 |---|---|---|---|
 | `column` | identifier | required if `time:` is present | The date/timestamp DuckDB retrieves |
 | `grain` | `day`, `month`, `quarter`, `year` | `month` | The period every measure counts in |
-| `filter_code` | context filter key | required if `time:` is present | The **selected period**. Not hardcoded to `reporting_month` |
+| `filter_code` | context filter key | required if `time:` is present | The **selected period**. Not hardcoded to `reporting_month`. With `compose:`, this is the name after concat |
 | `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal changes `quarter` and `year` only |
 | `fiscal_start_month` | 1–12 | `4` | Only when `calendar: fiscal` |
 | `format` | see below | ISO `YYYY-MM` / `YYYY-MM-DD` | When the column or filter is not ISO |
+| `compose` | `{ template: "{year}/{month:02}" }` | omitted | Concat segregated context keys; literals stay as written |
 
-**`format` aliases:** `yyyy-mm-dd`, `yyyy-mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, `mm-yyyy`, `dd-mm-yyyy`, `dd/mm/yyyy`, or a strptime string (`%d/%m/%Y`).
+**`format` aliases:** `yyyy-mm-dd`, `yyyy-mm`, `yyyy/mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, `mm-yyyy`, `dd-mm-yyyy`, `dd/mm/yyyy`, or a strptime string (`%d/%m/%Y`).
 
 ```yaml
 time:
   column: current_month
   grain: month
-  filter_code: current_month
-  format: yyyymm            # 202607
+  filter_code: reporting_month
+  format: yyyymm
+  compose:
+    template: "{year}{month:02}"   # host sent year + month; source is 202607
 ```
+
+`time.format` parses the **composed** string. Lookback still widens from requested measures. The `year` / `month` keys are removed so they are not leftover `IN` filters. If `reporting_month` is already on the context, that scalar wins.
 
 Rules:
 
@@ -583,6 +588,7 @@ filter_map:
 - `input_text: heir` / `hier` is rejected; expand hierarchies in the context builder.
 - Values are SQL parameters; nothing is concatenated into SQL text.
 - Ops: `in`, `eq` (`==`), `ne` (`<>`), `lt`/`lte`/`gt`/`gte`, `like`/`ilike`/`not_like`, `between`/`not_between`, `is_null`/`is_not_null`. Host supplies LIKE `%` / `_`.
+- Segregated keys for a **non-time** column: `filters.*.compose.template` (`"{a}_{b}"`). The time column always uses `time.compose` so windows widen.
 
 ---
 
@@ -761,7 +767,7 @@ Design around these; they are intentional.
 - Hierarchies (`input_text: heir`) are not expanded here.
 - `business_date` is ignored.
 - Unmapped filters error; they are never silently dropped.
-- YEAR / MONTH is `time.filter_code`. Other predicates use `filters:` (`extract` / `calc` / `result`); there is no per-measure filter block.
+- YEAR / MONTH is `time.filter_code` or `time.compose.template` (concat year+month). Other predicates use `filters:` (`extract` / `calc` / `result`); there is no per-measure filter block.
 - Exactly one `execution.view_details` entry.
 
 **Aggregation**
@@ -806,7 +812,8 @@ Use local parquet fixtures (`tests/conftest.py`: `make_context`, `write_yaml`). 
 | `Filter '…' has no column mapping` | Add context mapping or `filter_map` |
 | `Unknown filter op` | Use a name from §10 (`lte`, `like`, `between`, …) |
 | `apply: extract cannot be listed in ignore_filters` | Use `apply: calc` |
-| `Required filter '…' is missing` | Send it, or set `optional: true` |
+| `Compose placeholder 'year' is missing` | Send every `{placeholder}` on the context, or send `time.filter_code` as one scalar |
+| `compose.template must name at least two` | Two or more `{filter}` placeholders |
 | `Illegal measure sql` / function calls not allowed | Use column names and `+ - * /` only; put `SUM` in `agg:` |
 | `unknown op` / `unknown fn` | Use a name from §7.3 / §8.4, or register one |
 | `op: percent_of_cut_total` | Use `op: percent_of_total` |

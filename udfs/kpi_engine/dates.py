@@ -29,6 +29,8 @@ from kpi_engine.exceptions import TimePlanError
 _FORMAT_ALIASES: dict[str, str] = {
     "yyyy-mm-dd": "%Y-%m-%d",
     "yyyy-mm": "%Y-%m",
+    "yyyy/mm/dd": "%Y/%m/%d",
+    "yyyy/mm": "%Y/%m",
     "yyyymmdd": "%Y%m%d",
     "yyyymm": "%Y%m",
     "mmyyyy": "%m%Y",
@@ -81,8 +83,8 @@ def resolve_time_format(fmt: str) -> tuple[str, int | None]:
     if "%" in raw:
         return raw, _strptime_pad_width(raw)
     raise TimePlanError(
-        f"Unknown time.format {fmt!r}. Use yyyy-mm-dd, yyyy-mm, yyyymmdd, "
-        "yyyymm, mmyyyy, or a strptime string such as %d/%m/%Y."
+        f"Unknown time.format {fmt!r}. Use yyyy-mm-dd, yyyy-mm, yyyy/mm, "
+        "yyyymmdd, yyyymm, mmyyyy, or a strptime string such as %d/%m/%Y."
     )
 
 

@@ -82,6 +82,7 @@ class FilterApplySpec:
     op: str = "in"
     optional: bool = False
     apply: FilterStage = "extract"
+    compose_template: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,7 @@ class TimeSpec:
     calendar: str = "gregorian"
     fiscal_start_month: int = 4
     format: str | None = None
+    compose_template: str | None = None
 
 
 @dataclass(frozen=True)

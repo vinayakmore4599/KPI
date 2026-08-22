@@ -35,8 +35,9 @@ from kpi_engine.contracts import (
     KpiSpec,
     ModelSpec,
 )
+from kpi_engine.core.compose import expand_compose, strip_compose_keys
 from kpi_engine.core.filter_ops import assert_filter_arity, pandas_mask
-from kpi_engine.exceptions import BindError, FilterError
+from kpi_engine.exceptions import BindError, FilterError, TimePlanError
 from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.runlog import traced
 
@@ -79,6 +80,7 @@ def bind_filters(
     extract_columns: set[str],
 ) -> tuple[BoundFilter, ...]:
     """Map leftover filters to source columns. Unmapped filters are a hard error."""
+    remaining = _apply_filter_composes(remaining, kpi.filter_specs)
     mappings = _mapping_index(datasets, kpi)
     specs = _spec_index(kpi)
     _assert_required_filters(remaining, specs)
@@ -222,6 +224,56 @@ def _is_blank(values: tuple) -> bool:
     return all(value is None for value in values)
 
 
+def _apply_filter_composes(
+    remaining: tuple[IncomingFilter, ...], specs: tuple
+) -> tuple[IncomingFilter, ...]:
+    """Build synthetic IncomingFilters from filters:.compose and drop part keys."""
+    work = remaining
+    extras: list[IncomingFilter] = []
+    for spec in specs:
+        template = spec.compose_template
+        if not template:
+            continue
+        existing = next(
+            (
+                item
+                for item in work
+                if norm_name(item.code) == norm_name(spec.code)
+                or norm_name(item.raw_key) == norm_name(spec.code)
+            ),
+            None,
+        )
+        if existing is not None and len(existing.values) == 1 and existing.values[0] is not None:
+            work = strip_compose_keys(work, template)
+            continue
+        try:
+            value, _consumed = expand_compose(
+                template, work, what=f"filters.{spec.code}.compose.template"
+            )
+        except TimePlanError as exc:
+            if spec.optional:
+                work = strip_compose_keys(work, template)
+                continue
+            raise BindError(str(exc)) from exc
+        extras.append(
+            IncomingFilter(
+                raw_key=spec.code,
+                code=spec.code,
+                values=(value,),
+                input_text=None,
+            )
+        )
+        work = strip_compose_keys(work, template)
+        if existing is not None:
+            work = tuple(
+                item
+                for item in work
+                if norm_name(item.code) != norm_name(spec.code)
+                and norm_name(item.raw_key) != norm_name(spec.code)
+            )
+    return tuple(extras) + work
+
+
 def _assert_required_filters(
     remaining: tuple[IncomingFilter, ...], specs: dict[str, FilterApplySpec]
 ) -> None:
@@ -231,6 +283,8 @@ def _assert_required_filters(
     }
     for spec in specs.values():
         if spec.optional:
+            continue
+        if spec.compose_template:
             continue
         if norm_name(spec.code) not in present:
             raise BindError(f"Required filter {spec.code!r} is missing from context.")

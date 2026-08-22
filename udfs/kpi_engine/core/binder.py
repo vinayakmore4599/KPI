@@ -65,6 +65,7 @@ from kpi_engine.catalog.ops_impl import (
     column_op_error,
     measure_fn_error,
 )
+from kpi_engine.core.compose import parse_compose_block
 from kpi_engine.core.filter_ops import canonicalize_op
 from kpi_engine.runlog import traced
 
@@ -499,6 +500,7 @@ def _parse_time(raw: Any) -> TimeSpec | None:
         from kpi_engine.dates import resolve_time_format
 
         resolve_time_format(time_format)
+    compose_template = parse_compose_block(raw.get("compose"), what="time.compose")
     return TimeSpec(
         column=require_ident(str(column), what="time.column"),
         grain=grain,  # type: ignore[arg-type]
@@ -506,6 +508,7 @@ def _parse_time(raw: Any) -> TimeSpec | None:
         calendar=calendar,
         fiscal_start_month=fiscal_start,
         format=time_format,
+        compose_template=compose_template,
     )
 
 
@@ -686,6 +689,9 @@ def _parse_filters(raw: Any) -> tuple[FilterApplySpec, ...]:
                 op=canonicalize_op(spec.get("op") or "in"),
                 optional=bool(spec.get("optional", False)),
                 apply=apply,  # type: ignore[arg-type]
+                compose_template=parse_compose_block(
+                    spec.get("compose"), what=f"filters.{code}.compose"
+                ),
             )
         )
     return tuple(out)

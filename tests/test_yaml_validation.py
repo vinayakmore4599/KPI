@@ -245,8 +245,30 @@ def test_filter_map_values_must_be_identifiers(extra_config):
         load_kpi(9136, extra_config)
 
 
+def test_time_compose_template_is_validated(extra_config):
+    """compose.template needs two `{filter}` placeholders and no nested braces."""
+    _write(
+        extra_config,
+        9143,
+        time=_time(compose={"template": "{year}"}),
+    )
+    with pytest.raises(BindError, match="at least two context filters"):
+        load_kpi(9143, extra_config)
+
+    _write(
+        extra_config,
+        9144,
+        time=_time(compose={"template": "{year}{month:02}"}),
+    )
+    kpi = load_kpi(9144, extra_config)
+    assert kpi.time.compose_template == "{year}{month:02}"
+
+    _write(extra_config, 9145, time=_time(compose="year+month"))
+    with pytest.raises(BindError, match="must be an object with template"):
+        load_kpi(9145, extra_config)
+
+
 def test_filters_block_parses_ops_and_rejects_bad_apply(extra_config):
-    """filters: short form defaults to extract + in; apply must be extract|calc|result."""
     _write(
         extra_config,
         9140,

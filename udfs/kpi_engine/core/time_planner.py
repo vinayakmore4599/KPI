@@ -13,7 +13,7 @@ Capabilities
     - Missing or multi-value time filter → TimePlanError (no silent default).
     - Lookback from requested measures only, in KPI grain periods.
     - Gregorian or fiscal truncate via dates.truncate_period.
-    - Returns remaining filters for IN binding (time filter removed).
+    - Returns remaining filters for IN binding (time filter and compose parts removed).
 """
 
 from __future__ import annotations
@@ -36,7 +36,8 @@ from kpi_engine.dates import (
     year_start,
 )
 from kpi_engine.core.binder import fold_measure_keys
-from kpi_engine.exceptions import TimePlanError
+from kpi_engine.core.compose import expand_compose, strip_compose_keys
+from kpi_engine.exceptions import BindError, TimePlanError
 from kpi_engine.runlog import traced
 
 
@@ -49,18 +50,33 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, t
     if kpi.time is None:
         return None, request.filters
     claimed, rest = claim_month_filter(request.filters, kpi.time.filter_code)
+    template = kpi.time.compose_template
     if claimed is None:
-        raise TimePlanError(
-            f"Missing month filter {kpi.time.filter_code!r}. "
-            "Set time.filter_code in the KPI YAML to the context filter that "
-            "carries the selected period, or omit the time: block if this KPI "
-            "has no time column. The selected period is not defaulted."
+        if not template:
+            raise TimePlanError(
+                f"Missing month filter {kpi.time.filter_code!r}. "
+                "Set time.filter_code in the KPI YAML to the context filter that "
+                "carries the selected period, set time.compose.template to build it "
+                "from year/month keys, or omit the time: block if this KPI "
+                "has no time column. The selected period is not defaulted."
+            )
+        try:
+            composed, _consumed = expand_compose(template, request.filters, what="time.compose.template")
+        except BindError as exc:
+            raise TimePlanError(str(exc)) from exc
+        claimed = IncomingFilter(
+            raw_key=kpi.time.filter_code,
+            code=kpi.time.filter_code,
+            values=(composed,),
+            input_text=None,
         )
-    if len(claimed.values) != 1:
+    elif len(claimed.values) != 1:
         raise TimePlanError(
             f"Month filter {claimed.code!r} must contain exactly one value "
             f"(got {len(claimed.values)})."
         )
+    if template:
+        rest = strip_compose_keys(rest, template)
     raw_anchor = parse_date(claimed.values[0], fmt=kpi.time.format)
     if (
         kpi.time.grain == "day"

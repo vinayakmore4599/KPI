@@ -1,7 +1,7 @@
 """Compile and run the DuckDB extract.
 
 What this file provides
-    compile_extract — parameterized SQL (scan, time range, IN filters).
+    compile_extract — parameterized SQL (scan, time range, extract filters).
     extract — execute and return a Pandas frame plus the SQL string.
 
 Where it is used
@@ -13,6 +13,8 @@ Capabilities
     - SQL models: wrap CTE as a subquery ($alias_scan or $alias_path → ?).
     - Row-level model columns only. KPI YAML formulas and aggs run in Pandas.
     - Identifiers quoted; values bound as parameters.
+    - Extract filters compile to the same operators as Pandas calc/result.
+    - Extract `filters:` compile to the same operators as Pandas calc/result.
 
 When to use
     Change this for new scan types or join YAML. Do not put YoY/MTD or
@@ -35,6 +37,7 @@ from kpi_engine.contracts import (
     ModelSpec,
     TimePlan,
 )
+from kpi_engine.core.filter_ops import sql_predicate
 from kpi_engine.dates import duckdb_parse_time_sql
 from kpi_engine.exceptions import BindError, KPIEngineError
 from kpi_engine.identifiers import match_name, norm_name, quote_ident
@@ -224,10 +227,10 @@ def _where_clause(
     model: ModelSpec | None = None,
     datasets: dict[str, DatasetBinding] | None = None,
 ) -> tuple[str, list[Any]]:
-    """Time range (>= span_start, < span_end) plus source IN filters. Empty IN is FALSE.
+    """Time range (>= span_start, < span_end) plus extract filters. Empty IN is FALSE.
 
-    Snapshot KPIs omit the range and keep only IN filters (or TRUE). SQL models
-    apply IN on the wrapper around the whole CTE script (the final SELECT).
+    Snapshot KPIs omit the range and keep only extract filters (or TRUE). SQL models
+    apply filters on the wrapper around the whole CTE script (the final SELECT).
     """
     parts: list[str] = []
     params: list[Any] = []
@@ -239,12 +242,9 @@ def _where_clause(
         params.append(plan.span_end_exclusive)
     for item in source_filters:
         col = _qualified_column(item.column, model, datasets)
-        if not item.values:
-            parts.append("FALSE")
-            continue
-        placeholders = ", ".join("?" for _ in item.values)
-        parts.append(f"{col} IN ({placeholders})")
-        params.extend(item.values)
+        fragment, bound = sql_predicate(col, item.op, item.values)
+        parts.append(fragment)
+        params.extend(bound)
     if not parts:
         return "TRUE", params
     return " AND ".join(parts), params
@@ -377,7 +377,7 @@ def _used_column_names(
     grain: tuple[str, ...],
     source_filters: tuple[BoundFilter, ...],
 ) -> set[str]:
-    """Folded names this request needs: grain, facts, and DuckDB IN filters."""
+    """Folded names this request needs: grain, facts, and DuckDB extract filters."""
     from kpi_engine.catalog.ops_impl import input_columns
 
     used = {norm_name(col) for col in grain}

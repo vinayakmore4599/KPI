@@ -58,10 +58,12 @@ def test_applied_filters_record_where_each_filter_ran(parquet_path, config_dir):
     )
     result = compute(ctx, config_dir=config_dir)
     by_code = {f["filter_code"]: f for f in result["applied_filters"]}
-    assert by_code["Supplier Name"]["stage"] == "source"
+    assert by_code["Supplier Name"]["stage"] == "extract"
+    assert by_code["Supplier Name"]["apply"] == "extract"
     assert by_code["Supplier Name"]["column"] == "supplier_name"
     assert by_code["Supplier Name"]["values"] == ["ABC"]
-    assert by_code["region"]["stage"] == "cut"
+    assert by_code["region"]["stage"] == "calc"
+    assert by_code["region"]["apply"] == "calc"
     assert all(f["op"] == "in" for f in result["applied_filters"])
     assert result["ignored_filters"] == [
         {"filter_code": "region", "reason": "cut_G_ignore_filters"}

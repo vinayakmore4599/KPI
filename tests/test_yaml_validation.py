@@ -245,6 +245,42 @@ def test_filter_map_values_must_be_identifiers(extra_config):
         load_kpi(9136, extra_config)
 
 
+def test_filters_block_parses_ops_and_rejects_bad_apply(extra_config):
+    """filters: short form defaults to extract + in; apply must be extract|calc|result."""
+    _write(
+        extra_config,
+        9140,
+        filters={
+            "plant": "reason_code",
+            "effective_day": {
+                "column": "amount",
+                "op": "<=",
+                "optional": True,
+                "apply": "extract",
+            },
+        },
+    )
+    kpi = load_kpi(9140, extra_config)
+    by_code = {s.code: s for s in kpi.filter_specs}
+    assert by_code["plant"].column == "reason_code"
+    assert by_code["plant"].op == "in"
+    assert by_code["plant"].apply == "extract"
+    assert by_code["effective_day"].op == "lte"
+    assert by_code["effective_day"].optional is True
+
+    _write(extra_config, 9141, filters={"region": {"column": "region", "apply": "scan"}})
+    with pytest.raises(BindError, match="apply must be extract, calc, or result"):
+        load_kpi(9141, extra_config)
+
+    _write(
+        extra_config,
+        9142,
+        filters={"amount": {"column": "amount", "op": "gt", "apply": "result"}},
+    )
+    with pytest.raises(BindError, match="apply: result must name a dimension column"):
+        load_kpi(9142, extra_config)
+
+
 def test_model_kind_is_validated(extra_config):
     """Models are physical or sql; nothing else is executable."""
     write_yaml(

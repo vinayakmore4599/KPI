@@ -31,8 +31,8 @@ Related docs:
 2. Those keys must exist under `measures:`. An empty list computes **nothing** — it does not run the whole catalog.
 3. The engine walks dependencies (`of:`, `left`/`right`, `inputs:`, `expr:`) and extracts only the base facts that graph needs.
 4. The time filter is the **anchor** (exactly one value). It is never `WHERE month IN (...)`. Lookback widens the scan from the requested graph (`previous_year_value` → 12 months).
-5. DuckDB returns physical columns. Pandas folds host spellings (`Amount` → `amount`), applies `op:` / `expr:`, then `agg:`.
-6. Each cut re-aggregates, then each requested measure is evaluated per dimension combination.
+5. DuckDB returns physical columns. `filters:` with `apply: extract` (and undeclared `IN` lists) sit on that query. Pandas folds host spellings (`Amount` → `amount`), applies `apply: calc` masks, then `op:` / `expr:` / `agg:`.
+6. Each cut re-aggregates, then each requested measure is evaluated per dimension combination. `apply: result` drops output rows afterwards (measures already used the unfiltered cut).
 
 Host names fold onto YAML names: `Previous Year Value`, `previous_year_value`, and `previousyearvalue` are the same key.
 
@@ -532,7 +532,7 @@ row_set: span_union
 | Key | Meaning |
 |---|---|
 | `group_by` | Dimensions this cut groups by |
-| `ignore_filters` | Kept out of DuckDB `WHERE` and applied per-cut in Pandas |
+| `ignore_filters` | Cuts that skip this **calc** filter (G worldwide / R filtered). Not valid with `apply: extract` or `apply: result` |
 | `also_emit` | Extra cuts in the same response |
 | `row_set: span_union` | Row if the combo has data **anywhere in the scan** |
 | `row_set: anchor_only` | Row only if it has data **at the selected period** |
@@ -543,7 +543,34 @@ Use `anchor_only` when the page should list only what is active now.
 
 ## 10. Filters
 
-You normally declare nothing. Context `filter_column_mappings` or a matching column name is enough.
+YEAR / MONTH is `time.filter_code` (one period). Everything else is a **row filter**: the host sends values; YAML says how.
+
+```yaml
+filters:
+  effective_day:
+    column: day
+    op: lte              # DAY <= @EffectiveDay
+    optional: true       # skip when the param is omitted/null
+    apply: extract       # DuckDB WHERE — cheapest; SUM / percent_of_total are correct
+  region:
+    column: region
+    op: in
+    apply: calc          # Pandas before measures; needed when G ignore_filters: [region]
+  reason_code:
+    column: reason_code
+    op: in
+    apply: result        # hide JSON rows; LATE's share still includes OTHER
+```
+
+| Need | `apply` |
+|---|---|
+| Fiscal year + month | `time:` — not this block |
+| `DAY <= EffectiveDay` on facts | **extract** (or calc if `day` is Pandas-only) |
+| Region IN, all cuts the same | **extract** |
+| Region IN, G ignores it | **calc** + `ignore_filters` |
+| Hide reasons in JSON, keep full share | **result** |
+
+You normally declare nothing for plain `IN` lists. Context `filter_column_mappings` or a matching column name is enough (extract, unless a cut ignores the code).
 
 ```yaml
 filter_map:
@@ -551,9 +578,11 @@ filter_map:
 ```
 
 - Unmapped filter → hard error (never dropped).
-- Empty value list → no rows (`FALSE`).
+- Empty `in` list → no rows (`FALSE`). Empty `in` is not `IS NULL`.
+- `optional: true` + omitted/null → skip.
 - `input_text: heir` / `hier` is rejected; expand hierarchies in the context builder.
 - Values are SQL parameters; nothing is concatenated into SQL text.
+- Ops: `in`, `eq` (`==`), `ne` (`<>`), `lt`/`lte`/`gt`/`gte`, `like`/`ilike`/`not_like`, `between`/`not_between`, `is_null`/`is_not_null`. Host supplies LIKE `%` / `_`.
 
 ---
 
@@ -732,6 +761,7 @@ Design around these; they are intentional.
 - Hierarchies (`input_text: heir`) are not expanded here.
 - `business_date` is ignored.
 - Unmapped filters error; they are never silently dropped.
+- YEAR / MONTH is `time.filter_code`. Other predicates use `filters:` (`extract` / `calc` / `result`); there is no per-measure filter block.
 - Exactly one `execution.view_details` entry.
 
 **Aggregation**
@@ -774,6 +804,9 @@ Use local parquet fixtures (`tests/conftest.py`: `make_context`, `write_yaml`). 
 | `Missing month filter` | Set `time.filter_code` to the real filter, or omit `time:` |
 | `Month filter must contain exactly one value` | Anchor is one period, not a multi-select |
 | `Filter '…' has no column mapping` | Add context mapping or `filter_map` |
+| `Unknown filter op` | Use a name from §10 (`lte`, `like`, `between`, …) |
+| `apply: extract cannot be listed in ignore_filters` | Use `apply: calc` |
+| `Required filter '…' is missing` | Send it, or set `optional: true` |
 | `Illegal measure sql` / function calls not allowed | Use column names and `+ - * /` only; put `SUM` in `agg:` |
 | `unknown op` / `unknown fn` | Use a name from §7.3 / §8.4, or register one |
 | `op: percent_of_cut_total` | Use `op: percent_of_total` |

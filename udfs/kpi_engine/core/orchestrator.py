@@ -48,7 +48,14 @@ from kpi_engine.catalog.ops_impl import (
 )
 from kpi_engine.core.calc_engine import compute_cuts, densify
 from kpi_engine.core.cuts import emitted_cuts, finest_grain
-from kpi_engine.core.filters import bind_filters, columns_for_source_filters, split_for_duckdb
+from kpi_engine.core.filters import (
+    apply_frame_filters,
+    apply_result_filters,
+    bind_filters,
+    columns_for_source_filters,
+    filters_on_all_cuts,
+    split_filters,
+)
 from kpi_engine.core.model_sql import NON_ADDITIVE, compile_extract, extract
 from kpi_engine.core.relations import join_monthly
 from kpi_engine.core.time_planner import plan_time
@@ -124,7 +131,8 @@ def _compute(
     for model in models:
         extract_columns |= columns_for_source_filters(model, scoped, grain, datasets)
     bound = bind_filters(remaining_filters, kpi, datasets, extract_columns)
-    source_filters, deferred = split_for_duckdb(bound, emitted)
+    source_filters, deferred, result_filters = split_filters(bound, emitted)
+    global_calc = filters_on_all_cuts(deferred, emitted)
     log_step("extract")
     con, owned = acquire_connection(connection)
     try:
@@ -134,6 +142,7 @@ def _compute(
             needed_bases=needed_bases,
             datasets=datasets,
             source_filters=source_filters,
+            calc_filters=global_calc,
             plan=time_plan,
             grain=grain,
             request=request,
@@ -152,6 +161,7 @@ def _compute(
         requested=requested,
         detail=detail,
     )
+    rows = apply_result_filters(rows, result_filters)
     rows = _sort_rows(rows, kpi)
     log_step("paginate")
     page_rows, pagination = _paginate(rows, request)
@@ -160,7 +170,7 @@ def _compute(
         "kpi_id": kpi.kpi_id,
         "request_id": request.request_id,
         "parameters": parameters,
-        "applied_filters": _applied(source_filters, deferred, emitted),
+        "applied_filters": _applied(source_filters, deferred, result_filters),
         "ignored_filters": _ignored(deferred, emitted),
         "trend_axes": trend_axes,
         "pagination": pagination,
@@ -224,7 +234,7 @@ def _validate(
     for model in models:
         extract_columns |= columns_for_source_filters(model, scoped, grain, datasets)
     bound = bind_filters(remaining, kpi, datasets, extract_columns)
-    source_filters, _deferred = split_for_duckdb(bound, emitted)
+    source_filters, _deferred, _result = split_filters(bound, emitted)
     sqls: list[str] = []
     param_count = 0
     for model in models:
@@ -311,6 +321,7 @@ def _extract_all(
     needed_bases: tuple,
     datasets: dict,
     source_filters,
+    calc_filters=(),
     plan,
     grain: tuple[str, ...],
     request: AdaptedRequest,
@@ -346,6 +357,7 @@ def _extract_all(
         )
         folded = fold_extract_columns(raw, kpi, grain)
         mapped = apply_dimension_maps(folded, kpi)
+        mapped = apply_frame_filters(mapped, calc_filters)
         detail_parts.append(apply_pandas_facts(mapped, sub) if not mapped.empty else mapped)
         pandas_monthly = collapse_pandas_detail(mapped, sub, grain)
         if not pandas_monthly.empty:
@@ -357,6 +369,7 @@ def _extract_all(
         cols = [kpi.time.column, "_observed"] if kpi.time is not None else ["_observed"]
         monthly = pd.DataFrame(columns=cols)
     monthly = apply_dimension_maps(monthly, kpi)
+    monthly = apply_frame_filters(monthly, calc_filters)
     monthly = _to_monthly(monthly, scoped, grain, plan)
     return monthly, detail, sqls
 
@@ -465,26 +478,18 @@ def _paginate(
     }
 
 
-def _applied(source_filters, deferred, emitted) -> list[dict[str, Any]]:
-    """Metadata: filters applied in DuckDB (source) or on a cut in Pandas."""
-    rows = [
-        {
-            "filter_code": f.code,
-            "column": f.column,
-            "op": "in",
-            "values": list(f.values),
-            "stage": "source",
-        }
-        for f in source_filters
-    ]
-    for item in deferred:
+def _applied(source_filters, deferred, result_filters) -> list[dict[str, Any]]:
+    """Metadata: filters applied in DuckDB (extract), Pandas calc, or after cuts (result)."""
+    rows = []
+    for item in (*source_filters, *deferred, *result_filters):
         rows.append(
             {
                 "filter_code": item.code,
                 "column": item.column,
-                "op": "in",
+                "op": item.op,
                 "values": list(item.values),
-                "stage": "cut",
+                "stage": item.stage,
+                "apply": item.stage,
             }
         )
     return rows

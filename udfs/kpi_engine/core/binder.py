@@ -37,6 +37,7 @@ from kpi_engine.contracts import (
     CutSpec,
     DatasetBinding,
     DimensionSpec,
+    FilterApplySpec,
     JoinSpec,
     KpiSpec,
     MeasureWhere,
@@ -64,6 +65,7 @@ from kpi_engine.catalog.ops_impl import (
     column_op_error,
     measure_fn_error,
 )
+from kpi_engine.core.filter_ops import canonicalize_op
 from kpi_engine.runlog import traced
 
 
@@ -265,6 +267,8 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         str(k): require_ident(str(v), what="filter_map column")
         for k, v in (raw.get("filter_map") or {}).items()
     }
+    filter_specs = _parse_filters(raw.get("filters"))
+    _assert_filter_specs(filter_specs, cuts, dimensions)
     row_set = raw.get("row_set", "span_union")
     if row_set not in {"span_union", "anchor_only"}:
         raise BindError("row_set must be span_union or anchor_only.")
@@ -297,6 +301,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         default_cut=default_cut,
         measures=measures,
         filter_map=filter_map,
+        filter_specs=filter_specs,
         row_set=row_set,  # type: ignore[arg-type]
         model_relations=relations,
         dimension_specs=dim_specs,
@@ -648,6 +653,69 @@ def _offset_is_nonzero(offset: Offset | None) -> bool:
     if offset is None:
         return False
     return bool(offset.months or offset.years or offset.days or offset.quarters)
+
+
+def _parse_filters(raw: Any) -> tuple[FilterApplySpec, ...]:
+    """Parse KPI YAML `filters:` — column, op, optional, apply extract|calc|result."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise BindError("filters must be an object keyed by context filter code.")
+    out: list[FilterApplySpec] = []
+    for code, spec in raw.items():
+        if isinstance(spec, str):
+            out.append(
+                FilterApplySpec(
+                    code=str(code),
+                    column=require_ident(spec, what="filters.column"),
+                )
+            )
+            continue
+        if not isinstance(spec, dict):
+            raise BindError(f"filters.{code} must be a column name or an object.")
+        column = require_ident(str(spec.get("column") or ""), what="filters.column")
+        apply = str(spec.get("apply") or "extract").strip().lower()
+        if apply not in {"extract", "calc", "result"}:
+            raise BindError(
+                f"filters.{code}.apply must be extract, calc, or result (got {spec.get('apply')!r})."
+            )
+        out.append(
+            FilterApplySpec(
+                code=str(code),
+                column=column,
+                op=canonicalize_op(spec.get("op") or "in"),
+                optional=bool(spec.get("optional", False)),
+                apply=apply,  # type: ignore[arg-type]
+            )
+        )
+    return tuple(out)
+
+
+def _assert_filter_specs(
+    specs: tuple[FilterApplySpec, ...],
+    cuts: tuple[CutSpec, ...],
+    dimensions: tuple[str, ...],
+) -> None:
+    """extract/result cannot sit in ignore_filters; result columns are dimensions."""
+    ignored = {norm_name(name) for cut in cuts for name in cut.ignore_filters}
+    for spec in specs:
+        names = {norm_name(spec.code), norm_name(spec.column)}
+        listed = sorted(names & ignored)
+        if listed and spec.apply == "extract":
+            raise BindError(
+                f"filters.{spec.code} apply: extract cannot be listed in ignore_filters "
+                f"({listed[0]}); use apply: calc."
+            )
+        if listed and spec.apply == "result":
+            raise BindError(
+                f"filters.{spec.code} apply: result cannot be listed in ignore_filters "
+                f"({listed[0]})."
+            )
+        if spec.apply == "result" and match_name(spec.column, dimensions) is None:
+            raise BindError(
+                f"filters.{spec.code} apply: result must name a dimension column "
+                f"(got {spec.column!r}; dimensions {list(dimensions)})."
+            )
 
 
 def _parse_cut(raw: Any) -> CutSpec:

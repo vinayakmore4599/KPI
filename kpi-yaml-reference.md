@@ -50,6 +50,10 @@ cuts:
 default_cut: G
 row_set: span_union          # span_union | anchor_only
 
+# How context filters land (values still come from the request). Omit = today's IN at extract.
+# filters:
+#   effective_day: { column: day, op: lte, optional: true, apply: extract }
+
 measures:                    # every measure_key the UI can send
   current_value:
     of: sotif_value
@@ -80,9 +84,9 @@ Understanding this makes the YAML obvious.
 
 1. The **anchor** is the single value of the `time.filter_code` filter, truncated to `time.grain`. It is never applied as `WHERE month IN (...)`.
 2. The engine reads the **requested** `measure_key`s, works out the deepest lookback among them, and scans `[anchor − lookback, anchor]` as a **date range**. Measures nobody asked for cost nothing.
-3. DuckDB retrieves **model columns only** (time bucket, dimensions, and physical columns named by KPI YAML). It does not run `agg:`, `op:`, or `expr:`.
-4. Pandas computes every base measure on those rows, folds with `agg:`, then puts the result on a **dense period spine** so shifts move by the calendar, not by row position.
-5. Each cut re-aggregates that spine to its own `group_by`, then every requested measure is evaluated per dimension combination.
+3. DuckDB retrieves **model columns only** (time bucket, dimensions, and physical columns named by KPI YAML). `filters:` with `apply: extract` become the extract `WHERE` (plus undeclared context `IN` lists). It does not run `agg:`, `op:`, or `expr:`.
+4. Pandas computes every base measure on those rows, applies `apply: calc` masks, folds with `agg:`, then puts the result on a **dense period spine** so shifts move by the calendar, not by row position.
+5. Each cut re-aggregates that spine to its own `group_by` (skipping `ignore_filters` on `apply: calc` filters), then every requested measure is evaluated per dimension combination. `apply: result` then drops output rows without changing the math.
 
 The practical consequences:
 
@@ -504,7 +508,7 @@ default_cut: G
 | `also_emit` | Other cuts to return in the same response (chains are followed, cycles are safe) |
 | `default_cut` | The cut the walk starts from; defaults to the first declared cut |
 
-**How `ignore_filters` works.** A filter ignored by *any* emitted cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas instead. That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. The response reports where each filter ran under `applied_filters` (`stage: source` or `stage: cut`) and lists skipped ones under `ignored_filters`.
+**How `ignore_filters` works.** A filter ignored by *any* emitted cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Declare that filter with `apply: calc` (or leave it undeclared — undeclared codes used in `ignore_filters` are deferred automatically). `apply: extract` plus `ignore_filters` is a bind error. The response reports where each filter ran under `applied_filters` (`stage` / `apply`: `extract`, `calc`, or `result`) and lists skipped ones under `ignored_filters`.
 
 Every cut re-aggregates the spine from scratch, so a global average is a true weighted average, not a mean of regional averages.
 
@@ -521,27 +525,87 @@ Use `anchor_only` when the page should list only what is active now; use `span_u
 
 ## 7. Filters
 
-Filters arrive on the context and default to `IN`. You normally declare nothing.
+YEAR / MONTH belong on `time.filter_code` (one selected period → a date range plus lookback). Do not also send year and month as `IN` filters.
+
+Other predicates are **row filters**. Values come from the **context**. KPI YAML `filters:` says **how** and **at which of three stages**.
+
+```yaml
+filters:
+  effective_day:
+    column: day
+    op: lte                 # or "<="; aliases are case-insensitive
+    optional: true          # omitted or null → skip (SP: @EffectiveDay IS NULL OR …)
+    apply: extract          # extract | calc | result  (default extract)
+
+  region:
+    column: region
+    op: in
+    apply: calc             # Pandas before measures; required when a cut ignore_filters this code
+
+  reason_code:
+    column: reason_code
+    op: in
+    apply: result           # drop JSON rows after measures; denominators stay unfiltered
+```
+
+| `apply` | Where | Affects SUM / `percent_of_total`? | Use when |
+|---|---|---|---|
+| **`extract`** (default) | DuckDB `WHERE` on the model query | **Yes** | Physical column; every cut uses the same mask |
+| **`calc`** | Pandas after retrieve, before densify / cut measures | **Yes** (same math as extract) | After maps/join, or some cuts skip it (`ignore_filters`) |
+| **`result`** | After `compute_cuts`, on JSON rows | **No** | Hide groups in the payload; shares still include dropped rows |
+
+`ignore_filters` is not a fourth apply. It only names which cuts skip a **`calc`** filter. Do not combine it with `apply: result`. Bind error if `apply: extract` and the code is in `ignore_filters`.
+
+Undeclared context codes keep today's behaviour: `IN` at extract, unless a cut lists them in `ignore_filters` (then calc). `filter_map` still remaps a code to a column (`op: in`, `apply: extract`).
+
+`optional: true` skips when the context omits the key or sends null. Empty `in` that is not optional matches no rows (`FALSE`). Empty `in` is not `IS NULL`.
+
+`apply: result` may name **dimension** columns on the output row only, not measure keys.
+
+### Operators (all three `apply` stages)
+
+| Canonical | YAML aliases | Values |
+|---|---|---|
+| `in` | `IN` (default if `op` omitted) | 0+ (empty + not optional → no rows) |
+| `eq` | `==`, `=`, `equals` | exactly one |
+| `ne` | `<>`, `!=`, `not_equals` | exactly one |
+| `lt` | `<` | exactly one |
+| `lte` | `<=`, `le` | exactly one |
+| `gt` | `>` | exactly one |
+| `gte` | `>=`, `ge` | exactly one |
+| `like` | `LIKE` | exactly one string (`%` / `_` from the host) |
+| `ilike` | `ILIKE` | exactly one string |
+| `not_like` | `NOT LIKE`, `notlike` | exactly one string |
+| `between` | `BETWEEN` | exactly two, low then high |
+| `not_between` | `NOT BETWEEN` | exactly two |
+| `is_null` | `IS NULL`, `isnull` | none (context key present = apply) |
+| `is_not_null` | `IS NOT NULL`, `notnull` | none |
+
+`DAY <= @EffectiveDay` is `op: lte` with one context value. Null column values do not pass comparisons; use `is_null` to keep nulls.
+
+You can still declare nothing when metadata already maps the filter, or the code equals the column name:
 
 | Situation | What to do |
 |---|---|
-| Metadata already maps the filter to a column | Nothing — `filter_column_mappings` is used |
+| Metadata already maps the filter to a column | Nothing — `filter_column_mappings` is used (`IN`, extract unless ignored) |
 | The filter code equals the column name | Nothing — it binds by name |
 | No mapping exists, or this KPI needs a different column | Add `filter_map` to the KPI YAML |
+| Comparison other than `IN`, optional skip, or a chosen `apply` | Add `filters:` |
 
 ```yaml
 filter_map:
   plant_code: region      # context filter_code → column name (must be an identifier)
 ```
 
-`filter_map` takes precedence over context mappings for this KPI.
+`filter_map` takes precedence over context mappings for this KPI. `filters:` `column:` wins over both for that code.
 
 Contract details:
 
 - An unmapped filter is a **hard error**, never silently dropped.
-- An empty value list means "nothing selected" and matches no rows (compiled as `FALSE`).
+- An empty `in` list means "nothing selected" and matches no rows (compiled as `FALSE`).
 - `input_text: heir` is rejected — expand hierarchies in the context builder.
 - Values are always bound as SQL parameters; nothing is concatenated into SQL text.
+- Unknown `op` or wrong value count is a bind error listing the expected arity.
 
 ---
 
@@ -882,6 +946,10 @@ pytest -q
 | `Month filter must contain exactly one value` | The page sent a multi-select for the period | Metadata — the anchor is a single period |
 | `time.grain=day requires a full date` | Day-grain KPI received `YYYY-MM` | Send `YYYY-MM-DD` |
 | `Filter '<x>' has no column mapping` | No context mapping and no matching column | Add `filter_column_mappings` or `filter_map` |
+| `Unknown filter op '…'` | YAML `filters.*.op` is not in the operator table | Use a name or alias from §7 |
+| `Filter '…' op 'between' expects 2 value(s)` | Wrong arity | `between` needs `[low, high]`; `eq` needs one value; `is_null` needs none |
+| `filters.x apply: extract cannot be listed in ignore_filters` | DuckDB cannot skip the mask on cut G | Use `apply: calc` |
+| `Required filter '…' is missing from context` | `optional: false` (default) and the host omitted it | Send the filter, or set `optional: true` |
 | `Filter '<x>' does not bind to a source column` | Mapped to a column the extract does not expose — typically a CTE-internal one | Add it to `output_schema` |
 | `Illegal measure sql: '…'` | Quotes, function calls, or `;` in `base_measures.sql` | Use `ontime * fullqty` style math only; put `SUM` in `agg:` |
 | `Unknown agg '<x>'` | Aggregation not in §4 | Pick a built-in or add one to the engine |
@@ -906,6 +974,7 @@ Known boundaries, so you do not design around something that is not there:
 - `trailing` counts grain periods; the unit key is an alias, not a converter (§5.2).
 - `measures.*.cuts` restricts **trend**, **rank**, and **percent_of_total**.
 - `percent_of_total` windows **this cut's** rows only. Share of a different cut's total is a different problem (`ignore_filters` / `also_emit`, or a later op).
+- `filters:` is one mask for the pipeline (then cuts / `ignore_filters`). There is no per-measure filter block.
 - `rank` and `percent_of_total` cannot feed `arithmetic` / `fn` / `expr` in the same request.
 - Physical joins support `inner`, `left` and `right`. Anything else belongs in a `kind: sql` model.
 - `base_measures.sql` is a column name. Expressions belong in the model.

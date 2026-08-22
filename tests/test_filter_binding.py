@@ -139,9 +139,9 @@ def test_split_for_duckdb_matches_ignore_names_by_code_or_column():
     cuts = (
         CutSpec(name="G", group_by=(), ignore_filters=("Region",), also_emit=()),
     )
-    by_code = BoundFilter(code="Region", column="region_name", values=("NA",), stage="source")
-    by_column = BoundFilter(code="plant", column="Region", values=("NA",), stage="source")
-    other = BoundFilter(code="supplier", column="supplier_name", values=("ABC",), stage="source")
+    by_code = BoundFilter(code="Region", column="region_name", values=("NA",), stage="extract")
+    by_column = BoundFilter(code="plant", column="Region", values=("NA",), stage="extract")
+    other = BoundFilter(code="supplier", column="supplier_name", values=("ABC",), stage="extract")
     source, deferred = split_for_duckdb((by_code, by_column, other), cuts)
     assert [f.code for f in deferred] == ["Region", "plant"]
     assert [f.code for f in source] == ["supplier"]
@@ -151,7 +151,7 @@ def test_apply_cut_filters_skips_columns_the_frame_does_not_have():
     """A deferred filter on a column outside this cut's frame is a no-op, not a crash."""
     frame = pd.DataFrame([{"region": "NA", "value": 1.0}])
     cut = CutSpec(name="R", group_by=("region",), ignore_filters=(), also_emit=())
-    absent = BoundFilter(code="plant", column="plant_code", values=("P1",), stage="cut")
+    absent = BoundFilter(code="plant", column="plant_code", values=("P1",), stage="calc")
     assert len(apply_cut_filters(frame, cut, (absent,))) == 1
 
 
@@ -159,7 +159,7 @@ def test_apply_cut_filters_with_no_values_matches_nothing():
     """An empty IN list is an explicit "nothing selected", not "everything"."""
     frame = pd.DataFrame([{"region": "NA", "value": 1.0}])
     cut = CutSpec(name="R", group_by=("region",), ignore_filters=(), also_emit=())
-    empty = BoundFilter(code="region", column="region", values=(), stage="cut")
+    empty = BoundFilter(code="region", column="region", values=(), stage="calc")
     assert apply_cut_filters(frame, cut, (empty,)).empty
 
 

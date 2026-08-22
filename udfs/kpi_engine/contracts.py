@@ -70,14 +70,30 @@ class IncomingFilter:
     input_text: str | None
 
 
+FilterStage = Literal["extract", "calc", "result"]
+
+
+@dataclass(frozen=True)
+class FilterApplySpec:
+    """KPI YAML `filters:` entry: how a context code is applied, and where."""
+
+    code: str
+    column: str
+    op: str = "in"
+    optional: bool = False
+    apply: FilterStage = "extract"
+
+
 @dataclass(frozen=True)
 class BoundFilter:
-    """Filter bound to a column and a stage (source DuckDB, or per-cut Pandas)."""
+    """Filter bound to a column, operator, and apply stage (extract / calc / result)."""
 
     code: str
     column: str
     values: tuple[Any, ...]
-    stage: Literal["source", "target", "cut"]
+    stage: FilterStage
+    op: str = "in"
+    optional: bool = False
     input_text: str | None = None
 
 
@@ -219,6 +235,7 @@ class KpiSpec:
     default_cut: str
     measures: tuple[OutputSpec, ...]
     filter_map: dict[str, str] = field(default_factory=dict)
+    filter_specs: tuple[FilterApplySpec, ...] = ()
     row_set: Literal["span_union", "anchor_only"] = "span_union"
     model_relations: tuple["ModelRelation", ...] = ()
     dimension_specs: tuple[DimensionSpec, ...] = ()

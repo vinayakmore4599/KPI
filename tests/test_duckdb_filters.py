@@ -33,8 +33,8 @@ def test_physical_model_pushes_select_filters_to_duckdb(parquet_path, config_dir
     assert '"region" IN' not in sql
     assert '"event_month" IN' not in sql
     applied = {row["column"]: row["stage"] for row in result["applied_filters"]}
-    assert applied["supplier_name"] == "source"
-    assert applied["region"] == "cut"
+    assert applied["supplier_name"] == "extract"
+    assert applied["region"] == "calc"
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     # G ignores region, so worldwide LATE still includes EU: 30 + 15
     assert g["current_value"] == 45.0

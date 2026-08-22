@@ -75,7 +75,8 @@ measures:                    # every measure_key the UI can send
 | A named function over other measures' values | `op: fn` + `inputs:` (see §5.5) |
 | A named function over retrieved columns | `columns:` + `op:` on a base measure (see §10.1) |
 | A dimension echoed as a `measure_key` | `op: dimension` |
-| Math the catalog cannot express | `op: hook` (see §10.3) |
+| Quartiles, Pareto, lag, vs-target, series stats | add-on ops / hooks — [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) |
+| Math no listed kind can express | new hook under `capabilities/hooks/` + `registries/hooks.yaml` (see §10.3) |
 
 ---
 
@@ -109,7 +110,7 @@ The practical consequences:
 | `format` | `yyyy-mm-dd`, `yyyy-mm`, `yyyy/mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, or a strptime string | ISO `YYYY-MM` / `YYYY-MM-DD` | How the physical column and the context time filter are stored (`062026` → `format: mmyyyy`) |
 | `compose` | `{ template: "{year}{month:02}" }` | omitted | Build `filter_code` from segregated context keys. Literals between `{placeholders}` are kept (`{year}/{month:02}` → `2026/04`). `{month:02}` zero-pads. The part keys are then removed so they are not leftover `IN` filters. If `filter_code` is already on the context, that scalar wins. |
 
-Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Snapshot KPIs may only use `point` (no offset), `dimension`, `arithmetic`, `rank`, `percent_of_total`, and `hook` without lookback. Windows, trends, and period offsets require `time:`.
+Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. A snapshot measure may not use a nonzero `offset`, `trailing`, or any kind that needs time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not.
 
 Rules the engine enforces:
 
@@ -277,6 +278,8 @@ base_measures:
 Every `measures_required[].measure_key` the UI can send must be a key here. Unknown keys fail at bind time with the valid list.
 
 `op:` and `kind:` are interchangeable spellings.
+
+Platform kinds are documented below. Add-on kinds (`ntile`, `lag`, `diff`, `top_n`, …) and hooks (`ewma`, `hit_rate`, `cagr`, …) are listed with examples in [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md). A new name is `capabilities/` + `registries/` — not `core/`.
 
 ### 5.1 `point` — one period
 
@@ -493,9 +496,13 @@ reason_code:
 
 Only needed when the platform sends a dimension as a `measure_key`. The key must match a name in `dimensions:`.
 
-### 5.8 `hook` — a registered Python function
+### 5.8 `hook` — an allowlisted Python function
 
-See §10.3.
+See §10.3. The function must be listed in `registries/hooks.yaml`.
+
+### 5.9 Add-on kinds
+
+Cut-phase (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_share`, `running_total`, `running_avg`, `contribution`, `gap_to_leader`, `gap_to_avg`, `zscore`, `top_n`) and period-phase (`lag`, `lead`, `index`, `vs_target`, `threshold`, `diff`, `pct_change`) ops are allowlisted add-ons. YAML keys are kind-specific (`tiles`, `n`, `vs`, `cmp`, `offset`). Copy the example from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md). Do not invent a name that is not in the registry.
 
 ---
 
@@ -735,11 +742,13 @@ Work down this list and stop at the first row that fits.
 | A different trailing length, offset, or ratio | YAML — combine existing ops |
 | A messy source shape, eligibility rule, or derived column | Model YAML — `kind: sql` |
 | A different aggregation of the same column | YAML — a second `base_measures` entry |
-| Row maths across retrieved columns | **Column function** — register it, then `columns:` + `op:` |
-| Maths over other measures' results | **Measure function** — register it, then `op: fn` + `inputs:` |
-| A one-off algorithm needing the whole period series | **Hook** |
+| Row maths across retrieved columns | **Column function** — impl + `registries/functions/column.yaml`, then `columns:` + `op:` |
+| Maths over other measures' results | **Measure function** — impl + `registries/functions/measure.yaml`, then `op: fn` + `inputs:` |
+| A one-off algorithm needing the whole period series | **Hook** — impl + `registries/hooks.yaml` |
 
-Registering a function never requires an engine change. Add the Python under `capabilities/` and a row in the matching file under `registries/`. Both registries are validated at bind time, so a typo names the registered alternatives instead of failing mid-request. See [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md).
+A new name never requires an engine change. Add the Python under `capabilities/` and a row under `registries/`. Then regenerate `registries/CAPABILITIES.md`. Both registries are validated at bind time, so a typo names the registered alternatives instead of failing mid-request. See [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md).
+
+`extensions/` is a compatibility shim. Do not `register_*` new names there.
 
 This registry does **not** cover filter operators, compose templates, time format aliases, or aggregations — those stay platform code in `core/`.
 
@@ -750,8 +759,7 @@ A column function receives one numeric pandas Series per entry in `columns:` and
 **Your signature is the contract.** The engine reads arity and parameter names off the function itself, so you choose how many columns it takes and what YAML may call them.
 
 ```python
-from kpi_engine.extensions.functions import register_column_fn
-
+# capabilities/functions/column/impl.py
 def weighted_score(hits, weight):
     """Exactly two columns; both arguments are pandas Series."""
     return hits * weight * 10
@@ -759,9 +767,32 @@ def weighted_score(hits, weight):
 def blended_score(*columns):
     """Any number of columns, added with a decaying weight."""
     return sum(column * 0.5**n for n, column in enumerate(columns))
+```
 
-register_column_fn("weighted_score", weighted_score)
-register_column_fn("blended_score", blended_score, min_columns=2)
+```yaml
+# registries/functions/column.yaml
+weighted_score:
+  role: addon
+  enabled: true
+  description: Hits × weight × 10.
+  example: |
+    score:
+      columns: { hits: ontime, weight: fullqty }
+      op: weighted_score
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: weighted_score
+
+blended_score:
+  role: addon
+  enabled: true
+  min_args: 2
+  description: Decaying weighted sum of columns.
+  example: |
+    spread:
+      columns: [q1, q2, q3, q4]
+      op: blended_score
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: blended_score
 ```
 
 ```yaml
@@ -780,22 +811,34 @@ base_measures:
     op: blended_score
 ```
 
-A `*columns` function has no upper bound, so pass `min_columns` to say how few are too few — the signature alone cannot tell. Everything else is bounded by its parameters and can be fed by name. Section 4 lists the built-ins.
+A `*columns` function has no upper bound, so set `min_args:` in the YAML (default **2** when omitted on a variadic signature). Everything else is bounded by its parameters and can be fed by name. Section 4 lists the built-ins.
 
 ### 10.2 Measure functions — `measures.fn`
 
 A measure function receives one **scalar** per entry in `inputs:` and returns one scalar (`None` for undefined). The engine computes the inputs first.
 
 ```python
-from kpi_engine.extensions.functions import register_measure_fn
-
+# capabilities/functions/measure/impl.py
 def safe_ratio(numerator, denominator):
     """Ratio that reports null instead of dividing by zero."""
     if numerator is None or not denominator:
         return None
     return float(numerator) / float(denominator)
+```
 
-register_measure_fn("safe_ratio", safe_ratio)
+```yaml
+# registries/functions/measure.yaml
+safe_ratio:
+  role: addon
+  enabled: true
+  description: Ratio that is null when the denominator is 0.
+  example: |
+    otd_pct:
+      op: fn
+      fn: safe_ratio
+      inputs: [ontime_value, total_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: safe_ratio
 ```
 
 ```yaml
@@ -983,7 +1026,7 @@ pytest -q
 | `measures.<k> op=percent_of_total requires of:` | Missing source | Point at a measure or base_measure |
 | `partition_by '…' is not a cut group_by` | Window key is not a dimension | Use a name from `dimensions` / `cuts[].group_by` |
 | `Base measures span multiple models; declare model_relations` | Two models, no join declared | Add `model_relations` (§8) |
-| `measures.<k> names unknown hook '<x>'` | Hook not registered | `register("<x>", fn)` at startup |
+| `measures.<k> names unknown hook '<x>'` | Hook not in `registries/hooks.yaml` | Add the function under `capabilities/hooks/` and a registry row |
 | `Filter '<x>' is hierarchical (input_text=heir)` | Hierarchy not expanded | Fix in the context builder |
 | `output.page must be >= 1` | Paging from 0 | Pages are 1-based |
 
@@ -996,7 +1039,7 @@ Known boundaries, so you do not design around something that is not there:
 - Timestamps are bucketed as stored; there is no timezone conversion, and `time.timezone` is rejected at bind rather than silently ignored. Convert the column in a `kind: sql` model if you need it.
 - `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months.
 - `trailing` counts grain periods; the unit key is an alias, not a converter (§5.2).
-- `measures.*.cuts` restricts **trend**, **rank**, and **percent_of_total**.
+- `measures.*.cuts` restricts **trend**, **rank**, **percent_of_total**, and other cut-phase kinds (`ntile`, `top_n`, …).
 - `percent_of_total` windows **this cut's** rows only. Share of a different cut's total is a different problem (`ignore_filters` / `also_emit`, or a later op).
 - `filters:` is one mask for the pipeline (then cuts / `ignore_filters`). There is no per-measure filter block.
 - `rank` and `percent_of_total` cannot feed `arithmetic` / `fn` / `expr` in the same request.

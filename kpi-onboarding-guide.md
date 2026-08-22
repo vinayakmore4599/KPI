@@ -4,12 +4,21 @@ This is the playbook for adding a KPI to the engine, and for deciding **which fi
 
 Related docs:
 
+- [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) — **live list of every op, function, and hook**
 - [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — **write a KPI YAML: functions, columns vs expressions, when to use what, limits**
 - [kpi-yaml-reference.md](kpi-yaml-reference.md) — **every YAML key, op and aggregation the engine supports**
 - [README.md](README.md) — folders, install, YAML meaning
 - [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions
 
-This guide is the *process*: what to confirm, what to write, what to change. For the full capability list while writing YAML, keep the reference open beside it.
+This guide is the *process*: what to confirm, what to write, what to change. For the live name list, keep [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) open. For YAML keys, keep the reference open beside it.
+
+The engine has three roots under `udfs/kpi_engine/`:
+
+| Folder | Role |
+|---|---|
+| `core/` | Frozen pipeline (adapt, bind, extract, dispatch). Not for a new catalog name. |
+| `capabilities/` | Bodies of ops, column/measure functions, and hooks. |
+| `registries/` | YAML allowlist. A name is callable only if it is listed here. |
 
 ---
 
@@ -30,7 +39,7 @@ The UI asks for columns by **`measure_key`**. Those names must exist under **`me
 
 ## 2. Standard onboarding (YAML only)
 
-Use this path when the math already exists in the catalog: **sum/avg/count**, **point** (current / previous year), **window** (3m / 6m / 12m), **trend**, **arithmetic** (YoY / ratio).
+Use this path when the math already exists in [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md): **point**, **window**, **trend**, **arithmetic** / **fn** / **expr**, **rank**, **percent_of_total**, add-on kinds (`lag`, `ntile`, …), and allowlisted hooks.
 
 ### Step 1 — Confirm the context
 
@@ -92,11 +101,14 @@ Set `kpi_id` and `model` to match.
 | `op` | When to use | Required fields |
 |---|---|---|
 | `dimension` | Context still sends a dimension as `measure_key` | `kind: dimension` |
-| `point` | One month (current, previous year, lag) | `of`, `offset` |
+| `point` | One period (current, previous year) | `of`, `offset` |
 | `window` | Trailing 3/6/12 months as **one number** | `of`, `trailing.months`, `inclusive` |
 | `trend` | Graph: array of monthly values | `of`, `trailing.months`, optional `cuts` |
-| `arithmetic` | YoY / ratio of two measures | `fn`, `left`, `right` (names of other `measures`) |
-| `hook` | Logic the catalog cannot express | `hook` (a registered name), plus `offset`/`trailing` for lookback |
+| `arithmetic` / `fn` / `expr` | YoY, ratio, or a formula over other measures | `fn` + `left`/`right` or `inputs:` or `expr:` |
+| `constant` | A literal target / goal | `value` |
+| `rank` / `percent_of_total` | Rank or share of groups on a cut | `of`, optional `partition_by`, `cuts` |
+| `hook` | Logic no listed kind can express | `hook` (an allowlisted name), plus `offset`/`trailing` for lookback |
+| other names | Cut / period / series add-ons (`lag`, `ntile`, `ewma`, …) | See [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) |
 
 Every `measure_key` the page can send must appear here. Unknown keys fail at bind time.
 
@@ -268,8 +280,10 @@ Only if metadata **must** call `udfs.<something>.main`.
 |---|---|---|
 | `core/adapter.py` | Context JSON shape | KPI formulas |
 | `core/binder.py` | A new *common* measure field (shared by every kind) | A new measure name |
+| `core/loader.py` | A new extras allowlist key (`min_args`, `requires_value`, `extra_keys`) | A new catalog name |
+| `core/op_protocol.py` | The `OpPlugin` façade itself | A new op body |
 | `core/time_planner.py` | A new time format / grain | Lookback for one catalog name |
-| `core/filters.py` | Filter bind / ignore_filters | Hierarchy expansion (upstream) |
+| `core/filters.py` | Filter bind / `ignore_filters` | Hierarchy expansion (upstream) |
 | `core/model_sql.py` | DuckDB retrieve (scans, joins, filters, model columns) | KPI YAML formulas |
 | `core/cuts.py` | Cut walk / finest grain | Listing G/R in Python |
 | `core/calc_engine.py` | Pipeline dispatch (not a new op body) | A new measure kind |
@@ -278,6 +292,8 @@ Only if metadata **must** call `udfs.<something>.main`.
 | `capabilities/functions/` + `registries/functions/` | A function every KPI should reuse | Per-KPI formulas |
 | `capabilities/ops/` + `registries/ops.yaml` | A new measure kind | Per-KPI formulas |
 | `capabilities/hooks/` + `registries/hooks.yaml` | A new named hook | Import paths from context |
+| `registries/CAPABILITIES.md` | Regenerated after a registry change (`write_generated_docs()`) | Hand edits |
+| `extensions/` | Never — compatibility shims | New names |
 | `udfs/sotif/main.py` | Never, except shim signature | Calculations |
 | `contracts.py` | New typed fields for YAML/context | Parsing or SQL |
 
@@ -298,8 +314,8 @@ Need a new KPI?
   │    → udfs/config/kpis/<id>.yaml only
   ├─ New tables or CTE?
   │    → udfs/config/models/<id>.yaml + KPI YAML
-  ├─ New combo of point/window/trend/arithmetic?
-  │    → KPI YAML measures only
+  ├─ New combo of existing catalog names?
+  │    → KPI YAML measures only (see CAPABILITIES.md)
   ├─ New named op / function / hook?
   │    → capabilities/ + registries/ + regenerate CAPABILITIES.md; not core/
   ├─ One-off algorithm?

@@ -18,9 +18,8 @@ Capabilities
     number and needs min_columns to say how few are too few.
 
 When to use
-    Register a function here instead of adding a branch to the engine. Built-in
-    names (sum, subtract, multiply, divide, min, max, avg, growth_pct, …) live
-    in capabilities/functions/ and are already registered at import.
+    Do not add names here. Add the function under capabilities/functions/ and
+    a row under registries/functions/. Built-in names are already allowlisted.
 """
 
 from __future__ import annotations

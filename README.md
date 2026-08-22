@@ -2,13 +2,15 @@
 
 Config-driven KPI calculator. It consumes a **context JSON** from the existing metadata framework, loads data with **DuckDB**, calculates in **Pandas**, and returns **JSON** (table scalars plus optional trend arrays for graphs).
 
-You onboard a KPI by adding YAML. You should not need to change engine code for a normal metric.
+You onboard a KPI by adding YAML. You should not need to change engine code for a normal metric. A new reusable **name** (op, hook, column function, measure function) is two folders — `capabilities/` plus `registries/` — not `core/`.
 
 **Onboarding playbook (steps + which files to change):** [kpi-onboarding-guide.md](kpi-onboarding-guide.md)
 
 **YAML preparation (supported functions, columns vs expressions, when to use what, limits):** [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md)
 
 **YAML reference (every op, aggregation and key):** [kpi-yaml-reference.md](kpi-yaml-reference.md)
+
+**Live catalog** (every registered name): [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md)
 
 Full architecture: [kpi-framework-plan.md](kpi-framework-plan.md).
 
@@ -19,22 +21,28 @@ Every Python and YAML file starts with a header covering **what it provides**, *
 ## Folders
 
 ```text
-udfs/                   Copy this folder into the platform
-  sotif/main.py         Entry: udfs.sotif.main
-  kpi_engine/           Engine (DuckDB extract, Pandas calc)
+udfs/                         Copy this folder into the platform
+  sotif/main.py               Entry: udfs.sotif.main → compute(context)
+  kpi_engine/
+    core/                     Frozen engine (adapt, bind, extract, dispatch)
+    capabilities/             Op / function / hook bodies
+    registries/               YAML allowlist + generated CAPABILITIES.md
+    extensions/               Compatibility shims only — do not add names here
+    contracts.py              Shared typed fields
   config/
-    kpis/               One YAML per kpi_id
-    models/             DuckDB extract (tables/joins or SQL)
+    kpis/                     One YAML per kpi_id
+    models/                   DuckDB extract (tables/joins or SQL)
 
-tests/                  Local parquet tests (no ADLS) — not deployed
+tests/                        Local parquet tests (no ADLS) — not deployed
 ```
 
 | You want to… | Open |
 |---|---|
 | Add or change a KPI | `udfs/config/kpis/<id>.yaml` |
 | Change how source tables join | `udfs/config/models/<name>.yaml` |
-| Understand a request failure | `udfs/kpi_engine/core/` (adapter, binder, time_planner) |
-| Add a reusable calc | `udfs/kpi_engine/capabilities/` + `registries/` ([catalog](udfs/kpi_engine/registries/CAPABILITIES.md)) |
+| Understand a request failure | `udfs/kpi_engine/core/` (adapter, binder, time_planner, loader) |
+| Add a reusable name (op / hook / function) | `udfs/kpi_engine/capabilities/` + `registries/` ([catalog](udfs/kpi_engine/registries/CAPABILITIES.md)) |
+| Add an `agg`, filter operator, or common YAML field | `udfs/kpi_engine/core/` (and `contracts.py` for a shared field) |
 
 ---
 
@@ -105,7 +113,7 @@ Example: `udfs/config/kpis/3004.yaml`.
 2. Load KPI + model YAML; bind dataset **alias** to context paths.
 3. Claim the month filter → anchor + `required_span`.
 4. DuckDB: scan, source IN filters, time range, `GROUP BY` month grain.
-5. Pandas: dense month spine, cuts, catalog ops.
+5. Pandas: dense month spine, cuts, then each requested measure via its registered plugin.
 6. JSON: one row per dimension combo per cut; one column per requested `measure_key`.
 
 ---

@@ -363,8 +363,8 @@ def _parse_base_measure(name: str, spec: Any) -> BaseMeasure:
         if row_op not in COLUMN_FNS:
             raise BindError(
                 f"base_measures.{name} unknown op {row_op!r}. Registered: "
-                f"{sorted(COLUMN_FNS)}. Register it with "
-                "kpi_engine.extensions.functions.register_column_fn."
+                f"{sorted(COLUMN_FNS)}. Add it under capabilities/functions/ "
+                "and registries/functions/column.yaml."
             )
     elif column_params:
         raise BindError(

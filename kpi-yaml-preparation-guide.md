@@ -6,9 +6,11 @@ This is the **write-it** document: what to declare, which function to pick, how 
 
 Related docs:
 
+- [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) — live list of every op, function, and hook
 - [kpi-onboarding-guide.md](kpi-onboarding-guide.md) — process (which files to change)
 - [kpi-yaml-reference.md](kpi-yaml-reference.md) — full key-by-key reference
 - [README.md](README.md) — folders and request path
+- [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions
 
 ---
 
@@ -59,9 +61,11 @@ Work down this list and stop at the first row that fits.
 | Rank reasons / regions | `op: rank` (same shape as `percent_of_total`) | Sorting in the host after the fact if you need engine ranks |
 | Nested formula over **other measures** | `op: expr` | `base_measures.expr` (that is per-row, then aggregated) |
 | A fixed target / goal | `op: constant` | Hard-coding the number in every `expr` |
-| Rank reasons / regions | `op: rank` | Sorting in the host after the fact if you need engine ranks |
+| Quartiles, Pareto, running totals, vs-leader | add-on cut ops (`ntile`, `cumulative_share`, `gap_to_leader`, …) | Hand-ranking in the host |
+| Same measure at another period | `op: lag` / `lead` / `diff` / `pct_change` / `index` | A second `point` plus arithmetic when a period op already exists |
+| Series stats (EWMA, hit rate, CAGR) | `op: hook` + a name from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) | Editing `core/` per KPI |
 | Echo a dimension as a `measure_key` | `op: dimension` | A fake numeric measure |
-| Math the catalog cannot express (whole series, iterative) | `op: hook` (registered) | `eval()`, import paths, or editing the engine per KPI |
+| Math no listed kind can express (iterative, custom allocation) | new hook under `capabilities/hooks/` + `registries/hooks.yaml` | `eval()`, import paths, or `extensions/` |
 
 ### 3.2 Columns vs expressions (the usual confusion)
 
@@ -103,9 +107,9 @@ Do **not** mix `expr:` with `columns:` / `op:` / `sql:` on the same base measure
 | Built-in measure op (`growth_pct`, `percent`, `subtract`, …) | `op: arithmetic` (`left`/`right` or `of: [a, b]`) |
 | Same built-in, but operands must not be swapped | `op: fn` + `inputs: { current: …, previous: … }` |
 | Nested formula over measures | `op: expr` |
-| Custom row math you will reuse | Register a **column function**, then `op:` |
-| Custom scalar math you will reuse | Register a **measure function**, then `op: fn` |
-| Needs the whole densified series | Register a **hook**, then `op: hook` |
+| Custom row math you will reuse | Add a **column function** (capabilities + registries), then `op:` |
+| Custom scalar math you will reuse | Add a **measure function** (capabilities + registries), then `op: fn` |
+| Needs the whole densified series | Add a **hook** (capabilities + registries), then `op: hook` |
 
 ---
 
@@ -190,7 +194,7 @@ Rules:
 - The time filter must carry **exactly one** value. Two values is not a range.
 - A missing time filter on a time-based KPI is an error. The engine never defaults to “latest” or `business_date`.
 - `time.timezone` is rejected. Convert in a `kind: sql` model if needed.
-- Omit the whole `time:` block for a snapshot KPI. Then only `point` (no offset), `dimension`, `arithmetic`, `fn`, `expr`, `constant`, `rank`, `percent_of_total`, and hooks **without** lookback are allowed.
+- Omit the whole `time:` block for a snapshot KPI. Then a measure may not use a nonzero `offset`, `trailing`, or any kind that requires time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not.
 
 ---
 
@@ -351,7 +355,8 @@ Every host `measure_key` must be a key here. `op:` and `kind:` are the same fiel
 | `rank` | `of:` measure or base | scalar | Rank within a cut |
 | `percent_of_total` | `of:` measure or base | scalar | This row / sum of rows on the cut × 100 |
 | `dimension` | key ∈ `dimensions:` | attribute | Host sent a dim as a measure |
-| `hook` | `hook:` + usually `of:` | scalar | Last-resort custom series math |
+| `hook` | `hook:` + usually `of:` | scalar | Allowlisted series function (see the catalog) |
+| add-on cut / period | kind-specific keys (`tiles`, `n`, `vs`, `offset`) | scalar | `ntile`, `lag`, `diff`, … — [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) |
 
 ### 8.1 `point`
 
@@ -675,9 +680,9 @@ Decision tree:
 1. Enabled name already in the registries? → KPI YAML only. Do not open `core/`.
 2. New column math? → append in `capabilities/functions/column/impl.py` + a key in `registries/functions/column.yaml` (`role: addon`).
 3. New scalar math? → `capabilities/functions/measure/impl.py` + `registries/functions/measure.yaml`.
-4. One-group custom series logic? → `capabilities/hooks/impl.py` + `registries/hooks.yaml`.
-5. New cut/combo shape? → `OpPlugin` in `capabilities/ops/` + `registries/ops.yaml`. Review like a core change.
-6. New filter operator, agg, time format, or pipeline stage? → platform work in `core/`. Escalate.
+4. One-group custom series logic? → `capabilities/hooks/impl.py` + `registries/hooks.yaml` (`requires_value` / `extra_keys` if needed).
+5. New cut/combo/period shape? → `OpPlugin` in `capabilities/ops/` + `registries/ops.yaml`. Not a `core/` edit.
+6. New filter operator, agg, time format, common YAML field, or pipeline stage? → platform work in `core/`. Escalate.
 
 YAML may only name allowlisted entries — never a dotted import path. `compute(context)` stays the only entry point.
 
@@ -765,7 +770,7 @@ Design around these; they are intentional.
 - No timezone conversion; `time.timezone` is rejected.
 - `calendar: fiscal` affects `quarter` and `year` only. Fiscal months are calendar months.
 - Time filter is a single anchor, not a range.
-- Snapshot KPIs (no `time:`) cannot use windows, trends, or nonzero offsets.
+- Snapshot KPIs (no `time:`) cannot use windows, trends, nonzero offsets, trailing, or time-requiring add-ons (`lag`, period hooks, …).
 - `trailing` counts grain periods; the unit key is not a converter.
 
 **Cuts and payload**
@@ -791,7 +796,7 @@ Design around these; they are intentional.
 
 **Extensions**
 
-- Custom logic is allowlisted (`register_column_fn`, `register_measure_fn`, `hooks.register`). Dotted import paths and `context.udf.module_path` are rejected.
+- Custom logic is allowlisted in `registries/` (impl under `capabilities/`). Dotted import paths and `context.udf.module_path` are rejected. `extensions/` is a compatibility shim only.
 
 ---
 

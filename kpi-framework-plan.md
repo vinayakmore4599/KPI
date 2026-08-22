@@ -4,6 +4,8 @@ This document is the working architecture for a reusable, config-driven KPI engi
 
 It supersedes earlier drafts. Decisions recorded here are locked unless explicitly marked as a recommendation.
 
+Authoring docs that follow this architecture: [README.md](README.md), [kpi-onboarding-guide.md](kpi-onboarding-guide.md), [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md), [kpi-yaml-reference.md](kpi-yaml-reference.md), and the live name list [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md).
+
 ---
 
 ## 1. Purpose and boundary
@@ -30,7 +32,7 @@ The engine is a library invoked from an existing UDF entry point. It is not a st
 
 ### 1.3 Product goal
 
-Onboard a new KPI with YAML (and, rarely, a named hook). No engine edits, no context-schema changes, no ADLS plumbing.
+Onboard a new KPI with YAML. A new reusable name (op, hook, function) is `capabilities/` + `registries/`, not `core/`. No context-schema changes, no ADLS plumbing.
 
 ---
 
@@ -53,15 +55,16 @@ Onboard a new KPI with YAML (and, rarely, a named hook). No engine edits, no con
 | Scalars | Point, window, and arithmetic measures are single numbers at the selected month. |
 | Trends | Authored `measure_key` whose value is an ordered array of monthly points (for graphs). |
 | Measures | Every `measure_key` is authored in KPI YAML. Nothing is inferred from catalog op ids. |
-| Catalog | Four kinds: point, window aggregate, arithmetic, trend. |
+| Catalog | YAML registries under `registries/` (ops, hooks, column fns, measure fns). Live page: `registries/CAPABILITIES.md`. Platform kinds (`point`, `window`, `trend`, `arithmetic`, `fn`, `expr`, `constant`, `dimension`, `hook`, `rank`, `percent_of_total`) plus allowlisted add-ons. |
+| Freeze | A new **name** does not edit `core/`, `extensions/`, `contracts.py`, or a hardcoded name list in tests. A new **agg**, filter operator, compose template, time format, or *common* measure field (`offset`-like) is engine work. |
 | Cuts | Generic. G and R are examples. YAML: `group_by`, `ignore_filters`, `also_emit`. |
 | Level G (example) | Ignore region filter. Compute global (no region in group by) **and** regional (region in group by) from the same extract. |
 | Additivity | Declared per measure (`sum`, `avg`, `count`, `window`, …). Global is recomputed with that agg, never rolled up from regional rows for avg/window. |
 | Multi-model | Join keys declared in KPI YAML (`model_relations`). |
 | Filters | Default operator **IN**. Scalar becomes a one-element list. Accept both `value` and `values`. |
-| Filter stage | If the mapped column exists on the extract → source (DuckDB). Else → target (Pandas after calc). Unbindable filter → **hard error**. |
+| Filter stage | YAML `filters.*.apply`: `extract` (DuckDB WHERE), `calc` (Pandas before measures; required when a cut `ignore_filters` that code), `result` (drop JSON rows after measures). Undeclared host `IN` lists default to extract unless a cut ignores them. Unbindable filter → **hard error**. |
 | Scope | One KPI, one view. All measures for that KPI live in that view. Assert `view_details` has exactly one entry. |
-| Custom logic | Named hook in an allowlisted registry. Not dotted `importlib` paths from YAML. |
+| Custom logic | Named hook allowlisted in `registries/hooks.yaml`, body under `capabilities/hooks/`. Not dotted `importlib` paths from YAML. `extensions/` is a shim only. |
 | Pagination | After all calculation. Deterministic sort. Return `total_count` / `has_more`. Null `page_size` means return all rows. |
 
 ---
@@ -72,7 +75,7 @@ Onboard a new KPI with YAML (and, rarely, a named hook). No engine edits, no con
 context JSON ─┐
               ├─► Adapter ─► Binder ─► Time planner ─► DuckDB extract
 KPI YAML    ─┘                              │              │
-Catalog ops ────────────────────────────────┤              │
+Registries  ────────────────────────────────┤              │
                                             ▼              ▼
                                       required_span    monthly grain
                                             │              │
@@ -80,7 +83,7 @@ Catalog ops ──────────────────────�
                                                        │
                                                        ├ dense month spine
                                                        ├ cuts (re-agg / tag)
-                                                       ├ catalog ops
+                                                       ├ registered plugins
                                                        ├ project measure_keys
                                                        ├ sort / paginate
                                                        └ JSON
@@ -97,13 +100,13 @@ Catalog ops ──────────────────────�
 7. **DuckDB extract.** Run the physical model or wrap the SQL model as a subquery. Apply source `IN` filters and the time **range**. Project needed columns. **GROUP BY** to the finest grain any cut needs (time grain + union of cut keys) for additive measures.
 8. **Pandas spine.** Reindex each partition onto a dense calendar at `time_grain` from span min to anchor.
 9. **Cuts.** For each emitted cut, aggregate with that cut’s `group_by`. Drop ignored filters before aggregation. Tag `output_cut`.
-10. **Catalog ops.** Point lookups, window aggregates, arithmetic, trends — all from the monthly frame.
+10. **Registered plugins.** Each requested measure runs its `OpPlugin` (combo or cut phase) from the monthly frame. Names come from `registries/ops.yaml` / `hooks.yaml`.
 11. **Project.** Keep only requested `measure_key` columns (plus dimension columns and `output_cut`).
 12. **Sort, paginate, emit JSON.** Include metadata: anchor, effective period, applied/ignored filters, period axes for trends, warnings.
 
 ### 3.2 DuckDB vs Pandas (why both)
 
-The model file answers “what did we query?” The calc catalog answers “what did we compute?”
+The model file answers “what did we query?” The YAML registries answer “what names can we compute?”
 
 DuckDB must still do the **base GROUP BY**. A widened lookback of several years at row grain will not fit in Pandas. After that handoff, Pandas owns every derived, time, cut, and cross-model calculation.
 
@@ -424,16 +427,19 @@ Result: dimensions not in a cut’s `group_by` are `null` on those rows.
 
 ## 7. Calculation catalog
 
-Reusable ops. KPI YAML names them; authors do not reimplement YoY or trailing windows.
+Reusable names. KPI YAML names them; authors do not reimplement YoY or trailing windows.
 
-Because the public JSON is **scalars at the anchor** plus optional **trend arrays**, series machinery collapses:
+The live list is [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md), generated from four YAML files: `registries/ops.yaml`, `registries/hooks.yaml`, `registries/functions/column.yaml`, `registries/functions/measure.yaml`. Bodies live under `capabilities/`. `core/` loads those files; it does not contain a name list.
 
-| Kind | Examples | Implementation |
+| Layer | Examples | Where it lives |
 |---|---|---|
-| Point | `current_value`, `previous_year_value`, `previous_period`, `lag_n` | Look up one month on the dense spine by calendar offset. Missing month → null |
-| Window aggregate | `trailing_3m` / `6m` / `12m`, `mtd`, `qtd`, `ytd`, `cumulative` (as a single number) | Filter monthly frame to the window ending at the anchor, apply declared `agg` |
-| Arithmetic | `add`, `sub`, `mul`, `div`, `percent`, `growth_pct`, `yoy`, `mom` | Two already-computed **scalars**. `/0` and `/null` → null, never inf |
-| Trend | `trend_12m`, `trend_yoy_12m` | Keep the run of monthly points (or monthly YoY points) as an array |
+| Point / window / trend | `current_value`, `value_3m`, `trend_12m` | Platform ops (`capabilities/ops/combo.py`) |
+| Arithmetic / fn / expr / constant | YoY, ratio, nested `+ - * /`, a target | Platform ops + function registries |
+| Cut-wide | `rank`, `percent_of_total`, add-ons `ntile`, `top_n`, `gap_to_leader`, … | `capabilities/ops/cut.py` |
+| Period | add-ons `lag`, `lead`, `diff`, `pct_change`, `index`, `vs_target` | `capabilities/ops/period.py` |
+| Hook | `ewma`, `hit_rate`, `cagr`, … | `capabilities/hooks/` + `registries/hooks.yaml` |
+
+A new **name** = impl + registry row + regenerate `CAPABILITIES.md`. A new **agg**, filter operator, compose template, time format, or common measure field = `core/` (and `contracts.py` if the field is shared).
 
 ### 7.1 Composition order (locked recommendation)
 
@@ -441,9 +447,9 @@ Stages, one direction only:
 
 0. Row level in DuckDB (extract + base agg).
 1. Base aggregate per cut (already monthly).
-2. Arithmetic on aggregates (e.g. ratio of two sums).
-3. Point / window / trend on those series.
-4. Arithmetic on those results (e.g. YoY of two points).
+2. Combo-phase plugins (point / window / trend / arithmetic / fn / expr / hook / period add-ons).
+3. Cut-phase plugins (`rank`, `percent_of_total`, `ntile`, …) on that cut's rows.
+4. Arithmetic / fn / expr on combo results (e.g. YoY of two points). Cut-phase results cannot feed those in the same request.
 
 **Invariant:** no aggregation may consume a computed ratio. Ratios are ratio-of-sums, never sum-of-ratios, unless an op is explicitly row-level.
 
@@ -516,7 +522,7 @@ Trend `measure_key` → ordered array of numbers/`null`, aligned to a **shared p
     "inclusive": true
   },
   "applied_filters": [
-    { "filter_code": "region", "column": "region", "op": "in", "values": ["NA"], "stage": "source" }
+    { "filter_code": "region", "column": "region", "op": "in", "values": ["NA"], "stage": "extract" }
   ],
   "ignored_filters": [
     { "filter_code": "region", "reason": "cut_G_ignore_filters" }
@@ -579,16 +585,16 @@ Opt-out flag allowed for KPIs that truly want “active this month only.”
 
 **IN.** `"APAC"` → `IN ('APAC')`. Lists stay lists.
 
-### 9.2 Source vs target
+### 9.2 Extract / calc / result
 
-| Condition | Stage |
+| `apply` | Stage |
 |---|---|
-| Mapped column exists on the model extract | DuckDB `WHERE col IN (...)` |
-| Column is derived or is a measure output | Pandas after calc (`Series.isin`) |
-| Active cut lists the filter in `ignore_filters` | Dropped for that cut |
+| `extract` (default for host `IN` lists) | DuckDB `WHERE` on the retrieve |
+| `calc` | Pandas mask before measures. Required when a cut lists the code in `ignore_filters` |
+| `result` | Drop JSON rows after measures (shares still use the unfiltered cut) |
 | Cannot bind | Hard error |
 
-Filter-to-column mapping is primarily `datasets.*.filter_column_mappings`. Optional YAML `filter_map` for KPI-specific aliases.
+`ignore_filters` is not valid with `apply: extract` or `apply: result`. Filter-to-column mapping is primarily `datasets.*.filter_column_mappings`. Optional YAML `filter_map` for KPI-specific aliases.
 
 ### 9.3 Hierarchy (`input_text: "heir"`)
 
@@ -628,29 +634,30 @@ Later, one generic UDF (`kpi_engine.main`) can replace per-KPI UDF names via met
 ### 11.2 Folder structure
 
 ```text
-kpi_engine/
-  core/
-    adapter.py           # context quirks, month-filter claim, single-view assert
-    binder.py            # kpi_id → YAML, datasets → aliases, measure_key check
-    time_planner.py      # anchor, required_span, range predicate
-    model_sql.py         # physical YAML or SQL model → DuckDB
-    cuts.py              # generic cut planner
-    calc_engine.py       # catalog ops on the monthly frame
-    fn_apply.py          # COLUMN_FNS / MEASURE_FNS maps + Pandas apply
-    orchestrator.py      # request lifecycle, one DuckDB session
-  capabilities/          # function, op, and hook implementations
-  registries/            # YAML allowlist (functions, ops, hooks)
+udfs/
+  sotif/main.py              # thin shim → kpi_engine.compute(context)
+  kpi_engine/
+    core/
+      adapter.py             # context quirks, month-filter claim, single-view assert
+      binder.py              # kpi_id → YAML, common measure fields
+      loader.py              # load registries; extras allowlist
+      op_protocol.py         # OpPlugin façade (needs_time, parse)
+      op_registry.py         # name → plugin
+      time_planner.py        # anchor, required_span, range predicate
+      model_sql.py           # physical YAML or SQL model → DuckDB
+      filters.py / filter_ops.py
+      cuts.py                # generic cut planner
+      calc_engine.py         # dispatch to plugins on the monthly frame
+      fn_apply.py            # COLUMN_FNS / MEASURE_FNS maps + Pandas apply
+      orchestrator.py        # request lifecycle, one DuckDB session
+    capabilities/            # function, op, and hook bodies
+    registries/              # YAML allowlist + generated CAPABILITIES.md
+    extensions/              # compatibility shims only
+    contracts.py
   config/
-    models/              # physical YAML or sql models
-    kpis/                # one file per kpi_id
-  extensions/
-    hooks.py             # allowlisted named hooks only
-  tests/
-    fixtures/            # local parquet, no ADLS
-    test_spine.py
-    test_span.py
-    test_month_filter.py
-    test_cuts_reconcile.py
+    models/                  # physical YAML or sql models
+    kpis/                    # one file per kpi_id
+tests/                       # local parquet, no ADLS
 ```
 
 ### 11.3 Security
@@ -672,8 +679,8 @@ Key: `kpi_id`, KPI version, catalog version, resolved filters, cuts, requested o
 2. Point `model` at aliases that exist in context.
 3. Declare `time`, `base_measures`, `cuts`, `measures` (every `measure_key` the UI can request).
 4. If two models: `model_relations.on` + `how`.
-5. Run `validate(kpi_yaml, sample_context)` — bind errors without ADLS when `output_schema` / column lists exist.
-6. Add a named hook only if catalog ops cannot express the metric.
+5. Run `validate(sample_context)` — bind errors without ADLS when `output_schema` / column lists exist.
+6. If no existing name fits: add the body under `capabilities/` and a row under `registries/`, then regenerate `CAPABILITIES.md`. Do not edit `core/`.
 
 Effort targets:
 
@@ -681,7 +688,7 @@ Effort targets:
 |---|---|
 | Simple | ~20 lines of YAML, one model, sum/avg, optional G+R |
 | Two-model | YAML only: two bases + derived + `model_relations` |
-| Complex | YAML + one registry hook |
+| Complex | YAML + one registry hook (capabilities + registries, not core) |
 
 Do not put Delta paths, YoY math, or DuckDB connection code in the KPI file.
 
@@ -766,7 +773,9 @@ These do not block the first slice. They should be confirmed before many KPIs ar
 | Window | Aggregate over months ending at (or exclusive of) the anchor |
 | Trend | Array of monthly values for graphs |
 | Measure key | Column name in JSON; must exist in KPI `measures` |
+| Capability | Allowlisted name (op, hook, column fn, measure fn) in `registries/` |
+| Freeze | A new capability name does not edit `core/` or `extensions/` |
 
 ---
 
-*Plan compiled 21 Aug 2026 from architecture reviews against sample context `REQ-page-001` / `kpi_id` 3004.*
+*Plan compiled 21 Aug 2026 from architecture reviews against sample context `REQ-page-001` / `kpi_id` 3004. Folder layout and catalog freeze updated 23 Aug 2026.*

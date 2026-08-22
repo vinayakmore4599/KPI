@@ -429,7 +429,7 @@ def apply_row_op(
     if fn is None:
         raise CatalogError(
             f"Unknown column op {name!r}. Registered: {sorted(COLUMN_FNS)}. "
-            "Register it with kpi_engine.extensions.functions.register_column_fn."
+            "Add it under capabilities/functions/ and registries/functions/column.yaml."
         )
     if not columns:
         raise CatalogError("Column op needs `columns:` (or sql:).")
@@ -467,7 +467,7 @@ def call_measure_fn(fn: str, values: list[Any], params: tuple[str, ...] = ()) ->
     if step is None:
         raise CatalogError(
             f"Unknown measure fn {fn!r}. Registered: {sorted(MEASURE_FNS)}. "
-            "Register it with kpi_engine.extensions.functions.register_measure_fn."
+            "Add it under capabilities/functions/ and registries/functions/measure.yaml."
         )
     if not values:
         return None

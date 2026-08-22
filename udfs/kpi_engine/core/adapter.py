@@ -8,7 +8,7 @@ Where it is used
 
 Capabilities
     - Requires execution.kpi_id and exactly one view_details entry.
-    - Reads measures_required[].measure_key (projection list).
+    - Reads measures_required or measures_requested[].measure_key (projection).
     - Normalizes filter `value` or `values` to a list (default operator IN).
     - Rejects input_text=heir (hierarchy must be expanded upstream).
     - Ignores business_date (never used in calculations).
@@ -32,6 +32,7 @@ from kpi_engine.contracts import (
     Pagination,
 )
 from kpi_engine.exceptions import ContextError, FilterError
+from kpi_engine.identifiers import norm_name
 from kpi_engine.runlog import traced
 
 
@@ -56,7 +57,8 @@ def adapt(context: dict[str, Any]) -> AdaptedRequest:
     if not isinstance(view, dict):
         raise ContextError("execution.view_details[0] must be an object.")
 
-    measure_keys = _measure_keys(view.get("measures_required"))
+    raw_measures, _field = _measures_field(view, execution)
+    measure_keys = _measure_keys(raw_measures)
     filters = _filters(context.get("filters") or {})
     datasets = _datasets(context.get("datasets") or {})
     pagination = _pagination(context.get("output") or {})
@@ -72,17 +74,41 @@ def adapt(context: dict[str, Any]) -> AdaptedRequest:
     )
 
 
+def _measures_field(view: dict[str, Any], execution: dict[str, Any]) -> tuple[Any, str | None]:
+    """Host list of requested measures: measures_required or measures_requested."""
+    for owner in (view, execution):
+        found = _lookup(owner, "measures_required", "measures_requested")
+        if found[0] is not None:
+            return found
+    return None, None
+
+
+def _lookup(obj: dict[str, Any], *names: str) -> tuple[Any, str | None]:
+    """Return (value, original_key) matching a name after case/space fold."""
+    wanted = {norm_name(name).replace("_", "") for name in names}
+    for key, value in obj.items():
+        folded = norm_name(str(key)).replace("_", "")
+        if folded in wanted and value is not None and value != []:
+            return value, str(key)
+    return None, None
+
+
 def _measure_keys(raw: Any) -> tuple[str, ...]:
-    """Read measures_required[].measure_key from the single view."""
+    """Read measures_required / measures_requested[].measure_key from the view."""
     if raw is None:
         return ()
     if not isinstance(raw, list):
         raise ContextError("measures_required must be a list.")
     keys: list[str] = []
     for item in raw:
-        if not isinstance(item, dict) or "measure_key" not in item:
+        if isinstance(item, str) and item:
+            keys.append(item)
+            continue
+        if not isinstance(item, dict):
             raise ContextError("Each measures_required entry needs measure_key.")
-        key = item["measure_key"]
+        key, found = _lookup(item, "measure_key")
+        if found is None:
+            raise ContextError("Each measures_required entry needs measure_key.")
         if not isinstance(key, str) or not key:
             raise ContextError(f"Invalid measure_key: {key!r}.")
         keys.append(key)

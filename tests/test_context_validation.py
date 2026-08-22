@@ -76,11 +76,10 @@ def test_measures_required_shape_is_validated(parquet_path):
     with pytest.raises(ContextError, match="measures_required must be a list"):
         adapt(ctx)
 
-    for bad in (["current_value"], [{"name": "current_value"}]):
-        ctx = make_context(parquet_path, measures=["current_value"])
-        ctx["execution"]["view_details"][0]["measures_required"] = bad
-        with pytest.raises(ContextError, match="needs measure_key"):
-            adapt(ctx)
+    ctx = make_context(parquet_path, measures=["current_value"])
+    ctx["execution"]["view_details"][0]["measures_required"] = [{"name": "current_value"}]
+    with pytest.raises(ContextError, match="needs measure_key"):
+        adapt(ctx)
 
     for bad_key in ("", 7):
         ctx = make_context(parquet_path, measures=["current_value"])

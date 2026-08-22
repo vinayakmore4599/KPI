@@ -163,7 +163,11 @@ def fold_measure_keys(kpi: KpiSpec, requested: tuple[str, ...]) -> tuple[str, ..
     known = [m.key for m in kpi.measures]
     out: list[str] = []
     for key in requested:
-        out.append(match_name(key, known) or key)
+        hit = match_name(key, known)
+        if hit is None:
+            compact = norm_name(key).replace("_", "")
+            hit = next((k for k in known if norm_name(k).replace("_", "") == compact), None)
+        out.append(hit or key)
     return tuple(dict.fromkeys(out))
 
 

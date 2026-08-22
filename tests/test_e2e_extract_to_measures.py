@@ -441,3 +441,37 @@ def test_empty_measures_required_does_not_invent_catalog(tmp_path, extra_config)
     for row in result["rows"]:
         assert catalog.isdisjoint(row)
     assert result["parameters"]["lookback_months"] == 0
+
+
+def test_host_measures_requested_computes_previous_year(tmp_path, extra_config):
+    """Host `measures requested` + folded keys still widen 202607 and emit numbers."""
+    facts = tmp_path / "facts.parquet"
+    frame = _random_facts(facts, random.Random(SEED + 8))
+    oracle = _oracle(frame)
+    write_yaml(extra_config / "kpis" / "9910.yaml", _yyyymm_kpi(9910))
+    ctx = _host_context(facts, measures=[], kpi_id=9910)
+    view = ctx["execution"]["view_details"][0]
+    view.pop("measures_required", None)
+    view["measures requested"] = [
+        {"measure_key": "current_value"},
+        {"measure_key": "previousyearvalue"},
+        {"MeasureKey": "value_3m"},
+        {"measure_key": "value_6m"},
+    ]
+
+    planned = validate(ctx, config_dir=extra_config)
+    assert planned["lookback_months"] == 12
+    assert planned["span_start"] == "2025-07-01"
+
+    result = compute(ctx, config_dir=extra_config)
+    assert result["parameters"]["lookback_months"] == 12
+    _assert_requested_only(
+        result["rows"], ["current_value", "previous_year_value", "value_3m", "value_6m"]
+    )
+    g = find_row(result, cut="G", reason="LATE_SUPPLIER")
+    _approx(g["current_value"], _at(oracle, ANCHOR, "LATE_SUPPLIER"))
+    _approx(g["previous_year_value"], _at(oracle, PRIOR, "LATE_SUPPLIER"))
+    _approx(g["value_3m"], _window(oracle, ANCHOR, 3, "LATE_SUPPLIER"))
+    _approx(g["value_6m"], _window(oracle, ANCHOR, 6, "LATE_SUPPLIER"))
+    assert g["current_value"] is not None
+    assert g["previous_year_value"] is not None

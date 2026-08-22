@@ -201,6 +201,7 @@ def test_yyyymm_previous_year_widens_from_202607(parquet_path, extra_config):
     assert plan.span_end_exclusive == date(2026, 8, 1)
     assert plan.lookback_months == 12
     assert max_lookback_months(kpi, ("Previous_Year_Value",)) == 12
+    assert max_lookback_months(kpi, ("previousyearvalue",)) == 12
 
 
 def test_claim_month_filter_returns_none_when_absent(parquet_path):

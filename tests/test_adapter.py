@@ -24,6 +24,27 @@ def test_accepts_value_and_values(parquet_path):
     assert request.measure_keys == ("current_value",)
 
 
+def test_measures_requested_is_the_host_alias_for_measures_required(parquet_path):
+    """Metadata sends measures_requested; that list is the projection."""
+    ctx = make_context(parquet_path, measures=[])
+    view = ctx["execution"]["view_details"][0]
+    view.pop("measures_required", None)
+    view["measures requested"] = [
+        {"measure_key": "current_value"},
+        {"measure_key": "previous year_value"},
+        {"MeasureKey": "value_3m"},
+    ]
+    request = adapt(ctx)
+    assert request.measure_keys == ("current_value", "previous year_value", "value_3m")
+
+
+def test_plain_string_measure_keys_are_accepted(parquet_path):
+    """A host list of measure_key strings is the same as objects with measure_key."""
+    ctx = make_context(parquet_path, measures=[])
+    ctx["execution"]["view_details"][0]["measures_required"] = ["current_value", "value_6m"]
+    assert adapt(ctx).measure_keys == ("current_value", "value_6m")
+
+
 def test_rejects_multiple_views(parquet_path):
     """One KPI maps to one view; extra view_details entries fail."""
     ctx = make_context(parquet_path, measures=["current_value"])

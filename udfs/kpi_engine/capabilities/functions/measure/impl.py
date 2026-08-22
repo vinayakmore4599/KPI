@@ -80,3 +80,70 @@ def clamp_scalars(value: Any, lo: Any, hi: Any) -> float | None:
 def attainment(actual: Any, target: Any) -> float | None:
     """actual / target * 100. Null or zero target yields null."""
     return percent_scalars(actual, target)
+
+
+def _is_null(value: Any) -> bool:
+    """True when a measure scalar is missing."""
+    if value is None:
+        return True
+    try:
+        return bool(value != value)
+    except Exception:
+        return False
+
+
+def coalesce_scalars(*values: Any) -> float | None:
+    """First non-null measure scalar."""
+    for value in values:
+        if not _is_null(value):
+            return float(value)
+    return None
+
+
+def if_null_scalars(value: Any, fallback: Any) -> float | None:
+    """`value` when present, otherwise `fallback`."""
+    return coalesce_scalars(value, fallback)
+
+
+def nullif_scalars(value: Any, sentinel: Any) -> float | None:
+    """Null when `value` equals `sentinel`; otherwise `value`."""
+    if _is_null(value):
+        return None
+    if _is_null(sentinel):
+        return float(value)
+    return None if float(value) == float(sentinel) else float(value)
+
+
+def null_if_zero_scalars(value: Any) -> float | None:
+    """Null when `value` is 0."""
+    if _is_null(value):
+        return None
+    return None if float(value) == 0 else float(value)
+
+
+def zero_if_null_scalars(value: Any) -> float | None:
+    """0 when `value` is null."""
+    return 0.0 if _is_null(value) else float(value)
+
+
+def is_null_scalars(value: Any) -> float:
+    """1 if `value` is null, else 0."""
+    return 1.0 if _is_null(value) else 0.0
+
+
+def is_not_null_scalars(value: Any) -> float:
+    """1 if `value` is present, else 0."""
+    return 0.0 if _is_null(value) else 1.0
+
+
+def _is_true(cond: Any) -> bool:
+    """Non-null and nonzero."""
+    if _is_null(cond):
+        return False
+    return float(cond) != 0
+
+
+def if_else_scalars(cond: Any, then: Any, other: Any) -> float | None:
+    """`then` if `cond` is non-null and nonzero, otherwise `other`."""
+    chosen = then if _is_true(cond) else other
+    return None if _is_null(chosen) else float(chosen)

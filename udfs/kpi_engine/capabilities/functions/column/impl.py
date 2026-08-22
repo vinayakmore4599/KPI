@@ -74,3 +74,41 @@ def avg_columns(*columns: pd.Series) -> pd.Series:
 def coalesce_columns(*columns: pd.Series) -> pd.Series:
     """First non-null value on each row."""
     return _fold(lambda a, b: a.fillna(b), columns)
+
+
+def if_null_columns(value: pd.Series, fallback: pd.Series) -> pd.Series:
+    """`value` when present, otherwise `fallback`."""
+    return value.fillna(fallback)
+
+
+def nullif_columns(value: pd.Series, sentinel: pd.Series) -> pd.Series:
+    """Null where `value` equals `sentinel`; otherwise `value`."""
+    return value.where(~value.eq(sentinel))
+
+
+def null_if_zero_columns(value: pd.Series) -> pd.Series:
+    """Null where `value` is 0."""
+    numeric = pd.to_numeric(value, errors="coerce")
+    return numeric.mask(numeric.eq(0))
+
+
+def zero_if_null_columns(value: pd.Series) -> pd.Series:
+    """0 where `value` is null."""
+    return pd.to_numeric(value, errors="coerce").fillna(0)
+
+
+def is_null_columns(value: pd.Series) -> pd.Series:
+    """1 where `value` is null, else 0."""
+    return value.isna().astype("float64")
+
+
+def is_not_null_columns(value: pd.Series) -> pd.Series:
+    """1 where `value` is present, else 0."""
+    return value.notna().astype("float64")
+
+
+def if_else_columns(cond: pd.Series, then: pd.Series, other: pd.Series) -> pd.Series:
+    """`then` where `cond` is non-null and nonzero, otherwise `other`."""
+    numeric = pd.to_numeric(cond, errors="coerce")
+    pick = numeric.notna() & (numeric != 0)
+    return then.where(pick, other)

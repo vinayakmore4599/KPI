@@ -50,6 +50,7 @@ from kpi_engine.contracts import (
 )
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import (
+    assert_expr_calls,
     compile_sql_expr,
     expression_columns,
     is_simple_ident,
@@ -348,7 +349,8 @@ def _parse_base_measure(name: str, spec: Any) -> BaseMeasure:
     expr_raw = spec.get("expr")
     expr = str(expr_raw).strip() if expr_raw else None
     if expr:
-        parse_expression(expr, what=f"base_measures.{name}.expr")
+        node = parse_expression(expr, what=f"base_measures.{name}.expr")
+        assert_expr_calls(node, COLUMN_FNS, what=f"base_measures.{name}.expr")
         if row_op is not None or columns:
             raise BindError(
                 f"base_measures.{name} uses `expr:` and cannot also set `columns:` / `op:`."
@@ -385,7 +387,9 @@ def _parse_base_measure(name: str, spec: Any) -> BaseMeasure:
             raise BindError(f"base_measures.{name} op {problem}")
     if not expr and sql_raw and not is_simple_ident(sql_raw) and row_op is None:
         expr = sql_raw
-        columns = expression_columns(parse_expression(expr, what="measure sql"))
+        sql_node = parse_expression(expr, what="measure sql")
+        assert_expr_calls(sql_node, COLUMN_FNS, what=f"base_measures.{name}.sql")
+        columns = expression_columns(sql_node)
     default_agg = "sum" if row_op is None else spec.get("agg")
     agg = spec.get("agg", default_agg)
     if agg is None:

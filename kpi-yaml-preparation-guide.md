@@ -51,7 +51,7 @@ Work down this list and stop at the first row that fits.
 | Tables / joins / eligibility / timezone conversion / messy source shape | **Model YAML** (`kind: physical` or `kind: sql`) | KPI `sql:` as free SQL |
 | One physical column, then fold rows | `base_measures` + `sql:` + `agg:` | A measure `op:` for the raw fact |
 | Row math across retrieved columns (product, ratio, coalesce) | `base_measures` + `columns:` + `op:` | `agg:` of two columns independently if you wanted the product first |
-| Nested `+ - * /` on retrieved columns | `base_measures` + `expr:` | SQL functions (`SUM`, `COALESCE`) in KPI YAML |
+| Nested `+ - * /`, CASE, or `coalesce(` on retrieved columns | `base_measures` + `expr:` | SQL `SUM()` / subqueries in KPI YAML |
 | One period’s value (current, last year, last quarter) | `measures` + `op: point` | A window of length 1 unless you really want window null/zero rules |
 | Trailing / leading / YTD total or avg | `op: window` | Summing several `point` measures by hand |
 | A graph series | `op: trend` | Returning many `point` keys |
@@ -65,6 +65,7 @@ Work down this list and stop at the first row that fits.
 | Same measure at another period | `op: lag` / `lead` / `diff` / `pct_change` / `index` | A second `point` plus arithmetic when a period op already exists |
 | Series stats (EWMA, hit rate, CAGR) | `op: hook` + a name from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) | Editing `core/` per KPI |
 | Echo a dimension as a `measure_key` | `op: dimension` | A fake numeric measure |
+| IF / NULLIF / IS NULL as a value | `op:` / `fn:` (`if_else`, `nullif`, `zero_if_null`, …) or `expr:` CASE | SQL `CASE` in DuckDB |
 | Math no listed kind can express (iterative, custom allocation) | new hook under `capabilities/hooks/` + `registries/hooks.yaml` | `eval()`, import paths, or `extensions/` |
 
 ### 3.2 Columns vs expressions (the usual confusion)
@@ -275,23 +276,33 @@ A list binds positionally. A `{parameter: column}` mapping binds by name (prefer
 | `max` | | 2+ columns | Row-wise max |
 | `avg` | `mean` | 2+ columns | Row-wise mean |
 | `coalesce` | | 2+ columns | First non-null, left to right |
+| `if_null` | | `value`, `fallback` | Value or fallback |
+| `nullif` | | `value`, `sentinel` | Null when equal |
+| `null_if_zero` / `zero_if_null` | | 1 column | `NULLIF(x, 0)` / null → 0 |
+| `is_null` / `is_not_null` | | 1 column | 1 or 0 |
+| `if_else` | | `cond`, `then`, `other` | Then if cond is nonzero |
 
 `op: sum` reduces **across columns of one row**. `agg: sum` reduces **down the rows of a period**. A base measure often uses both.
+
+`expr:` may use the same names as calls, plus `CASE WHEN … THEN … ELSE … END`, `IS NULL`, comparisons, `AND` / `OR` / `NOT`, `NULL`, and `'strings'`. `CASE WHEN status = 'O' THEN amount ELSE 0 END` is per-row; use `where:` when unmatched rows should not contribute. String CASE is `expr:` only — `columns:` + `op:` is still numeric.
 
 Unknown `op`, wrong arity, or a bad parameter name fails at **bind** and lists the registered names.
 
 ### 7.4 `expr:` on a base measure
 
-Allowed grammar: identifiers, numbers, `+ - * /`, parentheses. No function calls, no quotes, no comments, no `;`.
+Allowed grammar: identifiers, numbers, `+ - * /`, parentheses, allowlisted calls, `CASE WHEN … THEN … ELSE … END`, comparisons, `IS NULL` / `IS NOT NULL`, `AND` / `OR` / `NOT`, `NULL`, and single-quoted strings (`''` to escape). No comments, double quotes, or `;`. Calls must be names from the column registry (`coalesce`, `nullif`, …), not SQL `SUM()`.
 
 ```yaml
 base_measures:
   harmonic:
     expr: (col_a * col_b) / (col_a + col_b)
     agg: sum
+  open_amt:
+    expr: CASE WHEN status = 'O' THEN amount ELSE 0 END
+    agg: sum
 ```
 
-Identifiers must be simple SQL names: `[A-Za-z_][A-Za-z0-9_]*`.
+Identifiers must be simple SQL names: `[A-Za-z_][A-Za-z0-9_]*`. `CASE`, `WHEN`, `THEN`, `ELSE`, `END`, `AND`, `OR`, `NOT`, `IS`, and `NULL` are reserved.
 
 ### 7.5 `agg:` — how rows fold
 
@@ -448,6 +459,9 @@ net_value:
 | `min` | | 2+ | min of non-nulls | null only if all null |
 | `max` | | 2+ | max of non-nulls | null only if all null |
 | `avg` | `mean` | 2+ | mean of non-nulls | null only if all null |
+| `coalesce` / `if_null` | | 2+ / 2 | first non-null | null if all null |
+| `nullif` / `null_if_zero` / `zero_if_null` | | 2 / 1 / 1 | null helpers | — |
+| `is_null` / `is_not_null` / `if_else` | | 1 / 1 / 3 | flags and branch | `if_else` uses `other` when cond is 0 or null |
 
 `growth_pct` is a **ratio** (`0.05` = +5%). Use `percent` if the UI wants `5.0`.
 
@@ -761,7 +775,7 @@ Design around these; they are intentional.
 **SQL vs Pandas**
 
 - KPI formulas never enter DuckDB. No `SUM()`, `COALESCE()`, `CASE`, comments, or quotes in `sql:` / `expr:`.
-- Expressions are only `+ - * / ( )`, identifiers, and numbers. Function-call syntax is rejected.
+- Expressions allow `+ - * / ( )`, CASE, comparisons, `IS NULL`, `AND`/`OR`/`NOT`, `NULL`, `'strings'`, and allowlisted calls. Comments, double quotes, `;`, and unknown function names are rejected.
 - Identifiers must match `[A-Za-z_][A-Za-z0-9_]*` (no dots, hyphens, or quoted names).
 - `expr:` cannot be combined with `columns:` / `op:` / `sql:` on the same base measure.
 
@@ -832,7 +846,7 @@ Use local parquet fixtures (`tests/conftest.py`: `make_context`, `write_yaml`). 
 | `apply: extract cannot be listed in ignore_filters` | Use `apply: calc` |
 | `Compose placeholder 'year' is missing` | Send every `{placeholder}` on the context, or send `time.filter_code` as one scalar |
 | `compose.template must name at least two` | Two or more `{filter}` placeholders |
-| `Illegal measure sql` / function calls not allowed | Use column names and `+ - * /` only; put `SUM` in `agg:` |
+| `Illegal measure sql` / unknown function | Use CASE or an allowlisted call; put `SUM` in `agg:` |
 | `unknown op` / `unknown fn` | Use a name from §7.3 / §8.4, or register one |
 | `op: percent_of_cut_total` | Use `op: percent_of_total` |
 | `percent_of_total requires of:` | Point `of:` at a measure or base |

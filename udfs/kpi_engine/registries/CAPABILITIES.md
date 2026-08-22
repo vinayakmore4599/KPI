@@ -489,6 +489,83 @@ picked:
   op: coalesce
 ```
 
+### `if_null`
+
+Value when present, otherwise the fallback column.  
+`role: addon` · `enabled: on`
+
+```yaml
+qty:
+  columns: { value: ordered_qty, fallback: planned_qty }
+  op: if_null
+```
+
+### `nullif`
+
+Null where value equals the sentinel column.  
+`role: addon` · `enabled: on`
+
+```yaml
+nonzero:
+  columns: { value: amount, sentinel: offset_col }
+  op: nullif
+```
+
+### `null_if_zero`
+
+Null where the column is 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+rate:
+  columns: [amount]
+  op: null_if_zero
+```
+
+### `zero_if_null`
+
+0 where the column is null.  
+`role: addon` · `enabled: on`
+
+```yaml
+qty_or_zero:
+  columns: [ordered_qty]
+  op: zero_if_null
+```
+
+### `is_null`
+
+1 where the column is null, else 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+missing:
+  columns: [amount]
+  op: is_null
+```
+
+### `is_not_null`
+
+1 where the column is present, else 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+present:
+  columns: [amount]
+  op: is_not_null
+```
+
+### `if_else`
+
+Then-column where cond is nonzero, otherwise other.  
+`role: addon` · `enabled: on`
+
+```yaml
+picked:
+  columns: { cond: flag, then: amount, other: fallback }
+  op: if_else
+```
+
 ## Measure functions (`measures.fn`)
 
 ### `growth_pct` (aliases: yoy, mom, percent_change)
@@ -633,6 +710,102 @@ vs_goal:
   op: fn
   fn: attainment
   inputs: [current_value, target]
+```
+
+### `coalesce`
+
+First non-null measure scalar.  
+`role: addon` · `enabled: on`
+
+```yaml
+picked:
+  op: fn
+  fn: coalesce
+  inputs: [current_value, target]
+```
+
+### `if_null`
+
+Value when present, otherwise the fallback measure.  
+`role: addon` · `enabled: on`
+
+```yaml
+shown:
+  op: fn
+  fn: if_null
+  inputs: [current_value, target]
+```
+
+### `nullif`
+
+Null when value equals the sentinel measure.  
+`role: addon` · `enabled: on`
+
+```yaml
+nonzero:
+  op: fn
+  fn: nullif
+  inputs: [current_value, zero]
+```
+
+### `null_if_zero`
+
+Null when the measure is 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+rate:
+  op: fn
+  fn: null_if_zero
+  inputs: [current_value]
+```
+
+### `zero_if_null`
+
+0 when the measure is null.  
+`role: addon` · `enabled: on`
+
+```yaml
+shown:
+  op: fn
+  fn: zero_if_null
+  inputs: [current_value]
+```
+
+### `is_null`
+
+1 if the measure is null, else 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+missing:
+  op: fn
+  fn: is_null
+  inputs: [current_value]
+```
+
+### `is_not_null`
+
+1 if the measure is present, else 0.  
+`role: addon` · `enabled: on`
+
+```yaml
+present:
+  op: fn
+  fn: is_not_null
+  inputs: [current_value]
+```
+
+### `if_else`
+
+Then-measure if cond is nonzero, otherwise other.  
+`role: addon` · `enabled: on`
+
+```yaml
+picked:
+  op: fn
+  fn: if_else
+  inputs: { cond: flag, then: current_value, other: target }
 ```
 
 ## Hooks (`measures.hook`)

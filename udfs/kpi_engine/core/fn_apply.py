@@ -20,10 +20,19 @@ import pandas as pd
 from kpi_engine.contracts import BaseMeasure, KpiSpec, MeasureWhere
 from kpi_engine.exceptions import CatalogError
 from kpi_engine.identifiers import (
+    Binary,
+    BoolOp,
+    Call,
+    Case,
+    Compare,
     Expr,
     Group,
     Ident,
+    IsNull,
+    Not,
+    Null,
     Number,
+    String,
     Unary,
     expression_columns,
     is_simple_ident,
@@ -217,40 +226,106 @@ def uses_pandas_row_op(measure: BaseMeasure) -> bool:
     return False
 
 
-def eval_expr_series(node: Expr, frame: pd.DataFrame) -> pd.Series:
+def _fn_key(registry: dict[str, Any], name: str) -> str | None:
+    """Registered spelling of `name`, or None."""
+    if name in registry:
+        return name
+    lowered = name.lower()
+    for key in registry:
+        if key.lower() == lowered:
+            return key
+    return None
+
+
+def _has_string(node: Expr) -> bool:
+    """True when a subtree contains a string literal."""
+    if isinstance(node, String):
+        return True
+    if isinstance(node, (Ident, Number, Null)):
+        return False
+    if isinstance(node, (Unary, Not, IsNull)):
+        return _has_string(node.operand)
+    if isinstance(node, Group):
+        return _has_string(node.inner)
+    if isinstance(node, Call):
+        return any(_has_string(arg) for arg in node.args)
+    if isinstance(node, Case):
+        return any(_has_string(part) for cond, value in node.whens for part in (cond, value)) or (
+            node.else_ is not None and _has_string(node.else_)
+        )
+    return _has_string(node.left) or _has_string(node.right)
+
+
+def _ident_series(node: Ident, frame: pd.DataFrame, *, raw: bool) -> pd.Series:
+    """One extract column, numeric unless a string comparison needs the raw values."""
+    actual = _frame_column(frame, node.name)
+    if actual is None:
+        raise CatalogError(f"Expression names column {node.name!r}, which is not on the extract.")
+    column = frame[actual]
+    return column if raw else pd.to_numeric(column, errors="coerce")
+
+
+def eval_expr_series(node: Expr, frame: pd.DataFrame, *, raw: bool = False) -> pd.Series:
     """Evaluate an expression on one row of the extract at a time."""
     if isinstance(node, Ident):
-        actual = _frame_column(frame, node.name)
-        if actual is None:
-            raise CatalogError(f"Expression names column {node.name!r}, which is not on the extract.")
-        return pd.to_numeric(frame[actual], errors="coerce")
+        return _ident_series(node, frame, raw=raw)
     if isinstance(node, Number):
         return pd.Series(node.value, index=frame.index, dtype="float64")
+    if isinstance(node, String):
+        return pd.Series(node.value, index=frame.index)
+    if isinstance(node, Null):
+        return pd.Series(pd.NA, index=frame.index, dtype="object")
     if isinstance(node, Unary):
         series = eval_expr_series(node.operand, frame)
         return series if node.op == "+" else -series
     if isinstance(node, Group):
-        return eval_expr_series(node.inner, frame)
-    left = eval_expr_series(node.left, frame)
-    right = eval_expr_series(node.right, frame)
-    if node.op == "+":
-        return left + right
-    if node.op == "-":
-        return left - right
-    if node.op == "*":
-        return left * right
-    return _series_div(left, right)
+        return eval_expr_series(node.inner, frame, raw=raw)
+    if isinstance(node, Not):
+        return _not_series(eval_expr_series(node.operand, frame))
+    if isinstance(node, IsNull):
+        series = eval_expr_series(node.operand, frame, raw=True)
+        flag = series.isna() if not node.invert else series.notna()
+        return flag.astype("float64")
+    if isinstance(node, Compare):
+        use_raw = _has_string(node.left) or _has_string(node.right)
+        left = eval_expr_series(node.left, frame, raw=use_raw)
+        right = eval_expr_series(node.right, frame, raw=use_raw)
+        return _compare_series(node.op, left, right)
+    if isinstance(node, BoolOp):
+        left = eval_expr_series(node.left, frame)
+        right = eval_expr_series(node.right, frame)
+        return _bool_series(node.op, left, right)
+    if isinstance(node, Call):
+        return _call_series(node, frame)
+    if isinstance(node, Case):
+        return _case_series(node, frame)
+    if isinstance(node, Binary):
+        left = eval_expr_series(node.left, frame)
+        right = eval_expr_series(node.right, frame)
+        if node.op == "+":
+            return left + right
+        if node.op == "-":
+            return left - right
+        if node.op == "*":
+            return left * right
+        return _series_div(left, right)
+    raise CatalogError(f"Unsupported expression node {type(node).__name__}.")
 
 
 def eval_expr_scalar(node: Expr, values: dict[str, Any]) -> float | None:
     """Evaluate an expression over other measures' scalars."""
     if isinstance(node, Ident):
-        if node.name not in values:
+        actual = match_name(node.name, values) or (node.name if node.name in values else None)
+        if actual is None:
             raise CatalogError(f"Expression names measure {node.name!r}, which was not computed.")
-        value = values[node.name]
+        value = values[actual]
         return None if value is None or (isinstance(value, float) and pd.isna(value)) else float(value)
     if isinstance(node, Number):
         return float(node.value)
+    if isinstance(node, String):
+        raise CatalogError("Measure expr cannot evaluate a string as a number.")
+    if isinstance(node, Null):
+        return None
     if isinstance(node, Unary):
         value = eval_expr_scalar(node.operand, values)
         if value is None:
@@ -258,19 +333,221 @@ def eval_expr_scalar(node: Expr, values: dict[str, Any]) -> float | None:
         return value if node.op == "+" else -value
     if isinstance(node, Group):
         return eval_expr_scalar(node.inner, values)
-    left = eval_expr_scalar(node.left, values)
-    right = eval_expr_scalar(node.right, values)
-    if left is None or right is None:
+    if isinstance(node, Not):
+        value = eval_expr_scalar(node.operand, values)
+        if value is None:
+            return None
+        return 0.0 if value != 0 else 1.0
+    if isinstance(node, IsNull):
+        value = eval_expr_scalar(node.operand, values)
+        missing = value is None
+        return 1.0 if missing != node.invert else 0.0
+    if isinstance(node, Compare):
+        if _has_string(node.left) or _has_string(node.right):
+            left_s = _scalar_raw(node.left, values)
+            right_s = _scalar_raw(node.right, values)
+            if left_s is None or right_s is None:
+                return None
+            return _compare_scalar_raw(node.op, left_s, right_s)
+        left = eval_expr_scalar(node.left, values)
+        right = eval_expr_scalar(node.right, values)
+        if left is None or right is None:
+            return None
+        return _compare_scalar(node.op, left, right)
+    if isinstance(node, BoolOp):
+        left = eval_expr_scalar(node.left, values)
+        right = eval_expr_scalar(node.right, values)
+        return _bool_scalar(node.op, left, right)
+    if isinstance(node, Call):
+        return _call_scalar(node, values)
+    if isinstance(node, Case):
+        return _case_scalar(node, values)
+    if isinstance(node, Binary):
+        left = eval_expr_scalar(node.left, values)
+        right = eval_expr_scalar(node.right, values)
+        if left is None or right is None:
+            return None
+        if node.op == "+":
+            return float(left + right)
+        if node.op == "-":
+            return float(left - right)
+        if node.op == "*":
+            return float(left * right)
+        if right == 0:
+            return None
+        return float(left / right)
+    raise CatalogError(f"Unsupported expression node {type(node).__name__}.")
+
+
+def _not_series(series: pd.Series) -> pd.Series:
+    """1 where false, 0 where true, null where null."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    out = pd.Series(pd.NA, index=series.index, dtype="Float64")
+    out = out.mask(numeric.notna() & (numeric == 0), 1.0)
+    out = out.mask(numeric.notna() & (numeric != 0), 0.0)
+    return out.astype("float64")
+
+
+def _compare_series(op: str, left: pd.Series, right: pd.Series) -> pd.Series:
+    """Row-wise comparison as 1/0/null."""
+    if op == "=":
+        mask = left == right
+    elif op in {"<>", "!="}:
+        mask = left != right
+    elif op == "<":
+        mask = left < right
+    elif op == ">":
+        mask = left > right
+    elif op == "<=":
+        mask = left <= right
+    else:
+        mask = left >= right
+    out = mask.astype("float64")
+    return out.mask(left.isna() | right.isna())
+
+
+def _bool_series(op: str, left: pd.Series, right: pd.Series) -> pd.Series:
+    """SQL-ish AND/OR on 1/0/null series."""
+    lnum = pd.to_numeric(left, errors="coerce")
+    rnum = pd.to_numeric(right, errors="coerce")
+    ltrue = lnum.notna() & (lnum != 0)
+    rtrue = rnum.notna() & (rnum != 0)
+    lfalse = lnum.notna() & (lnum == 0)
+    rfalse = rnum.notna() & (rnum == 0)
+    out = pd.Series(pd.NA, index=left.index, dtype="Float64")
+    if op == "and":
+        out = out.mask(ltrue & rtrue, 1.0)
+        out = out.mask(lfalse | rfalse, 0.0)
+    else:
+        out = out.mask(ltrue | rtrue, 1.0)
+        out = out.mask(lfalse & rfalse, 0.0)
+    return out.astype("float64")
+
+
+def _call_series(node: Call, frame: pd.DataFrame) -> pd.Series:
+    """Dispatch an expr call to a column function."""
+    key = _fn_key(COLUMN_FNS, node.name)
+    if key is None:
+        raise CatalogError(
+            f"Unknown column function {node.name!r}. Registered: {sorted(COLUMN_FNS)}."
+        )
+    args = [eval_expr_series(arg, frame) for arg in node.args]
+    problem = column_op_error(key, len(args))
+    if problem:
+        raise CatalogError(f"Column op {problem}")
+    result = COLUMN_FNS[key](*args)
+    if not isinstance(result, pd.Series):
+        raise CatalogError(
+            f"Column op {key!r} must return a pandas Series (got {type(result).__name__})."
+        )
+    return result.reindex(frame.index) if not result.index.equals(frame.index) else result
+
+
+def _case_series(node: Case, frame: pd.DataFrame) -> pd.Series:
+    """First matching WHEN; ELSE or null."""
+    result = (
+        eval_expr_series(node.else_, frame)
+        if node.else_ is not None
+        else pd.Series(pd.NA, index=frame.index, dtype="object")
+    )
+    for cond, value in reversed(node.whens):
+        numeric = pd.to_numeric(eval_expr_series(cond, frame), errors="coerce")
+        pick = numeric.notna() & (numeric != 0)
+        result = eval_expr_series(value, frame).where(pick, result)
+    return result
+
+
+def _scalar_missing(value: Any) -> bool:
+    """True when a measure scalar is null."""
+    return value is None or (isinstance(value, float) and pd.isna(value))
+
+
+def _scalar_raw(node: Expr, values: dict[str, Any]) -> Any:
+    """Evaluate a compare side without forcing float (for 'O')."""
+    if isinstance(node, String):
+        return node.value
+    if isinstance(node, Null):
         return None
-    if node.op == "+":
-        return float(left + right)
-    if node.op == "-":
-        return float(left - right)
-    if node.op == "*":
-        return float(left * right)
-    if right == 0:
+    if isinstance(node, Ident):
+        actual = match_name(node.name, values) or (node.name if node.name in values else None)
+        if actual is None:
+            raise CatalogError(f"Expression names measure {node.name!r}, which was not computed.")
+        return values[actual]
+    if isinstance(node, Number):
+        return node.value
+    if isinstance(node, Group):
+        return _scalar_raw(node.inner, values)
+    return eval_expr_scalar(node, values)
+
+
+def _compare_scalar(op: str, left: float, right: float) -> float:
+    """Numeric comparison as 1/0."""
+    if op == "=":
+        return 1.0 if left == right else 0.0
+    if op in {"<>", "!="}:
+        return 1.0 if left != right else 0.0
+    if op == "<":
+        return 1.0 if left < right else 0.0
+    if op == ">":
+        return 1.0 if left > right else 0.0
+    if op == "<=":
+        return 1.0 if left <= right else 0.0
+    return 1.0 if left >= right else 0.0
+
+
+def _compare_scalar_raw(op: str, left: Any, right: Any) -> float | None:
+    """Comparison that may involve strings."""
+    if _scalar_missing(left) or _scalar_missing(right):
         return None
-    return float(left / right)
+    if op == "=":
+        return 1.0 if left == right else 0.0
+    if op in {"<>", "!="}:
+        return 1.0 if left != right else 0.0
+    try:
+        return _compare_scalar(op, float(left), float(right))
+    except (TypeError, ValueError) as exc:
+        raise CatalogError("Measure expr comparison needs numbers or equal strings.") from exc
+
+
+def _bool_scalar(op: str, left: float | None, right: float | None) -> float | None:
+    """SQL-ish AND/OR on scalars."""
+    ltrue = left is not None and left != 0
+    rtrue = right is not None and right != 0
+    lfalse = left is not None and left == 0
+    rfalse = right is not None and right == 0
+    if op == "and":
+        if ltrue and rtrue:
+            return 1.0
+        if lfalse or rfalse:
+            return 0.0
+        return None
+    if ltrue or rtrue:
+        return 1.0
+    if lfalse and rfalse:
+        return 0.0
+    return None
+
+
+def _call_scalar(node: Call, values: dict[str, Any]) -> float | None:
+    """Dispatch an expr call to a measure function."""
+    key = _fn_key(MEASURE_FNS, node.name)
+    if key is None:
+        raise CatalogError(
+            f"Unknown measure function {node.name!r}. Registered: {sorted(MEASURE_FNS)}."
+        )
+    args = [eval_expr_scalar(arg, values) for arg in node.args]
+    return call_measure_fn(key, args)
+
+
+def _case_scalar(node: Case, values: dict[str, Any]) -> float | None:
+    """First matching WHEN; ELSE or null."""
+    for cond, value in node.whens:
+        flag = eval_expr_scalar(cond, values)
+        if flag is not None and flag != 0:
+            return eval_expr_scalar(value, values)
+    if node.else_ is None:
+        return None
+    return eval_expr_scalar(node.else_, values)
 
 
 def _series_div(left: pd.Series, right: pd.Series) -> pd.Series:

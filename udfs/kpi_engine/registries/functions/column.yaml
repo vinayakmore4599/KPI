@@ -136,3 +136,87 @@ coalesce:
       op: coalesce
   module: kpi_engine.capabilities.functions.column.impl
   attr: coalesce_columns
+
+if_null:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Value when present, otherwise the fallback column.
+  example: |
+    qty:
+      columns: { value: ordered_qty, fallback: planned_qty }
+      op: if_null
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: if_null_columns
+
+nullif:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Null where value equals the sentinel column.
+  example: |
+    nonzero:
+      columns: { value: amount, sentinel: offset_col }
+      op: nullif
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: nullif_columns
+
+null_if_zero:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Null where the column is 0.
+  example: |
+    rate:
+      columns: [amount]
+      op: null_if_zero
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: null_if_zero_columns
+
+zero_if_null:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 0 where the column is null.
+  example: |
+    qty_or_zero:
+      columns: [ordered_qty]
+      op: zero_if_null
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: zero_if_null_columns
+
+is_null:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1 where the column is null, else 0.
+  example: |
+    missing:
+      columns: [amount]
+      op: is_null
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: is_null_columns
+
+is_not_null:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1 where the column is present, else 0.
+  example: |
+    present:
+      columns: [amount]
+      op: is_not_null
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: is_not_null_columns
+
+if_else:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Then-column where cond is nonzero, otherwise other.
+  example: |
+    picked:
+      columns: { cond: flag, then: amount, other: fallback }
+      op: if_else
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: if_else_columns

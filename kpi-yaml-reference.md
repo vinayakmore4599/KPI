@@ -70,7 +70,7 @@ measures:                    # every measure_key the UI can send
 | YoY, ratio, same-row share, n-ary add/sub | `op: arithmetic` |
 | Share of **all groups on this cut** | `op: percent_of_total` (see §5.3c) |
 | Rank of groups on a cut | `op: rank` |
-| A formula over retrieved columns | `expr:` on a base measure (see §4) |
+| A formula over retrieved columns | `expr:` on a base measure (see §4) — `+ - * /`, CASE, allowlisted calls |
 | A formula over other measures | `op: expr` (see §5.6) |
 | A named function over other measures' values | `op: fn` + `inputs:` (see §5.5) |
 | A named function over retrieved columns | `columns:` + `op:` on a base measure (see §10.1) |
@@ -211,6 +211,8 @@ Prefer `columns:` + `op:` when Pandas must combine retrieved columns. `op: multi
 | `multiply` | any number | `a * b * c …` |
 | `min` / `max` / `avg` | any number | reduces **across** the listed columns of one row |
 | `coalesce` | any number | first non-null, left to right |
+| `if_null` / `nullif` / `if_else` | 2 or 3 | null helpers; `if_else` is `cond`, `then`, `other` |
+| `zero_if_null` / `null_if_zero` / `is_null` / `is_not_null` | 1 | fill or flag |
 | `divide` | `numerator`, `denominator` | zero denominator yields null, not `inf` |
 | `percent_of` | `part`, `whole` | the share, scaled to 0-100 |
 | `abs` | `column` | absolute value |
@@ -232,7 +234,7 @@ base_measures:
 
 How many columns an `op` accepts, and what its parameters are called, come from the function's own Python signature. A function declared `def rate(shipped, ordered)` takes exactly two; one declared `def total(*columns)` takes any number and cannot be called by name. An unknown op, the wrong number of columns, or a parameter that does not exist all fail at bind time with the valid alternatives listed.
 
-`sql:` / `expr:` name physical columns (and optional `+ - * /` on a base measure). Function calls (`COALESCE`, `SUM`, …) and free SQL are rejected; put the aggregation in `agg:`. DuckDB only SELECTs the column names; Pandas evaluates the formula.
+`sql:` / `expr:` name physical columns (and optional `+ - * /`, CASE, or allowlisted calls). SQL `SUM()` / subqueries are rejected; put the aggregation in `agg:`. DuckDB only SELECTs the column names; Pandas evaluates the formula.
 
 Do **not** use `agg: sum` on a per-row ratio if you wanted a ratio of two totals. Declare two base measures and `op: expr` (or `op: arithmetic`) instead.
 
@@ -483,7 +485,7 @@ agg_ratio:
   expr: (a_value * b_value) / (a_value + b_value)
 ```
 
-Identifiers are other measure keys. The engine computes them first (same memo and cycle rules as `fn`). A zero or null denominator yields null.
+Identifiers are other measure keys. The engine computes them first (same memo and cycle rules as `fn`). A zero or null denominator yields null. The same CASE / `IS NULL` / allowlisted-call grammar as base `expr:` applies; calls resolve in the **measure** function registry (`zero_if_null(current_value)`, not SQL `SUM()`).
 
 This is the **ratio of totals**. The same formula on `base_measures.expr` is the **sum of per-row ratios**. Parentheses follow normal `+ - * /` precedence.
 
@@ -1018,7 +1020,8 @@ pytest -q
 | `filters.x apply: extract cannot be listed in ignore_filters` | DuckDB cannot skip the mask on cut G | Use `apply: calc` |
 | `Required filter '…' is missing from context` | `optional: false` (default) and the host omitted it | Send the filter, or set `optional: true` |
 | `Filter '<x>' does not bind to a source column` | Mapped to a column the extract does not expose — typically a CTE-internal one | Add it to `output_schema` |
-| `Illegal measure sql: '…'` | Quotes, function calls, or `;` in `base_measures.sql` | Use `ontime * fullqty` style math only; put `SUM` in `agg:` |
+| `Illegal measure sql: '…'` | Comments, `;`, double quotes, or incomplete CASE | Use `+ - * /`, CASE, or an allowlisted call; put `SUM` in `agg:` |
+| `names unknown function` | Call is not in that layer's registry | Use a name from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) |
 | `Unknown agg '<x>'` | Aggregation not in §4 | Pick a built-in or add one to the engine |
 | `agg=percentile requires percentile:` | Missing quantile | Add `percentile: 90` |
 | `default_cut '<x>' is not a declared cut` | Typo in `default_cut` or `also_emit` | Match a `cuts[].name` |
@@ -1047,3 +1050,4 @@ Known boundaries, so you do not design around something that is not there:
 - `base_measures.sql` is a column name. Expressions belong in the model.
 - KPI YAML cannot reference another KPI's measures.
 - Non-additive aggregations re-read row-level data; they are the expensive option.
+- `expr:` CASE is Pandas, not DuckDB. No `SUM(CASE)`, `LIKE`, `IN ('A','B')`, or simple `CASE status WHEN 'O'`. `columns:` + `op:` stays numeric.

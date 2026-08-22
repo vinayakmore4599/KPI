@@ -159,3 +159,108 @@ attainment:
       inputs: [current_value, target]
   module: kpi_engine.capabilities.functions.measure.impl
   attr: attainment
+
+coalesce:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 2
+  description: First non-null measure scalar.
+  example: |
+    picked:
+      op: fn
+      fn: coalesce
+      inputs: [current_value, target]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: coalesce_scalars
+
+if_null:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Value when present, otherwise the fallback measure.
+  example: |
+    shown:
+      op: fn
+      fn: if_null
+      inputs: [current_value, target]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: if_null_scalars
+
+nullif:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Null when value equals the sentinel measure.
+  example: |
+    nonzero:
+      op: fn
+      fn: nullif
+      inputs: [current_value, zero]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: nullif_scalars
+
+null_if_zero:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Null when the measure is 0.
+  example: |
+    rate:
+      op: fn
+      fn: null_if_zero
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: null_if_zero_scalars
+
+zero_if_null:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 0 when the measure is null.
+  example: |
+    shown:
+      op: fn
+      fn: zero_if_null
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: zero_if_null_scalars
+
+is_null:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1 if the measure is null, else 0.
+  example: |
+    missing:
+      op: fn
+      fn: is_null
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: is_null_scalars
+
+is_not_null:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1 if the measure is present, else 0.
+  example: |
+    present:
+      op: fn
+      fn: is_not_null
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: is_not_null_scalars
+
+if_else:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Then-measure if cond is nonzero, otherwise other.
+  example: |
+    picked:
+      op: fn
+      fn: if_else
+      inputs: { cond: flag, then: current_value, other: target }
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: if_else_scalars

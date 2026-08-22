@@ -17,7 +17,7 @@ from kpi_engine.contracts import (
 )
 from kpi_engine.core.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
 from kpi_engine.exceptions import BindError, CatalogError
-from kpi_engine.identifiers import expression_columns, parse_expression
+from kpi_engine.identifiers import assert_expr_calls, expression_columns, parse_expression
 from kpi_engine.runlog import log_measure_calc
 
 
@@ -265,6 +265,9 @@ class Expr(OpPlugin):
             raise BindError(f"measures.{key} op=expr requires `expr:` with a formula.")
         expr = str(expr_raw).strip()
         node = parse_expression(expr, what=f"measures.{key}.expr")
+        from kpi_engine.core.fn_apply import MEASURE_FNS
+
+        assert_expr_calls(node, MEASURE_FNS, what=f"measures.{key}.expr")
         names = expression_columns(node)
         if not names:
             raise BindError(f"measures.{key} expr must name at least one other measure.")

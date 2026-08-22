@@ -32,18 +32,23 @@ def test_compile_sql_expr_quotes_column_math():
     "raw",
     [
         "amount; DROP TABLE x",
-        "coalesce(amount, 0)",
         "amount -- comment",
         "'secret'",
         "1 + 2",
         "",
         "ontime *",
+        "CASE WHEN a THEN 1",
     ],
 )
 def test_compile_sql_expr_rejects_unsafe_or_incomplete(raw):
-    """Function calls, quotes, comments, and number-only expressions fail."""
+    """Comments, injection, number-only, and incomplete CASE still fail."""
     with pytest.raises(BindError, match="Illegal measure sql"):
         compile_sql_expr(raw, what="measure sql")
+
+
+def test_compile_sql_expr_allows_allowlisted_calls():
+    assert compile_sql_expr("coalesce(amount, 0)") == "coalesce(\"amount\", 0)"
+    assert "CASE" in compile_sql_expr("CASE WHEN amount IS NULL THEN 0 ELSE amount END")
 
 
 def test_sum_of_column_times_column(parquet_path, extra_config):

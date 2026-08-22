@@ -39,7 +39,7 @@ from kpi_engine.core.binder import (
     resolve_requested_graph,
     same_model_id,
 )
-from kpi_engine.catalog.ops_impl import (
+from kpi_engine.core.fn_apply import (
     apply_dimension_maps,
     apply_pandas_facts,
     collapse_pandas_detail,

@@ -1,25 +1,12 @@
-"""Named Pandas functions for KPI YAML column math and measure composition.
+"""In-memory function maps and Pandas apply helpers (engine, not a capability).
 
 What this file provides
-    COLUMN_FNS — `base_measures.op` registry. Series in, Series out.
-    MEASURE_FNS — `measures.fn` registry. Scalars in, one scalar out.
-    apply_row_op — call a COLUMN_FNS entry with the declared columns.
-    column_op_error / measure_fn_error — arity and parameter-name checks the
-        binder runs against a signature, so YAML fails before any data is read.
-    apply_where_mask — structured isin/eq/ne mask.
-    fold_extract_columns — rename host/DuckDB spellings to KPI YAML names.
-    apply_dimension_maps — CASE-style maps and optional grain trunc.
-    apply_pandas_facts — compute every base_measure on the retrieved frame.
-    eval_expr_series / eval_expr_scalar — nested + - * / after retrieve.
-    call_measure_fn — call a MEASURE_FNS entry with one value per input measure.
-
-Where it is used
-    calc_engine and orchestrator after the DuckDB extract. binder validates
-    YAML names against both registries at bind time.
+    COLUMN_FNS / MEASURE_FNS — filled by the registry loader.
+    apply_row_op, apply_pandas_facts, fold_extract_columns, call_measure_fn.
 
 When to use
-    Register a function instead of editing a dispatch chain. Project-specific
-    functions belong in kpi_engine.extensions.functions. Do not eval() YAML.
+    Engine retrieve/calc. New function *bodies* go in capabilities/functions/
+    plus registries/functions/. Do not add kind branches here.
 """
 
 from __future__ import annotations

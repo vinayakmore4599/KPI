@@ -177,7 +177,7 @@ class Arithmetic(OpPlugin):
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
-        from kpi_engine.catalog.ops_impl import MEASURE_FNS, measure_fn_error
+        from kpi_engine.core.fn_apply import MEASURE_FNS, measure_fn_error
 
         raw = common.raw
         fn = str(raw.get("fn") or "divide")
@@ -216,7 +216,7 @@ class Fn(OpPlugin):
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
-        from kpi_engine.catalog.ops_impl import MEASURE_FNS, measure_fn_error
+        from kpi_engine.core.fn_apply import MEASURE_FNS, measure_fn_error
 
         raw = common.raw
         if not raw.get("inputs"):
@@ -470,7 +470,7 @@ def _max_dep_lookforward(spec, by_key, seen, lookforward_for) -> int:
 
 
 def _compose(ctx: EvalCtx, *, kind: str) -> Any:
-    from kpi_engine.catalog.ops_impl import call_measure_fn, eval_expr_scalar
+    from kpi_engine.core.fn_apply import call_measure_fn, eval_expr_scalar
 
     spec = ctx.spec
     if kind == "fn":

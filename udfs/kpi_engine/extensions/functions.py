@@ -20,7 +20,7 @@ Capabilities
 When to use
     Register a function here instead of adding a branch to the engine. Built-in
     names (sum, subtract, multiply, divide, min, max, avg, growth_pct, …) live
-    in kpi_engine.catalog.ops_impl and are already registered at import.
+    in capabilities/functions/ and are already registered at import.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ warnings.warn(
     stacklevel=2,
 )
 
-from kpi_engine.catalog.ops_impl import (
+from kpi_engine.core.fn_apply import (
     COLUMN_FNS,
     MEASURE_FNS,
     ColumnFn,

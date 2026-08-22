@@ -280,9 +280,11 @@ Only if metadata **must** call `udfs.<something>.main`.
 | `core/model_sql.py` | DuckDB retrieve (scans, joins, filters, model columns) | KPI YAML formulas |
 | `core/cuts.py` | Cut walk / finest grain | Listing G/R in Python |
 | `core/calc_engine.py` | New catalog op implementation | One KPI’s one-off SQL |
+| `core/fn_apply.py` | Function maps and Pandas apply (engine) | New function bodies |
 | `core/orchestrator.py` | Pipeline order | Business metrics |
-| `extensions/hooks.py` | Named custom functions | Import paths from context |
-| `catalog/ops_impl.py` | A function every KPI should reuse | Per-KPI formulas |
+| `capabilities/functions/` + `registries/functions/` | A function every KPI should reuse | Per-KPI formulas |
+| `capabilities/ops/` + `registries/ops.yaml` | A new measure kind | Per-KPI formulas |
+| `capabilities/hooks/` + `registries/hooks.yaml` | Named custom functions | Import paths from context |
 | `udfs/sotif/main.py` | Never, except shim signature | Calculations |
 | `contracts.py` | New typed fields for YAML/context | Parsing or SQL |
 

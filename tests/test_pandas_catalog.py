@@ -8,7 +8,7 @@ Where it is used
     pytest tests/test_pandas_catalog.py.
 
 When to use
-    Add a case when a new catalog op lands in ops_impl.py.
+    Add a case when a new catalog op lands in capabilities/.
 """
 
 from datetime import date

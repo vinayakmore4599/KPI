@@ -295,7 +295,7 @@ def _select_model_columns(
     source_filters: tuple[BoundFilter, ...] = (),
 ) -> str:
     """SELECT context fact columns, grain, needed facts, and used join columns."""
-    from kpi_engine.catalog.ops_impl import input_columns
+    from kpi_engine.core.fn_apply import input_columns
 
     _assert_facts_on_context(kpi, model=model, datasets=datasets)
     time_col = kpi.time.column if kpi.time is not None else None
@@ -352,7 +352,7 @@ def _fact_dataset_columns(
     Dim-only aliases (regions.eligible, suppliers.active) stay off the retrieve
     so a SQL wrapper or join does not project columns the extract does not have.
     """
-    from kpi_engine.catalog.ops_impl import input_columns
+    from kpi_engine.core.fn_apply import input_columns
 
     if not datasets:
         return []
@@ -380,7 +380,7 @@ def _used_column_names(
     source_filters: tuple[BoundFilter, ...],
 ) -> set[str]:
     """Folded names this request needs: grain, facts, and DuckDB extract filters."""
-    from kpi_engine.catalog.ops_impl import input_columns
+    from kpi_engine.core.fn_apply import input_columns
 
     used = {norm_name(col) for col in grain}
     for measure in kpi.base_measures:
@@ -416,7 +416,7 @@ def _used_join_columns(
     if not datasets:
         return []
     used = _used_column_names(kpi, grain, source_filters)
-    from kpi_engine.catalog.ops_impl import input_columns
+    from kpi_engine.core.fn_apply import input_columns
 
     fact_needed = {
         norm_name(col) for measure in kpi.base_measures for col in input_columns(measure)
@@ -457,7 +457,7 @@ def _assert_facts_on_context(
     datasets: dict[str, DatasetBinding] | None,
 ) -> None:
     """Needed fact columns must be listed on context or output_schema when either is set."""
-    from kpi_engine.catalog.ops_impl import input_columns
+    from kpi_engine.core.fn_apply import input_columns
 
     catalog = _physical_catalog(model, datasets)
     host_listed = any(ds.columns for ds in (datasets or {}).values())

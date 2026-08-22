@@ -45,7 +45,7 @@ def test_list_capabilities_includes_disabled_from_yaml():
 
 
 def test_column_and_measure_divide_both_register():
-    from kpi_engine.catalog.ops_impl import COLUMN_FNS, MEASURE_FNS
+    from kpi_engine.core.fn_apply import COLUMN_FNS, MEASURE_FNS
 
     reload_packaged()
     assert "divide" in COLUMN_FNS

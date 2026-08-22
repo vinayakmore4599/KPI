@@ -58,7 +58,7 @@ from kpi_engine.identifiers import (
     parse_expression,
     require_ident,
 )
-from kpi_engine.catalog.ops_impl import (
+from kpi_engine.core.fn_apply import (
     COLUMN_FNS,
     WHERE_OPS,
     column_op_error,

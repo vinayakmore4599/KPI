@@ -636,9 +636,10 @@ kpi_engine/
     model_sql.py         # physical YAML or SQL model → DuckDB
     cuts.py              # generic cut planner
     calc_engine.py       # catalog ops on the monthly frame
+    fn_apply.py          # COLUMN_FNS / MEASURE_FNS maps + Pandas apply
     orchestrator.py      # request lifecycle, one DuckDB session
-  catalog/
-    ops_impl.py          # COLUMN_FNS / MEASURE_FNS registries + Pandas helpers
+  capabilities/          # function, op, and hook implementations
+  registries/            # YAML allowlist (functions, ops, hooks)
   config/
     models/              # physical YAML or sql models
     kpis/                # one file per kpi_id

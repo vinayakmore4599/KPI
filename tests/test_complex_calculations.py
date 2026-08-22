@@ -8,7 +8,7 @@ Where it is used
     pytest tests/test_complex_calculations.py.
 
 When to use
-    Add a case when a new function is registered in ops_impl.MEASURE_FNS.
+    Add a case when a new function is registered in capabilities/functions/.
 """
 
 from kpi_engine import compute

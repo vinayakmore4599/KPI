@@ -56,7 +56,7 @@ def reload_packaged() -> None:
 
 def _reset() -> None:
     global _loaded, _entries, _skipped_addons
-    from kpi_engine.catalog.ops_impl import COLUMN_FNS, MEASURE_FNS, _COLUMN_META, _MEASURE_META
+    from kpi_engine.core.fn_apply import COLUMN_FNS, MEASURE_FNS, _COLUMN_META, _MEASURE_META
     from kpi_engine.core.op_registry import OP_KINDS, _ALIASES
     from kpi_engine.extensions.hooks import REGISTRY
 
@@ -169,7 +169,7 @@ def _register_one(item: dict[str, Any]) -> None:
     kind = item["type"]
     aliases = item["aliases"]
     if kind == "column_fn":
-        from kpi_engine.catalog.ops_impl import register_column_fn
+        from kpi_engine.core.fn_apply import register_column_fn
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} column function must be callable.")
@@ -177,7 +177,7 @@ def _register_one(item: dict[str, Any]) -> None:
         register_column_fn(item["name"], obj, min_columns=min_columns, aliases=aliases)
         return
     if kind == "measure_fn":
-        from kpi_engine.catalog.ops_impl import register_measure_fn
+        from kpi_engine.core.fn_apply import register_measure_fn
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} measure function must be callable.")

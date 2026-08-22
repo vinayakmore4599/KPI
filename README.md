@@ -6,6 +6,8 @@ You onboard a KPI by adding YAML. You should not need to change engine code for 
 
 **Onboarding playbook (steps + which files to change):** [kpi-onboarding-guide.md](kpi-onboarding-guide.md)
 
+**YAML preparation (supported functions, columns vs expressions, when to use what, limits):** [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md)
+
 **YAML reference (every op, aggregation and key):** [kpi-yaml-reference.md](kpi-yaml-reference.md)
 
 Full architecture: [kpi-framework-plan.md](kpi-framework-plan.md).

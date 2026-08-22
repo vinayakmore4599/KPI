@@ -100,7 +100,7 @@ def test_max_lookback_uses_requested_measures_only(config_dir):
     """An unrequested 12-month measure must not widen the scan."""
     kpi = load_kpi(3004, config_dir)
     assert max_lookback_months(kpi, ("current_value", "value_6m")) == 5
-    assert max_lookback_months(kpi, ()) == 12
+    assert max_lookback_months(kpi, ()) == 0
 
 
 def test_span_covers_lookback_through_the_anchor(parquet_path, config_dir):

@@ -107,9 +107,8 @@ def max_lookback_months(
 ) -> int:
     """Deepest lookback among requested measures only (unrequested keys do not widen the scan)."""
     by_key = {m.key: m for m in kpi.measures}
-    keys = requested or tuple(by_key)
     return max(
-        (lookback_for(by_key[k], by_key, kpi.time, anchor=anchor) for k in keys),
+        (lookback_for(by_key[k], by_key, kpi.time, anchor=anchor) for k in requested),
         default=0,
     )
 
@@ -117,8 +116,7 @@ def max_lookback_months(
 def max_lookforward_periods(kpi: KpiSpec, requested: tuple[str, ...]) -> int:
     """Periods after the anchor needed for leading windows."""
     by_key = {m.key: m for m in kpi.measures}
-    keys = requested or tuple(by_key)
-    return max((lookforward_for(by_key[k], by_key) for k in keys), default=0)
+    return max((lookforward_for(by_key[k], by_key) for k in requested), default=0)
 
 
 def lookback_for(

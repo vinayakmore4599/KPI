@@ -108,13 +108,14 @@ def test_only_requested_measures_are_returned(parquet_path, config_dir):
     assert "yoy_month" not in rows[0]
 
 
-def test_empty_projection_computes_every_declared_measure(parquet_path, config_dir):
-    """A context with no measures_required falls back to the whole KPI catalog."""
+def test_empty_projection_does_not_run_the_catalog(parquet_path, config_dir):
+    """An empty measures_required list does not expand to every KPI YAML key."""
     ctx = make_context(parquet_path, measures=[], supplier=["ABC"])
     result = compute(ctx, config_dir=config_dir)
-    row = next(r for r in result["rows"] if r["output_cut"] == "G")
-    for key in ("current_value", "previous_year_value", "value_3m", "yoy_month", "trend_12m"):
-        assert key in row
+    assert result["parameters"]["lookback_months"] == 0
+    for row in result["rows"]:
+        for key in ("current_value", "previous_year_value", "value_3m", "yoy_month", "trend_12m"):
+            assert key not in row
 
 
 def test_response_is_json_serializable_without_nan(parquet_path, config_dir):

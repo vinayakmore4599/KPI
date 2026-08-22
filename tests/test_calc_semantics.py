@@ -411,6 +411,10 @@ def test_nullable_fact_column_yields_null_averages_not_zero(tmp_path, extra_conf
         kpi_id=9614,
         month="2026-03",
     )
+    ctx["datasets"]["Sotif"]["columns"] = [
+        *ctx["datasets"]["Sotif"]["columns"],
+        "bonus",
+    ]
     row = compute(ctx, config_dir=extra_config)["rows"][0]
     assert row["amount_prev"] == 10.0
     assert row["bonus_prev"] is None

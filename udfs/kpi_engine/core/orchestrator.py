@@ -35,6 +35,8 @@ from kpi_engine.core.binder import (
     default_config_dir,
     load_kpi,
     load_model,
+    resolve_requested_graph,
+    same_model_id,
 )
 from kpi_engine.catalog.ops_impl import (
     apply_dimension_maps,
@@ -49,7 +51,8 @@ from kpi_engine.core.model_sql import NON_ADDITIVE, compile_extract, extract
 from kpi_engine.core.relations import join_monthly
 from kpi_engine.core.time_planner import plan_time
 from kpi_engine.dates import add_periods, iso_period
-from kpi_engine.exceptions import KPIEngineError
+from kpi_engine.exceptions import BindError, KPIEngineError
+from kpi_engine.identifiers import norm_name
 from kpi_engine.platform import acquire_connection
 from kpi_engine.runlog import (
     end_run,
@@ -104,7 +107,9 @@ def _compute(
     log_step("bind")
     kpi = load_kpi(request.kpi_id, root)
     assert_measure_keys(kpi, request.measure_keys)
-    models = _models_for_kpi(kpi, root)
+    requested, needed_bases = resolve_requested_graph(kpi, request.measure_keys)
+    scoped = replace(kpi, base_measures=needed_bases)
+    models = _models_for_kpi(scoped, root)
     datasets = {}
     for model in models:
         datasets.update(bind_datasets(model, request))
@@ -114,7 +119,7 @@ def _compute(
     grain = finest_grain(kpi, emitted)
     extract_columns: set[str] = set()
     for model in models:
-        extract_columns |= columns_for_source_filters(model, kpi, grain, datasets)
+        extract_columns |= columns_for_source_filters(model, scoped, grain, datasets)
     bound = bind_filters(remaining_filters, kpi, datasets, extract_columns)
     source_filters, deferred = split_for_duckdb(bound, emitted)
     log_step("extract")
@@ -123,6 +128,7 @@ def _compute(
         monthly, detail, sqls = _extract_all(
             models=models,
             kpi=kpi,
+            needed_bases=needed_bases,
             datasets=datasets,
             source_filters=source_filters,
             plan=time_plan,
@@ -133,7 +139,6 @@ def _compute(
     finally:
         if owned:
             con.close()
-    requested = request.measure_keys or tuple(m.key for m in kpi.measures)
     log_step("calculate")
     rows, trend_axes = compute_cuts(
         monthly,
@@ -202,7 +207,9 @@ def _validate(
     request = adapt(context)
     kpi = load_kpi(request.kpi_id, root)
     assert_measure_keys(kpi, request.measure_keys)
-    models = _models_for_kpi(kpi, root)
+    _requested, needed_bases = resolve_requested_graph(kpi, request.measure_keys)
+    scoped = replace(kpi, base_measures=needed_bases)
+    models = _models_for_kpi(scoped, root)
     datasets = {}
     for model in models:
         datasets.update(bind_datasets(model, request))
@@ -211,15 +218,15 @@ def _validate(
     grain = finest_grain(kpi, emitted)
     extract_columns: set[str] = set()
     for model in models:
-        extract_columns |= columns_for_source_filters(model, kpi, grain, datasets)
+        extract_columns |= columns_for_source_filters(model, scoped, grain, datasets)
     bound = bind_filters(remaining, kpi, datasets, extract_columns)
     source_filters, _deferred = split_for_duckdb(bound, emitted)
     sqls: list[str] = []
     param_count = 0
     for model in models:
         bound_ds = bind_datasets(model, request)
-        filter_cols = _model_filter_columns(model, bound_ds, grain, kpi)
-        owned = [m for m in kpi.base_measures if (m.model_id or kpi.model_id) == model.model_id]
+        filter_cols = _model_filter_columns(model, bound_ds, grain, scoped)
+        owned = _owned_bases(needed_bases, kpi, model)
         sub = replace(kpi, base_measures=tuple(owned), model_id=model.model_id)
         sql, params = compile_extract(
             model=model,
@@ -246,13 +253,37 @@ def _validate(
 
 
 def _models_for_kpi(kpi: KpiSpec, root: Path) -> list[ModelSpec]:
-    """Load each distinct model referenced by base_measures (default: KPI model)."""
+    """Load each distinct model referenced by (needed) base_measures, folded by name."""
     ids: list[str] = []
+    seen: set[str] = set()
     for measure in kpi.base_measures:
         mid = measure.model_id or kpi.model_id
-        if mid not in ids:
-            ids.append(mid)
+        key = norm_name(mid)
+        if key in seen:
+            continue
+        seen.add(key)
+        ids.append(mid)
+    if not ids and kpi.model_id:
+        ids.append(kpi.model_id)
     return [load_model(mid, root) for mid in ids]
+
+
+def _owned_bases(
+    bases: tuple, kpi: KpiSpec, model: ModelSpec
+) -> list:
+    """Base measures that belong to this model after folding Sotif / sotif."""
+    owned = [
+        measure
+        for measure in bases
+        if same_model_id(measure.model_id or kpi.model_id, model.model_id)
+    ]
+    if bases and not owned:
+        declared = [(m.name, m.model_id or kpi.model_id) for m in bases]
+        raise BindError(
+            f"No base_measures attach to model {model.model_id!r}. "
+            f"Declared: {declared}."
+        )
+    return owned
 
 
 def _model_filter_columns(
@@ -273,6 +304,7 @@ def _extract_all(
     *,
     models: list[ModelSpec],
     kpi: KpiSpec,
+    needed_bases: tuple,
     datasets: dict,
     source_filters,
     plan,
@@ -281,13 +313,14 @@ def _extract_all(
     connection: Any | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame | None, list[str]]:
     """Per-model row-level retrieve of physical columns, then Pandas builds the monthly frame."""
+    scoped = replace(kpi, base_measures=needed_bases)
     frames: dict[str, pd.DataFrame] = {}
     detail_parts: list[pd.DataFrame] = []
     sqls: list[str] = []
     for model in models:
         bound_ds = bind_datasets(model, request)
-        filter_cols = _model_filter_columns(model, bound_ds, grain, kpi)
-        owned = [m for m in kpi.base_measures if (m.model_id or kpi.model_id) == model.model_id]
+        filter_cols = _model_filter_columns(model, bound_ds, grain, scoped)
+        owned = _owned_bases(needed_bases, kpi, model)
         sub = replace(kpi, base_measures=tuple(owned), model_id=model.model_id)
         extracted = extract(
             model=model,
@@ -308,12 +341,12 @@ def _extract_all(
             frames[model.model_id] = pandas_monthly
     detail = pd.concat(detail_parts, ignore_index=True) if detail_parts else None
     if frames:
-        monthly = join_monthly(frames, kpi)
+        monthly = join_monthly(frames, scoped)
     else:
         cols = [kpi.time.column, "_observed"] if kpi.time is not None else ["_observed"]
         monthly = pd.DataFrame(columns=cols)
     monthly = apply_dimension_maps(monthly, kpi)
-    monthly = _to_monthly(monthly, kpi, grain, plan)
+    monthly = _to_monthly(monthly, scoped, grain, plan)
     return monthly, detail, sqls
 
 

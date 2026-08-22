@@ -1,8 +1,8 @@
 """Load KPI/model YAML and bind context datasets by alias.
 
 What this file provides
-    default_config_dir, load_kpi, load_model, bind_datasets, assert_measure_keys.
-    Parsers for cuts, measures, physical/SQL models.
+    default_config_dir, load_kpi, load_model, bind_datasets, assert_measure_keys,
+    resolve_requested_graph, same_model_id. Parsers for cuts, measures, models.
 
 Where it is used
     orchestrator after adapt(). Tests load KPI 3004 via load_kpi.
@@ -15,6 +15,7 @@ Capabilities
     - Binds model.required_aliases to context.datasets by alias, then key.
     - Context path wins; model default_path / default_paths fills a missing alias.
     - Unknown measure_key is a hard error listing valid YAML keys.
+    - resolve_requested_graph scopes work to measures_required plus dependencies.
 
 When to use
     Change parsing when YAML schema changes (new measure op, new cut field).
@@ -46,7 +47,14 @@ from kpi_engine.contracts import (
     TimeSpec,
 )
 from kpi_engine.exceptions import BindError
-from kpi_engine.identifiers import compile_sql_expr, is_simple_ident, parse_expression, expression_columns, require_ident
+from kpi_engine.identifiers import (
+    compile_sql_expr,
+    expression_columns,
+    is_simple_ident,
+    norm_name,
+    parse_expression,
+    require_ident,
+)
 from kpi_engine.catalog.ops_impl import (
     COLUMN_FNS,
     MEASURE_FNS,
@@ -79,11 +87,20 @@ def load_kpi(kpi_id: int | str, config_dir: Path | None = None) -> KpiSpec:
 
 @traced
 def load_model(model_id: str, config_dir: Path | None = None) -> ModelSpec:
-    """Load and parse config/models/<model_id>.yaml."""
+    """Load and parse config/models/<model_id>.yaml (name fold: Sotif → sotif.yaml)."""
     root = config_dir or default_config_dir()
     path = root / "models" / f"{model_id}.yaml"
     if not path.exists():
-        raise BindError(f"No model YAML for model_id={model_id!r} at {path}.")
+        wanted = norm_name(model_id)
+        matches = [
+            candidate
+            for candidate in (root / "models").glob("*.yaml")
+            if norm_name(candidate.stem) == wanted
+        ]
+        if len(matches) == 1:
+            path = matches[0]
+        else:
+            raise BindError(f"No model YAML for model_id={model_id!r} at {path}.")
     return _parse_model(_read_yaml(path), expected_id=model_id)
 
 
@@ -148,6 +165,50 @@ def assert_measure_keys(kpi: KpiSpec, requested: tuple[str, ...]) -> None:
         raise BindError(
             f"Unknown measure_key(s) {unknown}. Valid keys: {sorted(known)}."
         )
+
+
+@traced
+def resolve_requested_graph(
+    kpi: KpiSpec, requested: tuple[str, ...]
+) -> tuple[tuple[str, ...], tuple[BaseMeasure, ...]]:
+    """Requested keys (no catalog fallback) and the base_measures that graph needs.
+
+    Walks arithmetic / fn / expr / rank `of` and each measure's `of:` base.
+    An empty measures_required list computes nothing — it does not expand to
+    every key in the KPI YAML.
+    """
+    emit = tuple(dict.fromkeys(requested))
+    by_key = {m.key: m for m in kpi.measures}
+    by_base = {b.name: b for b in kpi.base_measures}
+    needed: set[str] = set()
+    seen: set[str] = set()
+
+    def walk(name: str) -> None:
+        """Collect this key's bases and the measures it depends on."""
+        if name in seen:
+            return
+        seen.add(name)
+        if name in by_base:
+            needed.add(name)
+        spec = by_key.get(name)
+        if spec is None:
+            return
+        if spec.of:
+            walk(spec.of)
+        for dep in measure_dependencies(spec):
+            walk(dep)
+
+    for key in emit:
+        walk(key)
+    bases = tuple(base for base in kpi.base_measures if base.name in needed)
+    return emit, bases
+
+
+def same_model_id(left: str | None, right: str | None) -> bool:
+    """True when two model ids match after folding case / spaces / underscores."""
+    if not left or not right:
+        return False
+    return norm_name(left) == norm_name(right)
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:

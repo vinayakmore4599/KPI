@@ -33,6 +33,8 @@ ADDON_HOOKS = {
     "period_max",
     "period_min",
     "period_median",
+    "period_avg",
+    "period_sum",
     "hit_rate",
     "streak",
 }
@@ -269,6 +271,18 @@ def test_hooks_series_formulas(parquet_path, extra_config):
         "of": "sotif_value",
         "trailing": {"months": 3},
     }
+    spec["measures"]["mean"] = {
+        "op": "hook",
+        "hook": "period_avg",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
+    spec["measures"]["total"] = {
+        "op": "hook",
+        "hook": "period_sum",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
     spec["measures"]["on_bar"] = {
         "op": "hook",
         "hook": "hit_rate",
@@ -287,7 +301,17 @@ def test_hooks_series_formulas(parquet_path, extra_config):
     result = compute(
         make_context(
             parquet_path,
-            measures=["current_value", "seasonal", "smoothed", "best", "typical", "on_bar", "held"],
+            measures=[
+                "current_value",
+                "seasonal",
+                "smoothed",
+                "best",
+                "typical",
+                "mean",
+                "total",
+                "on_bar",
+                "held",
+            ],
             supplier=["ABC"],
             kpi_id=9906,
         ),
@@ -299,6 +323,8 @@ def test_hooks_series_formulas(parquet_path, extra_config):
     assert late["smoothed"] == 33.75
     assert late["best"] == 45.0
     assert late["typical"] == 30.0
+    assert late["mean"] == 30.0
+    assert late["total"] == 90.0
     assert abs(late["on_bar"] - (2.0 / 3.0) * 100) < 1e-9
     assert late["held"] == 2.0
 
@@ -321,4 +347,6 @@ def test_generated_catalog_includes_addons():
     assert "`ntile`" in text
     assert "`lag`" in text
     assert "`ewma`" in text
+    assert "`period_avg`" in text
+    assert "`period_sum`" in text
     assert "role: addon" in text

@@ -68,6 +68,34 @@ period_median:
   module: kpi_engine.capabilities.hooks.impl
   attr: period_median
 
+period_avg:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Mean of period values in the trailing window.
+  example: |
+    typical_level:
+      op: hook
+      hook: period_avg
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_avg
+
+period_sum:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Sum of period values in the trailing window.
+  example: |
+    window_total:
+      op: hook
+      hook: period_sum
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: period_sum
+
 hit_rate:
   role: addon
   enabled: true

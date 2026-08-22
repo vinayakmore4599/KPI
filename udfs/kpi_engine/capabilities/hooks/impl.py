@@ -102,6 +102,20 @@ def period_median(series, *, kpi, plan, spec, **_):
     return float(values[mid - 1] + values[mid]) / 2.0
 
 
+def period_avg(series, *, kpi, plan, spec, **_):
+    """Mean of observed period values in the trailing window."""
+    values = [v for _, v in _observed_pairs(series, kpi, plan, spec)]
+    if not values:
+        return None
+    return float(sum(values)) / float(len(values))
+
+
+def period_sum(series, *, kpi, plan, spec, **_):
+    """Sum of observed period values in the trailing window."""
+    values = [v for _, v in _observed_pairs(series, kpi, plan, spec)]
+    return None if not values else float(sum(values))
+
+
 def _require_bar(spec) -> float:
     if spec.constant is None:
         raise CatalogError(f"hook {spec.hook!r} requires `value:`.")

@@ -607,6 +607,32 @@ typical_month:
   trailing: { months: 12 }
 ```
 
+### `period_avg`
+
+Mean of period values in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+typical_level:
+  op: hook
+  hook: period_avg
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `period_sum`
+
+Sum of period values in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+window_total:
+  op: hook
+  hook: period_sum
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
 ### `hit_rate`
 
 Percent of observed periods whose value is >= value.  

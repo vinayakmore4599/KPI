@@ -156,6 +156,42 @@ def test_percent_in_path_does_not_drop_sql_from_the_log(parquet_path, config_dir
     assert "---------- END SQL ----------" in text
 
 
+def test_measure_calc_log_includes_columns_used_values_and_result(
+    parquet_path, config_dir, tmp_path
+):
+    """Each measure writes the column, the periods/inputs it read, and the result."""
+    log_dir = tmp_path / "logs"
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value", "previous_year_value", "yoy_month", "value_3m"],
+        supplier=["ABC"],
+    )
+    result = compute(ctx, config_dir=config_dir, log_dir=log_dir)
+    text = next(log_dir.glob("kpi-compute-3004-*.log")).read_text(encoding="utf-8")
+    assert "---------- MEASURE calculate ----------" in text
+    assert "---------- END MEASURE ----------" in text
+    assert "key=current_value op=point" in text
+    assert "of=sotif_value column=sotif_value source=amount agg=sum" in text
+    assert "period=2026-03-01" in text
+    assert "used:" in text
+    assert "sotif_value=" in text
+    assert "key=previous_year_value op=point" in text
+    assert "period=2025-03-01" in text
+    assert "key=value_3m op=window" in text
+    assert "window=2026-01-01 .. 2026-03-01" in text
+    assert "key=yoy_month op=arithmetic" in text
+    assert "fn=growth_pct" in text
+    assert "inputs:" in text
+    assert "current_value=" in text
+    assert "previous_year_value=" in text
+    g = next(
+        row
+        for row in result["rows"]
+        if row["output_cut"] == "G" and row["reason_code"] == "LATE_SUPPLIER"
+    )
+    assert f"result={g['current_value']!r}" in text or f"result={float(g['current_value'])!r}" in text
+
+
 def test_render_bound_sql_skips_placeholders_inside_quotes():
     """A `?` in a string literal is not a parameter."""
     from kpi_engine.runlog import render_bound_sql

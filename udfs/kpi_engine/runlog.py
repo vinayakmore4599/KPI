@@ -6,7 +6,8 @@ What this file provides
     log_sql — writes the DuckDB query, bound parameters, and the same SQL with
     values inlined so it can be copied into DuckDB. Never truncated.
     log_context — writes the inbound context JSON in full, never truncated.
-    log_step / log_measure — readable banners for orchestrator phases.
+    log_step / log_measure / log_measure_calc — orchestrator phases and
+    per-measure inputs, columns, and results.
 
 Where it is used
     orchestrator starts a run; core functions use @traced. Tests isolate files
@@ -234,8 +235,82 @@ def render_bound_sql(sql: str, params: tuple[Any, ...] | list[Any] = ()) -> str:
 
 
 def log_measure(cut: str, key: str, op: str, combo: dict[str, Any], value: Any) -> None:
-    """One evaluated measure for one dimension combination."""
+    """One evaluated measure for one dimension combination (one-line summary)."""
     info("MEASURE cut=%s key=%s op=%s combo=%s → %s", cut, key, op, summarize(combo), summarize(value))
+
+
+def log_measure_calc(
+    *,
+    cut: str,
+    key: str,
+    op: str,
+    combo: dict[str, Any],
+    result: Any,
+    of: str | None = None,
+    column: str | None = None,
+    source: str | None = None,
+    agg: str | None = None,
+    period: Any = None,
+    window_start: Any = None,
+    window_end: Any = None,
+    fn: str | None = None,
+    expr: str | None = None,
+    hook: str | None = None,
+    used: list[dict[str, Any]] | None = None,
+    inputs: dict[str, Any] | None = None,
+) -> None:
+    """Write how one measure was calculated: columns, periods, inputs, and result."""
+    lines = [
+        "---------- MEASURE calculate ----------",
+        f"cut={cut} key={key} op={op} combo={summarize(combo)}",
+    ]
+    bits = []
+    if of:
+        bits.append(f"of={of}")
+    if column:
+        bits.append(f"column={column}")
+    if source and source != column:
+        bits.append(f"source={source}")
+    if agg:
+        bits.append(f"agg={agg}")
+    if fn:
+        bits.append(f"fn={fn}")
+    if expr:
+        bits.append(f"expr={expr}")
+    if hook:
+        bits.append(f"hook={hook}")
+    if bits:
+        lines.append(" ".join(bits))
+    if period is not None:
+        lines.append(f"period={_audit_date(period)}")
+    if window_start is not None or window_end is not None:
+        lines.append(f"window={_audit_date(window_start)} .. {_audit_date(window_end)}")
+    if inputs:
+        lines.append("inputs:")
+        for name, value in inputs.items():
+            lines.append(f"  {name}={summarize(value)}")
+    if used:
+        lines.append("used:")
+        for item in used:
+            period_s = _audit_date(item.get("period"))
+            col = item.get("column") or column or ""
+            observed = item.get("observed")
+            obs = "" if observed is None else f" observed={observed}"
+            lines.append(f"  {period_s} {col}={summarize(item.get('value'))}{obs}")
+    lines.append(f"result={summarize(result)}")
+    lines.append("---------- END MEASURE ----------")
+    info("%s", "\n".join(lines))
+
+
+def _audit_date(value: Any) -> str:
+    """ISO date for a period used in a measure audit line."""
+    if value is None:
+        return "null"
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
 
 
 def log_context(context: Any) -> None:

@@ -33,6 +33,7 @@ from kpi_engine.core.binder import (
     assert_measure_keys,
     bind_datasets,
     default_config_dir,
+    fold_measure_keys,
     load_kpi,
     load_model,
     resolve_requested_graph,
@@ -42,6 +43,7 @@ from kpi_engine.catalog.ops_impl import (
     apply_dimension_maps,
     apply_pandas_facts,
     collapse_pandas_detail,
+    fold_extract_columns,
     pandas_group_keys,
 )
 from kpi_engine.core.calc_engine import compute_cuts, densify
@@ -106,6 +108,7 @@ def _compute(
     request = adapt(context)
     log_step("bind")
     kpi = load_kpi(request.kpi_id, root)
+    request = replace(request, measure_keys=fold_measure_keys(kpi, request.measure_keys))
     assert_measure_keys(kpi, request.measure_keys)
     requested, needed_bases = resolve_requested_graph(kpi, request.measure_keys)
     scoped = replace(kpi, base_measures=needed_bases)
@@ -206,6 +209,7 @@ def _validate(
     root = Path(config_dir) if config_dir else default_config_dir()
     request = adapt(context)
     kpi = load_kpi(request.kpi_id, root)
+    request = replace(request, measure_keys=fold_measure_keys(kpi, request.measure_keys))
     assert_measure_keys(kpi, request.measure_keys)
     _requested, needed_bases = resolve_requested_graph(kpi, request.measure_keys)
     scoped = replace(kpi, base_measures=needed_bases)
@@ -334,9 +338,16 @@ def _extract_all(
         )
         sqls.append(extracted.sql)
         raw = extracted.frame
-        mapped = apply_dimension_maps(raw, kpi)
+        log_step(
+            "extract_frame",
+            model=model.model_id,
+            row_count=0 if raw is None else len(raw),
+            columns=[] if raw is None else list(raw.columns),
+        )
+        folded = fold_extract_columns(raw, kpi, grain)
+        mapped = apply_dimension_maps(folded, kpi)
         detail_parts.append(apply_pandas_facts(mapped, sub) if not mapped.empty else mapped)
-        pandas_monthly = collapse_pandas_detail(raw, sub, grain)
+        pandas_monthly = collapse_pandas_detail(mapped, sub, grain)
         if not pandas_monthly.empty:
             frames[model.model_id] = pandas_monthly
     detail = pd.concat(detail_parts, ignore_index=True) if detail_parts else None

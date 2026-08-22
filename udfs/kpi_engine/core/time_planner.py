@@ -35,6 +35,7 @@ from kpi_engine.dates import (
     truncate_period,
     year_start,
 )
+from kpi_engine.core.binder import fold_measure_keys
 from kpi_engine.exceptions import TimePlanError
 from kpi_engine.runlog import traced
 
@@ -70,8 +71,9 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, t
             f"time.grain=day requires a full date YYYY-MM-DD on {claimed.code!r}."
         )
     anchor = truncate_period(raw_anchor, kpi.time)
-    lookback = max_lookback_months(kpi, request.measure_keys, anchor=anchor)
-    forward = max_lookforward_periods(kpi, request.measure_keys)
+    keys = fold_measure_keys(kpi, request.measure_keys)
+    lookback = max_lookback_months(kpi, keys, anchor=anchor)
+    forward = max_lookforward_periods(kpi, keys)
     span_start = add_periods(anchor, -lookback, kpi.time)
     span_end_exclusive = add_periods(anchor, 1 + forward, kpi.time)
     return (
@@ -106,17 +108,19 @@ def max_lookback_months(
     kpi: KpiSpec, requested: tuple[str, ...], anchor=None
 ) -> int:
     """Deepest lookback among requested measures only (unrequested keys do not widen the scan)."""
+    keys = fold_measure_keys(kpi, requested)
     by_key = {m.key: m for m in kpi.measures}
     return max(
-        (lookback_for(by_key[k], by_key, kpi.time, anchor=anchor) for k in requested),
+        (lookback_for(by_key[k], by_key, kpi.time, anchor=anchor) for k in keys if k in by_key),
         default=0,
     )
 
 
 def max_lookforward_periods(kpi: KpiSpec, requested: tuple[str, ...]) -> int:
     """Periods after the anchor needed for leading windows."""
+    keys = fold_measure_keys(kpi, requested)
     by_key = {m.key: m for m in kpi.measures}
-    return max((lookforward_for(by_key[k], by_key) for k in requested), default=0)
+    return max((lookforward_for(by_key[k], by_key) for k in keys if k in by_key), default=0)
 
 
 def lookback_for(

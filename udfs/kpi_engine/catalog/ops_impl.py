@@ -7,6 +7,7 @@ What this file provides
     column_op_error / measure_fn_error — arity and parameter-name checks the
         binder runs against a signature, so YAML fails before any data is read.
     apply_where_mask — structured isin/eq/ne mask.
+    fold_extract_columns — rename host/DuckDB spellings to KPI YAML names.
     apply_dimension_maps — CASE-style maps and optional grain trunc.
     apply_pandas_facts — compute every base_measure on the retrieved frame.
     eval_expr_series / eval_expr_scalar — nested + - * / after retrieve.
@@ -39,6 +40,8 @@ from kpi_engine.identifiers import (
     Unary,
     expression_columns,
     is_simple_ident,
+    match_name,
+    norm_name,
     parse_expression,
 )
 from kpi_engine.runlog import traced
@@ -230,9 +233,10 @@ def uses_pandas_row_op(measure: BaseMeasure) -> bool:
 def eval_expr_series(node: Expr, frame: pd.DataFrame) -> pd.Series:
     """Evaluate an expression on one row of the extract at a time."""
     if isinstance(node, Ident):
-        if node.name not in frame.columns:
+        actual = _frame_column(frame, node.name)
+        if actual is None:
             raise CatalogError(f"Expression names column {node.name!r}, which is not on the extract.")
-        return pd.to_numeric(frame[node.name], errors="coerce")
+        return pd.to_numeric(frame[actual], errors="coerce")
     if isinstance(node, Number):
         return pd.Series(node.value, index=frame.index, dtype="float64")
     if isinstance(node, Unary):
@@ -287,17 +291,65 @@ def _series_div(left: pd.Series, right: pd.Series) -> pd.Series:
     return left / right.replace(0, pd.NA)
 
 
+def fold_extract_columns(
+    frame: pd.DataFrame, kpi: KpiSpec, grain: tuple[str, ...] = ()
+) -> pd.DataFrame:
+    """Rename retrieved columns to the KPI YAML spellings they fold onto.
+
+    DuckDB / host context may return Amount or Event_Month. Pandas facts,
+    groupby, and densify require the YAML names (amount, event_month).
+    """
+    if frame is None or frame.empty:
+        return frame
+    wanted: list[str] = []
+    if kpi.time is not None:
+        wanted.append(kpi.time.column)
+    wanted.extend(grain)
+    wanted.extend(kpi.dimensions)
+    for spec in kpi.dimension_specs:
+        wanted.append(spec.name)
+        if spec.source:
+            wanted.append(spec.source)
+    for measure in kpi.base_measures:
+        wanted.extend(input_columns(measure))
+        if measure.where is not None:
+            wanted.append(measure.where.column)
+    rename: dict[str, str] = {}
+    taken: set[str] = set()
+    for yaml_name in wanted:
+        actual = match_name(yaml_name, frame.columns)
+        if actual is None or actual == yaml_name:
+            continue
+        if yaml_name in frame.columns or yaml_name in taken:
+            continue
+        rename[actual] = yaml_name
+        taken.add(yaml_name)
+    if not rename:
+        return frame
+    return frame.rename(columns=rename)
+
+
+def _frame_column(frame: pd.DataFrame, name: str) -> str | None:
+    """YAML column name or the host spelling that folds onto it."""
+    if name in frame.columns:
+        return name
+    return match_name(name, frame.columns)
+
+
 @traced
 def apply_dimension_maps(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
     """Rewrite dimension columns from `from` + `map` / `grain` after retrieve."""
     if frame.empty or not kpi.dimension_specs:
         return frame
-    work = frame.copy()
+    work = fold_extract_columns(frame, kpi)
+    if work is frame:
+        work = frame.copy()
     for spec in kpi.dimension_specs:
         src = spec.source or spec.name
-        if src not in work.columns:
+        actual = _frame_column(work, src)
+        if actual is None:
             continue
-        series = work[src]
+        series = work[actual]
         if spec.grain:
             series = pd.to_datetime(series, errors="coerce").dt.to_period(
                 {"day": "D", "month": "M", "quarter": "Q", "year": "Y"}[spec.grain]
@@ -318,7 +370,9 @@ def apply_pandas_facts(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
     """Compute every base measure from retrieved physical columns."""
     if frame.empty:
         return frame
-    work = frame.copy()
+    work = fold_extract_columns(frame, kpi)
+    if work is frame:
+        work = frame.copy()
     for measure in kpi.base_measures:
         work[measure.name] = _base_measure_series(work, measure)
     return work
@@ -327,11 +381,13 @@ def apply_pandas_facts(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
 def _base_measure_series(work: pd.DataFrame, measure: BaseMeasure) -> pd.Series:
     """One row-level series for a base measure (op, expr, sql column, or where)."""
     cols = input_columns(measure)
-    missing = [c for c in cols if c not in work.columns]
+    resolved = [_frame_column(work, c) for c in cols]
+    missing = [c for c, actual in zip(cols, resolved) if actual is None]
     if missing:
         raise CatalogError(
             f"base_measures.{measure.name} needs columns {missing} on the extract."
         )
+    cols = tuple(actual for actual in resolved if actual is not None)
     if measure.row_op is not None and measure.row_op not in PASSTHROUGH_OPS:
         series = apply_row_op(work, cols, measure.row_op, measure.column_params)
     elif measure.expr:
@@ -354,9 +410,10 @@ def _base_measure_series(work: pd.DataFrame, measure: BaseMeasure) -> pd.Series:
 
 def apply_where_mask(frame: pd.DataFrame, spec: MeasureWhere) -> pd.Series:
     """Boolean mask for where.column op values."""
-    if spec.column not in frame.columns:
+    actual = _frame_column(frame, spec.column)
+    if actual is None:
         raise CatalogError(f"where.column {spec.column!r} is not on the extract.")
-    col = frame[spec.column]
+    col = frame[actual]
     op = spec.op.lower()
     if op == "in":
         return col.isin(list(spec.values))
@@ -552,7 +609,7 @@ def pandas_group_keys(kpi: KpiSpec, grain: tuple[str, ...]) -> list[str]:
     rename = {spec.source: spec.name for spec in kpi.dimension_specs if spec.source}
     keys: list[str] = []
     for col in grain:
-        if col == time_col:
+        if time_col is not None and norm_name(col) == norm_name(time_col):
             continue
         keys.append(rename.get(col, col))
     return keys
@@ -569,9 +626,14 @@ def collapse_pandas_detail(
 
     if detail is None or detail.empty:
         return pd.DataFrame()
-    work = apply_dimension_maps(detail, kpi)
+    work = fold_extract_columns(detail, kpi, grain)
+    work = apply_dimension_maps(work, kpi)
     work = apply_pandas_facts(work, kpi)
     time_col = kpi.time.column if kpi.time is not None else None
+    if time_col is not None:
+        actual_time = _frame_column(work, time_col)
+        if actual_time is not None and actual_time != time_col:
+            work = work.rename(columns={actual_time: time_col})
     keys = list(pandas_group_keys(kpi, grain))
     if time_col is not None and time_col in work.columns:
         keys = [time_col, *keys]

@@ -17,7 +17,7 @@ import pytest
 
 from kpi_engine.contracts import Offset, OutputSpec, TimeSpec
 from kpi_engine.core.adapter import adapt
-from kpi_engine.core.binder import load_kpi
+from kpi_engine.core.binder import fold_measure_keys, load_kpi
 from kpi_engine.core.time_planner import (
     claim_month_filter,
     lookback_for,
@@ -172,6 +172,35 @@ def test_claim_month_filter_matches_on_code_or_raw_key(parquet_path):
     assert claimed is not None
     assert claimed.raw_key == "Reporting Month"
     assert [f.code for f in rest] == ["Supplier Name"]
+
+
+def test_yyyymm_previous_year_widens_from_202607(parquet_path, extra_config):
+    """Filter 202607 plus previous_year_value scans Jul 2025 through Jul 2026."""
+    spec = minimal_kpi(9210)
+    spec["time"]["format"] = "yyyymm"
+    spec["measures"]["previous_year_value"] = {
+        "of": "sotif_value",
+        "op": "point",
+        "offset": {"years": 1},
+    }
+    write_yaml(extra_config / "kpis" / "9210.yaml", spec)
+    kpi = load_kpi(9210, extra_config)
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value", "Previous_Year_Value"],
+        month="202607",
+        kpi_id=9210,
+    )
+    assert fold_measure_keys(kpi, adapt(ctx).measure_keys) == (
+        "current_value",
+        "previous_year_value",
+    )
+    plan, _rest = plan_time(adapt(ctx), kpi)
+    assert plan.anchor == date(2026, 7, 1)
+    assert plan.span_start == date(2025, 7, 1)
+    assert plan.span_end_exclusive == date(2026, 8, 1)
+    assert plan.lookback_months == 12
+    assert max_lookback_months(kpi, ("Previous_Year_Value",)) == 12
 
 
 def test_claim_month_filter_returns_none_when_absent(parquet_path):

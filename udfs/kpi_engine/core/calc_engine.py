@@ -45,7 +45,7 @@ from kpi_engine.core.model_sql import NON_ADDITIVE
 from kpi_engine.dates import add_periods, iso_period, period_range_inclusive
 from kpi_engine.exceptions import CatalogError, KPIEngineError
 from kpi_engine.identifiers import norm_name
-from kpi_engine.runlog import log_measure, traced
+from kpi_engine.runlog import log_measure_calc, traced
 
 TREND_CELL_CAP = 50_000
 
@@ -168,6 +168,7 @@ def compute_cuts(
                         combo,
                         group_dims,
                         memo,
+                        cut=cut.name,
                     )
                     continue
                 value = evaluate(
@@ -180,6 +181,7 @@ def compute_cuts(
                     combo=combo,
                     group_dims=group_dims,
                     memo=memo,
+                    cut=cut.name,
                 )
                 if spec.kind == "trend":
                     axis, values = value
@@ -187,11 +189,6 @@ def compute_cuts(
                     row[key] = values
                 else:
                     row[key] = value
-                combo_vals = {
-                    dim: _json_value(combo[dim]) if dim in combo.index else None
-                    for dim in group_dims
-                }
-                log_measure(cut.name, key, spec.kind, combo_vals, row[key])
             cut_rows.append(row)
         _apply_ranks(cut_rows, rank_keys, measures, group_dims)
         rows.extend(cut_rows)
@@ -208,6 +205,7 @@ def evaluate(
     combo: pd.Series | None = None,
     group_dims: list[str] | None = None,
     memo: dict[str, Any] | None = None,
+    cut: str = "",
 ) -> Any:
     """Dispatch one measure op against a single partition's monthly series.
 
@@ -217,7 +215,7 @@ def evaluate(
     if memo is not None and spec.key in memo:
         return memo[spec.key]
     value = _evaluate_uncached(
-        spec, series, kpi, plan, catalog, detail, combo, group_dims, memo
+        spec, series, kpi, plan, catalog, detail, combo, group_dims, memo, cut
     )
     if memo is not None and spec.kind != "trend":
         memo[spec.key] = value
@@ -234,11 +232,17 @@ def _evaluate_uncached(
     combo: pd.Series | None = None,
     group_dims: list[str] | None = None,
     memo: dict[str, Any] | None = None,
+    cut: str = "",
 ) -> Any:
     """Run one measure op. Callers should use evaluate so results are memoized."""
+    combo_vals = _combo_dict(combo, group_dims)
     if spec.kind == "point":
         if kpi.time is None or plan is None:
-            return _point(series, kpi, spec.of, target=None)
+            value = _point(series, kpi, spec.of, target=None)
+            _log_base_calc(
+                spec, cut, combo_vals, value, series, kpi, start=None, end=None
+            )
+            return value
         offset = spec.offset
         target = truncate_period_safe(plan.anchor, kpi)
         if offset:
@@ -255,20 +259,35 @@ def _evaluate_uncached(
             target = truncate_period(apply_offset(plan.anchor, lookback), kpi.time)
         base = _base(kpi, spec.of) if spec.of else None
         if base is not None and base.agg in NON_ADDITIVE:
-            return _agg_detail(detail, kpi, base, group_dims or [], combo, target, target)
-        return _point(series, kpi, spec.of, target)
+            value = _agg_detail(detail, kpi, base, group_dims or [], combo, target, target)
+        else:
+            value = _point(series, kpi, spec.of, target)
+        _log_base_calc(
+            spec, cut, combo_vals, value, series, kpi, start=target, end=target
+        )
+        return value
     if spec.kind == "window":
         if kpi.time is None or plan is None:
             raise CatalogError(f"{spec.key} is a window measure; this KPI has no time column.")
         start, end = _window_bounds(plan.anchor, spec, kpi)
         base = _base(kpi, spec.of)
         if base.agg in NON_ADDITIVE:
-            return _agg_detail(detail, kpi, base, group_dims or [], combo, start, end)
-        return _window(series, kpi, spec, start, end)
+            value = _agg_detail(detail, kpi, base, group_dims or [], combo, start, end)
+        else:
+            value = _window(series, kpi, spec, start, end)
+        _log_base_calc(
+            spec, cut, combo_vals, value, series, kpi, start=start, end=end
+        )
+        return value
     if spec.kind == "trend":
         if kpi.time is None or plan is None:
             raise CatalogError(f"{spec.key} is a trend measure; this KPI has no time column.")
-        return _trend(series, kpi, spec, plan, detail=detail, combo=combo, group_dims=group_dims)
+        value = _trend(series, kpi, spec, plan, detail=detail, combo=combo, group_dims=group_dims)
+        start, end = _window_bounds(plan.anchor, spec, kpi)
+        _log_base_calc(
+            spec, cut, combo_vals, value[1], series, kpi, start=start, end=end
+        )
+        return value
     if spec.kind in {"arithmetic", "fn", "expr"}:
         if spec.kind == "fn":
             names = list(spec.inputs)
@@ -290,6 +309,7 @@ def _evaluate_uncached(
                 combo,
                 group_dims,
                 memo=memo,
+                cut=cut,
             )
             for n in names
         ]
@@ -297,14 +317,40 @@ def _evaluate_uncached(
             from kpi_engine.identifiers import parse_expression
 
             keys = list(spec.input_params) if spec.input_params else names
-            return eval_expr_scalar(
+            result = eval_expr_scalar(
                 parse_expression(spec.expr or "", what=f"measures.{spec.key}.expr"),
                 dict(zip(keys, values)),
             )
-        if spec.kind == "fn":
-            return call_measure_fn(spec.fn or "", values, spec.input_params)
-        return call_measure_fn(spec.fn or "divide", values)
+            log_measure_calc(
+                cut=cut,
+                key=spec.key,
+                op=spec.kind,
+                combo=combo_vals,
+                result=result,
+                expr=spec.expr,
+                inputs=dict(zip(keys, values)),
+            )
+            return result
+        result = call_measure_fn(
+            spec.fn or ("divide" if spec.kind == "arithmetic" else ""),
+            values,
+            spec.input_params if spec.kind == "fn" else (),
+        )
+        keys = list(spec.input_params) if spec.kind == "fn" and spec.input_params else names
+        log_measure_calc(
+            cut=cut,
+            key=spec.key,
+            op=spec.kind,
+            combo=combo_vals,
+            result=result,
+            fn=spec.fn or ("divide" if spec.kind == "arithmetic" else None),
+            inputs=dict(zip(keys, values)),
+        )
+        return result
     if spec.kind == "constant":
+        log_measure_calc(
+            cut=cut, key=spec.key, op="constant", combo=combo_vals, result=spec.constant
+        )
         return spec.constant
     if spec.kind == "hook":
         from kpi_engine.extensions.hooks import run
@@ -312,7 +358,11 @@ def _evaluate_uncached(
         name = spec.hook or spec.fn
         if not name:
             raise CatalogError(f"measures.{spec.key} op=hook requires `hook:`.")
-        return run(name, series, kpi=kpi, plan=plan, spec=spec)
+        value = run(name, series, kpi=kpi, plan=plan, spec=spec)
+        log_measure_calc(
+            cut=cut, key=spec.key, op="hook", combo=combo_vals, result=value, hook=name
+        )
+        return value
     if spec.kind == "rank":
         raise CatalogError(f"{spec.key} op=rank is assigned after every combo on the cut.")
     raise CatalogError(f"Cannot evaluate {spec.key} kind={spec.kind}.")
@@ -414,6 +464,85 @@ def _combo_series(
     return work.sort_values(time_col) if time_col in work.columns else work
 
 
+def _combo_dict(combo: pd.Series | None, group_dims: list[str] | None) -> dict[str, Any]:
+    """Dimension values for the combo being calculated."""
+    if combo is None or not group_dims:
+        return {}
+    return {
+        dim: _json_value(combo[dim]) if dim in combo.index else None for dim in group_dims
+    }
+
+
+def _log_base_calc(
+    spec: OutputSpec,
+    cut: str,
+    combo: dict[str, Any],
+    result: Any,
+    series: pd.DataFrame,
+    kpi: KpiSpec,
+    *,
+    start: date | None,
+    end: date | None,
+) -> None:
+    """Log a point/window/trend: which base column, which periods, which values."""
+    base = None
+    if spec.of:
+        try:
+            base = _base(kpi, spec.of)
+        except CatalogError:
+            base = None
+    used = _used_points(series, kpi, base, start, end) if base is not None else []
+    log_measure_calc(
+        cut=cut,
+        key=spec.key,
+        op=spec.kind,
+        combo=combo,
+        result=result,
+        of=spec.of,
+        column=base.name if base is not None else None,
+        source=base.sql if base is not None else None,
+        agg=base.agg if base is not None else None,
+        period=start if start is not None and start == end else None,
+        window_start=start if start is not None and start != end else None,
+        window_end=end if start is not None and start != end else None,
+        used=used,
+    )
+
+
+def _used_points(
+    series: pd.DataFrame,
+    kpi: KpiSpec,
+    base,
+    start: date | None,
+    end: date | None,
+) -> list[dict[str, Any]]:
+    """Period/value pairs read from the monthly series for this calculation."""
+    if series is None or series.empty or base is None:
+        return []
+    work = series
+    if kpi.time is not None and kpi.time.column in work.columns and start is not None and end is not None:
+        ts = pd.to_datetime(work[kpi.time.column])
+        work = work[(ts >= pd.Timestamp(start)) & (ts <= pd.Timestamp(end))]
+    out: list[dict[str, Any]] = []
+    time_col = kpi.time.column if kpi.time is not None else None
+    has_col = base.name in work.columns or f"{base.name}__sum" in work.columns
+    if not has_col:
+        return []
+    for _, row in work.iterrows():
+        period = None
+        if time_col and time_col in row.index and not pd.isna(row[time_col]):
+            period = iso_period(pd.to_datetime(row[time_col]).date(), kpi.time)
+        out.append(
+            {
+                "period": period,
+                "column": base.name,
+                "value": _value_from_row(row, base),
+                "observed": bool(row.get("_observed", True)),
+            }
+        )
+    return out
+
+
 def _point(
     series: pd.DataFrame, kpi: KpiSpec, measure: str | None, target: date | None
 ) -> float | None:
@@ -441,6 +570,8 @@ def _value_from_row(row: pd.Series, base) -> float | None:
         if pd.isna(total) or pd.isna(count) or count == 0:
             return None
         return _num(total / count)
+    if base.name not in row.index:
+        return None
     value = row[base.name]
     if pd.isna(value):
         return None
@@ -621,6 +752,7 @@ def _rank_source(
     combo: pd.Series | None,
     group_dims: list[str],
     memo: dict[str, Any],
+    cut: str = "",
 ) -> Any:
     """Anchor value that this rank will order: another measure, or a base point."""
     of = spec.of
@@ -635,6 +767,7 @@ def _rank_source(
             combo=combo,
             group_dims=group_dims,
             memo=memo,
+            cut=cut,
         )
     return evaluate(
         OutputSpec(key=of or spec.key, kind="point", of=of),
@@ -646,6 +779,7 @@ def _rank_source(
         combo=combo,
         group_dims=group_dims,
         memo=memo,
+        cut=cut,
     )
 
 
@@ -670,15 +804,17 @@ def _apply_ranks(
         for indexes in partitions.values():
             values = [cut_rows[i].get(src) for i in indexes]
             ranks = _sql_rank(values, descending=descending)
-            for i, rank in zip(indexes, ranks):
+            for i, rank, source in zip(indexes, ranks, values):
                 cut_rows[i][key] = rank
                 cut_rows[i].pop(src, None)
-                log_measure(
-                    cut_rows[i].get("output_cut") or "",
-                    key,
-                    "rank",
-                    {dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
-                    rank,
+                log_measure_calc(
+                    cut=cut_rows[i].get("output_cut") or "",
+                    key=key,
+                    op="rank",
+                    combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+                    result=rank,
+                    of=spec.of,
+                    inputs={spec.of or src: source},
                 )
 
 

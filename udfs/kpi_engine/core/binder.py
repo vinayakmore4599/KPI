@@ -2,7 +2,8 @@
 
 What this file provides
     default_config_dir, load_kpi, load_model, bind_datasets, assert_measure_keys,
-    resolve_requested_graph, same_model_id. Parsers for cuts, measures, models.
+    fold_measure_keys, resolve_requested_graph, same_model_id. Parsers for cuts,
+    measures, models.
 
 Where it is used
     orchestrator after adapt(). Tests load KPI 3004 via load_kpi.
@@ -51,6 +52,7 @@ from kpi_engine.identifiers import (
     compile_sql_expr,
     expression_columns,
     is_simple_ident,
+    match_name,
     norm_name,
     parse_expression,
     require_ident,
@@ -156,11 +158,21 @@ def _path_defaults(model: ModelSpec) -> dict[str, tuple[str, str]]:
     return out
 
 
+def fold_measure_keys(kpi: KpiSpec, requested: tuple[str, ...]) -> tuple[str, ...]:
+    """Map host measure_key spellings onto KPI YAML keys (Previous_Year_Value)."""
+    known = [m.key for m in kpi.measures]
+    out: list[str] = []
+    for key in requested:
+        out.append(match_name(key, known) or key)
+    return tuple(dict.fromkeys(out))
+
+
 @traced
 def assert_measure_keys(kpi: KpiSpec, requested: tuple[str, ...]) -> None:
     """Fail if the context asked for a measure_key not declared in KPI YAML."""
+    folded = fold_measure_keys(kpi, requested)
     known = {m.key for m in kpi.measures}
-    unknown = [k for k in requested if k not in known]
+    unknown = [k for k in folded if k not in known]
     if unknown:
         raise BindError(
             f"Unknown measure_key(s) {unknown}. Valid keys: {sorted(known)}."
@@ -177,7 +189,7 @@ def resolve_requested_graph(
     An empty measures_required list computes nothing — it does not expand to
     every key in the KPI YAML.
     """
-    emit = tuple(dict.fromkeys(requested))
+    emit = tuple(dict.fromkeys(fold_measure_keys(kpi, requested)))
     by_key = {m.key: m for m in kpi.measures}
     by_base = {b.name: b for b in kpi.base_measures}
     needed: set[str] = set()

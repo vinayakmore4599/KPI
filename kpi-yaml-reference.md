@@ -62,7 +62,9 @@ measures:                    # every measure_key the UI can send
 | One period's value | `op: point` |
 | Trailing / leading / YTD window | `op: window` (`range: trailing` / `leading` / `cumulative`) |
 | An array for a graph | `op: trend` |
-| YoY, ratio, share, n-ary add/sub | `op: arithmetic` |
+| YoY, ratio, same-row share, n-ary add/sub | `op: arithmetic` |
+| Share of **all groups on this cut** | `op: percent_of_total` (see §5.3c) |
+| Rank of groups on a cut | `op: rank` |
 | A formula over retrieved columns | `expr:` on a base measure (see §4) |
 | A formula over other measures | `op: expr` (see §5.6) |
 | A named function over other measures' values | `op: fn` + `inputs:` (see §5.5) |
@@ -101,7 +103,7 @@ The practical consequences:
 | `fiscal_start_month` | 1–12 | `4` | First month of the fiscal year |
 | `format` | `yyyy-mm-dd`, `yyyy-mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, or a strptime string | ISO `YYYY-MM` / `YYYY-MM-DD` | How the physical column and the context time filter are stored (`062026` → `format: mmyyyy`) |
 
-Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Snapshot KPIs may only use `point` (no offset), `dimension`, `arithmetic`, and `hook` without lookback. Windows, trends, and period offsets require `time:`.
+Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Snapshot KPIs may only use `point` (no offset), `dimension`, `arithmetic`, `rank`, `percent_of_total`, and `hook` without lookback. Windows, trends, and period offsets require `time:`.
 
 Rules the engine enforces:
 
@@ -327,7 +329,7 @@ trend_12m:
 - Trends are emitted **only on the default cut** unless `cuts:` lists more. This is deliberate — a trend on a high-cardinality cut multiplies the payload.
 - Guardrail: rows × array length may not exceed **50,000 cells** per cut, otherwise the request fails and asks you to narrow `cuts`.
 
-`cuts:` is honoured for **trend** and **rank**. On other ops it is ignored.
+`cuts:` is honoured for **trend**, **rank**, and **percent_of_total**. On other ops it is ignored.
 
 ### 5.3a `constant` — a literal number
 
@@ -345,12 +347,40 @@ The same scalar on every cut combo. Use it as `left` / `right` / `inputs` / `exp
 reason_code_rank:
   op: rank
   of: current_value          # or a base measure (anchor point)
-  group_by: [reason_code]    # Reason_Code matches reason_code
+  partition_by: [reason_code]  # optional; group_by: is an alias
   order: desc                # desc (default) or asc
   cuts: [G]
 ```
 
-Pandas `RANK()` after the cut (ties share a rank; the next rank skips). Rank is across the whole cut when `group_by` is omitted or equals that cut's keys. A **subset** of the cut keys restarts the rank inside each group. Null sources stay null. Defaults to `default_cut` unless `cuts:` lists more.
+Pandas `RANK()` after the cut (ties share a rank; the next rank skips). Rank is across the whole cut when `partition_by` is omitted or equals that cut's keys. A **subset** of the cut keys restarts the rank inside each group. Null sources stay null. Defaults to `default_cut` unless `cuts:` lists more.
+
+### 5.3c `percent_of_total` — share of groups on a cut
+
+```yaml
+percent_gt:
+  op: percent_of_total
+  of: current_value          # or a base measure (anchor point)
+  cuts: [R]
+```
+
+This is `value * 100 / SUM(value) OVER ()` on the **emitted cut rows** (after extract and cut filters). It is **not** `fn: percent`, which only sees the current row.
+
+| YAML | Job |
+|---|---|
+| `cuts[].group_by` | Which rows exist (`GROUP BY reason_code, site_category`) |
+| `op: percent_of_total` | Share of those rows × 100 |
+| `partition_by` | Optional `OVER (PARTITION BY …)`. Omit for the whole cut. |
+| `measures.*.cuts` | Emit this column on these cuts (default: `default_cut` only) |
+
+```yaml
+percent_within_site:
+  op: percent_of_total
+  of: current_value
+  partition_by: [site_category]
+  cuts: [R]
+```
+
+Null source → null. Zero or null total → null (never `inf`). Scale is 0–100. Same two-phase pass as `rank`; cannot be `left` / `inputs` / `expr` of another measure in the same request. `group_by:` is accepted as an alias for `partition_by`.
 
 ### 5.4 `arithmetic` — combine measures
 
@@ -857,7 +887,9 @@ pytest -q
 | `Unknown agg '<x>'` | Aggregation not in §4 | Pick a built-in or add one to the engine |
 | `agg=percentile requires percentile:` | Missing quantile | Add `percentile: 90` |
 | `default_cut '<x>' is not a declared cut` | Typo in `default_cut` or `also_emit` | Match a `cuts[].name` |
-| `Trend '<k>' … would emit N cells (cap 50000)` | Trend on a high-cardinality cut | Narrow `measures.<k>.cuts` |
+| `Unknown op/kind 'percent_of_cut_total'` | That name is not an op | Use `op: percent_of_total` |
+| `measures.<k> op=percent_of_total requires of:` | Missing source | Point at a measure or base_measure |
+| `partition_by '…' is not a cut group_by` | Window key is not a dimension | Use a name from `dimensions` / `cuts[].group_by` |
 | `Base measures span multiple models; declare model_relations` | Two models, no join declared | Add `model_relations` (§8) |
 | `measures.<k> names unknown hook '<x>'` | Hook not registered | `register("<x>", fn)` at startup |
 | `Filter '<x>' is hierarchical (input_text=heir)` | Hierarchy not expanded | Fix in the context builder |
@@ -872,7 +904,9 @@ Known boundaries, so you do not design around something that is not there:
 - Timestamps are bucketed as stored; there is no timezone conversion, and `time.timezone` is rejected at bind rather than silently ignored. Convert the column in a `kind: sql` model if you need it.
 - `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months.
 - `trailing` counts grain periods; the unit key is an alias, not a converter (§5.2).
-- `measures.*.cuts` restricts trends only.
+- `measures.*.cuts` restricts **trend**, **rank**, and **percent_of_total**.
+- `percent_of_total` windows **this cut's** rows only. Share of a different cut's total is a different problem (`ignore_filters` / `also_emit`, or a later op).
+- `rank` and `percent_of_total` cannot feed `arithmetic` / `fn` / `expr` in the same request.
 - Physical joins support `inner`, `left` and `right`. Anything else belongs in a `kind: sql` model.
 - `base_measures.sql` is a column name. Expressions belong in the model.
 - KPI YAML cannot reference another KPI's measures.

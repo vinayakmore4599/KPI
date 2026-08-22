@@ -29,7 +29,8 @@ AggName = Literal[
     "sum", "avg", "count", "count_distinct", "min", "max", "median", "percentile", "first", "last"
 ]
 OpName = Literal[
-    "point", "window", "arithmetic", "trend", "dimension", "hook", "fn", "expr", "constant", "rank"
+    "point", "window", "arithmetic", "trend", "dimension", "hook", "fn", "expr",
+    "constant", "rank", "percent_of_total",
 ]
 GrainName = Literal["day", "month", "quarter", "year"]
 # Open set: any name registered in catalog.ops_impl.COLUMN_FNS.
@@ -180,7 +181,7 @@ class Offset:
 
 @dataclass(frozen=True)
 class OutputSpec:
-    """One requestable measure (point, window, trend, arithmetic, fn, expr, hook, constant, rank, or dimension)."""
+    """One requestable measure (point, window, trend, arithmetic, fn, expr, hook, constant, rank, percent_of_total, or dimension)."""
 
     key: str
     kind: OpName

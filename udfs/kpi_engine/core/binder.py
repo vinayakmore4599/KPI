@@ -189,7 +189,7 @@ def resolve_requested_graph(
 ) -> tuple[tuple[str, ...], tuple[BaseMeasure, ...]]:
     """Requested keys (no catalog fallback) and the base_measures that graph needs.
 
-    Walks arithmetic / fn / expr / rank `of` and each measure's `of:` base.
+    Walks arithmetic / fn / expr / rank / percent_of_total `of` and each measure's `of:` base.
     An empty measures_required list computes nothing — it does not expand to
     every key in the KPI YAML.
     """
@@ -259,6 +259,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     if not measures:
         raise BindError("measures cannot be empty.")
     _assert_measure_graph(measures, tuple(b.name for b in bases), dimensions)
+    _assert_partition_keys(measures, cuts, dimensions)
 
     filter_map = {
         str(k): require_ident(str(v), what="filter_map column")
@@ -511,7 +512,7 @@ def measure_dependencies(spec: OutputSpec) -> tuple[str, ...]:
         if spec.operands:
             return spec.operands
         return tuple(n for n in (spec.left, spec.right) if n)
-    if spec.kind == "rank" and spec.of:
+    if spec.kind in {"rank", "percent_of_total"} and spec.of:
         return (spec.of,)
     return ()
 
@@ -530,15 +531,19 @@ def _assert_measure_graph(
                 f"measures.{spec.key} op={spec.kind} requires `of:` naming the base "
                 f"measure it aggregates. Declared base_measures: {sorted(known_bases)}."
             )
-        if spec.kind == "rank" and not spec.of:
-            raise BindError(f"measures.{spec.key} op=rank requires `of:`.")
+        if spec.kind in {"rank", "percent_of_total"} and not spec.of:
+            raise BindError(
+                f"measures.{spec.key} op={spec.kind} requires `of:` naming a measure "
+                f"or base_measure. Declared measures: {sorted(by_key)}; "
+                f"base_measures: {sorted(known_bases)}."
+            )
         if spec.kind in {"point", "window", "trend", "hook"} and spec.of:
             if spec.of not in known_bases:
                 raise BindError(
                     f"measures.{spec.key} of={spec.of!r} is not a base measure. "
                     f"Declared base_measures: {sorted(known_bases)}."
                 )
-        if spec.kind == "rank" and spec.of:
+        if spec.kind in {"rank", "percent_of_total"} and spec.of:
             if spec.of not in by_key and spec.of not in known_bases:
                 raise BindError(
                     f"measures.{spec.key} of={spec.of!r} is not a measure or base "
@@ -552,8 +557,18 @@ def _assert_measure_graph(
             )
         for name in measure_dependencies(spec):
             if name in by_key:
+                dep = by_key[name]
+                if dep.kind in {"rank", "percent_of_total"} and spec.kind not in {
+                    "rank",
+                    "percent_of_total",
+                }:
+                    raise BindError(
+                        f"measures.{spec.key} cannot use {name!r} (op={dep.kind}) as an "
+                        "input. Rank and percent_of_total are assigned after every row "
+                        "on the cut."
+                    )
                 continue
-            if spec.kind == "rank" and name in known_bases:
+            if spec.kind in {"rank", "percent_of_total"} and name in known_bases:
                 continue
             raise BindError(
                 f"measures.{spec.key} references unknown measure {name!r}. "
@@ -584,6 +599,29 @@ def _assert_measure_graph(
         walk(spec.key, [])
 
 
+def _assert_partition_keys(
+    measures: tuple[OutputSpec, ...],
+    cuts: tuple[CutSpec, ...],
+    dimensions: tuple[str, ...],
+) -> None:
+    """Fail when rank / percent_of_total partition_by is not a cut or dimension name."""
+    allowed = {norm_name(name): name for name in dimensions}
+    for cut in cuts:
+        for name in cut.group_by:
+            allowed.setdefault(norm_name(name), name)
+    valid = sorted(allowed.values())
+    for spec in measures:
+        if spec.kind not in {"rank", "percent_of_total"}:
+            continue
+        for name in spec.rank_group_by:
+            if norm_name(name) in allowed:
+                continue
+            raise BindError(
+                f"measures.{spec.key} partition_by {name!r} is not a cut group_by "
+                f"or dimension. Valid: {valid}."
+            )
+
+
 def _assert_snapshot_measures(measures: tuple[OutputSpec, ...]) -> None:
     """Window/trend/offset ops need a time column; snapshot KPIs cannot declare them."""
     bad: list[str] = []
@@ -600,7 +638,8 @@ def _assert_snapshot_measures(measures: tuple[OutputSpec, ...]) -> None:
         raise BindError(
             "This KPI has no time: block, so measures cannot use windows, trends, "
             f"or period offsets ({', '.join(bad)}). Add time.column / time.filter_code, "
-            "or keep only current-period point / dimension / arithmetic measures."
+            "or keep only current-period point / dimension / arithmetic / "
+            "percent_of_total measures."
         )
 
 
@@ -662,8 +701,12 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
         "expr",
         "constant",
         "rank",
+        "percent_of_total",
     }:
-        raise BindError(f"measures.{key} has unknown op/kind {kind!r}.")
+        hint = ""
+        if kind in {"percent_of_cut_total", "percent_gt", "share_of_total"}:
+            hint = " For share of all groups on a cut, use op: percent_of_total."
+        raise BindError(f"measures.{key} has unknown op/kind {kind!r}.{hint}")
     if raw.get("fn") is not None and kind in {
         "point",
         "window",
@@ -672,6 +715,7 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
         "expr",
         "constant",
         "rank",
+        "percent_of_total",
     }:
         raise BindError(
             f"measures.{key} op={kind} ignores `fn:`. "
@@ -804,10 +848,9 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
         if order not in {"asc", "desc"}:
             raise BindError(f"measures.{key} op=rank order must be asc or desc.")
         rank_order = order
-        raw_group = raw.get("group_by") or []
-        if not isinstance(raw_group, (list, tuple)):
-            raise BindError(f"measures.{key} op=rank group_by must be a list.")
-        rank_group_by = tuple(require_ident(str(c), what="rank group_by") for c in raw_group)
+        rank_group_by = _parse_partition_by(key, kind, raw)
+    if kind == "percent_of_total":
+        rank_group_by = _parse_partition_by(key, kind, raw)
     return OutputSpec(
         key=str(key),
         kind=kind,
@@ -830,6 +873,19 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
         rank_order=rank_order,
         rank_group_by=rank_group_by,
     )
+
+
+def _parse_partition_by(key: str, kind: str, raw: dict[str, Any]) -> tuple[str, ...]:
+    """Read partition_by: (preferred) or group_by: (rank alias) as dimension names."""
+    if raw.get("partition_by") is not None:
+        raw_group = raw.get("partition_by")
+        what = "partition_by"
+    else:
+        raw_group = raw.get("group_by") or []
+        what = "group_by"
+    if not isinstance(raw_group, (list, tuple)):
+        raise BindError(f"measures.{key} op={kind} {what} must be a list.")
+    return tuple(require_ident(str(c), what=f"{kind} {what}") for c in raw_group)
 
 
 def _parse_fn_inputs(key: str, raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:

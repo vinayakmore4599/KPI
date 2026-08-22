@@ -139,7 +139,7 @@ def lookback_for(
         return 0
     if output.kind in {"dimension", "constant"}:
         return 0
-    if output.kind == "rank":
+    if output.kind in {"rank", "percent_of_total"}:
         if output.of and output.of in by_key:
             return lookback_for(
                 by_key[output.of], by_key, time, anchor=anchor, seen=seen | {output.key}

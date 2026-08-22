@@ -14,8 +14,9 @@ Capabilities
     - Window: trailing N months (inclusive by default) using declared agg.
     - Trend: fixed-length array + shared axis in metadata (graphs).
     - Arithmetic / fn / expr: compose other measures; /0 and /null → null.
+    - Rank / percent_of_total: cut-wide post-pass after every combo is evaluated.
     - Hook: allowlisted function from extensions.hooks.REGISTRY.
-    - Trends default to default_cut only unless measures.*.cuts lists more.
+    - Trends, rank, and percent_of_total default to default_cut unless measures.*.cuts lists more.
     - row_set: span_union keeps combos seen anywhere in the span; anchor_only
       keeps only combos observed at the selected period.
 
@@ -136,6 +137,12 @@ def compute_cuts(
             for k in need
             if measures[k].kind == "rank" and _cut_limited_applies(measures[k], cut, kpi)
         ]
+        share_keys = [
+            k
+            for k in need
+            if measures[k].kind == "percent_of_total"
+            and _cut_limited_applies(measures[k], cut, kpi)
+        ]
         _guard_trend_payload(len(combo_frame), trend_keys, measures, cut)
 
         cut_rows: list[dict[str, Any]] = []
@@ -155,10 +162,12 @@ def compute_cuts(
                     row[key] = row.get(key)
             for key in need:
                 spec = measures[key]
-                if spec.kind in {"trend", "rank"} and not _cut_limited_applies(spec, cut, kpi):
+                if spec.kind in {"trend", "rank", "percent_of_total"} and not _cut_limited_applies(
+                    spec, cut, kpi
+                ):
                     continue
-                if spec.kind == "rank":
-                    row[f"__rank_src_{key}"] = _rank_source(
+                if spec.kind in {"rank", "percent_of_total"}:
+                    row[f"__cut_src_{key}"] = _rank_source(
                         spec,
                         series,
                         kpi,
@@ -190,6 +199,7 @@ def compute_cuts(
                 else:
                     row[key] = value
             cut_rows.append(row)
+        _apply_percent_of_total(cut_rows, share_keys, measures, group_dims)
         _apply_ranks(cut_rows, rank_keys, measures, group_dims)
         rows.extend(cut_rows)
     return rows, trend_axes
@@ -365,6 +375,10 @@ def _evaluate_uncached(
         return value
     if spec.kind == "rank":
         raise CatalogError(f"{spec.key} op=rank is assigned after every combo on the cut.")
+    if spec.kind == "percent_of_total":
+        raise CatalogError(
+            f"{spec.key} op=percent_of_total is assigned after every combo on the cut."
+        )
     raise CatalogError(f"Cannot evaluate {spec.key} kind={spec.kind}.")
 
 
@@ -737,7 +751,7 @@ def _trend_applies(spec: OutputSpec, cut: CutSpec, kpi: KpiSpec) -> bool:
 
 
 def _cut_limited_applies(spec: OutputSpec, cut: CutSpec, kpi: KpiSpec) -> bool:
-    """Trend and rank default to default_cut unless measures.*.cuts lists more."""
+    """Trend, rank, and percent_of_total default to default_cut unless measures.*.cuts lists more."""
     allowed = spec.cuts if spec.cuts is not None else (kpi.default_cut,)
     return cut.name in allowed
 
@@ -792,7 +806,7 @@ def _apply_ranks(
     """Write SQL RANK() values onto cut rows (ties share a rank; next rank skips)."""
     for key in rank_keys:
         spec = measures[key]
-        src = f"__rank_src_{key}"
+        src = f"__cut_src_{key}"
         descending = (spec.rank_order or "desc") == "desc"
         partition_keys = spec.rank_group_by
         if {norm_name(n) for n in partition_keys} == {norm_name(n) for n in cut_dims}:
@@ -816,6 +830,57 @@ def _apply_ranks(
                     of=spec.of,
                     inputs={spec.of or src: source},
                 )
+
+
+def _apply_percent_of_total(
+    cut_rows: list[dict[str, Any]],
+    share_keys: list[str],
+    measures: dict[str, OutputSpec],
+    cut_dims: list[str],
+) -> None:
+    """Write source * 100 / SUM(source) OVER (partition) onto each cut row."""
+    for key in share_keys:
+        spec = measures[key]
+        src = f"__cut_src_{key}"
+        partition_keys = spec.rank_group_by
+        if {norm_name(n) for n in partition_keys} == {norm_name(n) for n in cut_dims}:
+            partition_keys = ()
+        partitions: dict[tuple[Any, ...], list[int]] = {}
+        for i, row in enumerate(cut_rows):
+            part = _rank_partition(row, partition_keys)
+            partitions.setdefault(part, []).append(i)
+        for indexes in partitions.values():
+            values = [_numeric_or_none(cut_rows[i].get(src)) for i in indexes]
+            total = sum(v for v in values if v is not None)
+            for i, source in zip(indexes, values):
+                if source is None or total == 0:
+                    share = None
+                else:
+                    share = float(source) * 100.0 / float(total)
+                cut_rows[i][key] = share
+                cut_rows[i].pop(src, None)
+                log_measure_calc(
+                    cut=cut_rows[i].get("output_cut") or "",
+                    key=key,
+                    op="percent_of_total",
+                    combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+                    result=share,
+                    of=spec.of,
+                    inputs={spec.of or src: source, "total": total},
+                )
+
+
+def _numeric_or_none(value: Any) -> float | None:
+    """Coerce a stashed source to float; null/NaN stay None so they skip the total."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(number):
+        return None
+    return number
 
 
 def _rank_partition(row: dict[str, Any], group_by: tuple[str, ...]) -> tuple[Any, ...]:

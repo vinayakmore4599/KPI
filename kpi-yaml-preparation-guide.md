@@ -53,7 +53,10 @@ Work down this list and stop at the first row that fits.
 | One period’s value (current, last year, last quarter) | `measures` + `op: point` | A window of length 1 unless you really want window null/zero rules |
 | Trailing / leading / YTD total or avg | `op: window` | Summing several `point` measures by hand |
 | A graph series | `op: trend` | Returning many `point` keys |
-| YoY, ratio, share, add/sub of **measures** | `op: arithmetic` or `op: fn` | Repeating the same formula on `base_measures` |
+| YoY, ratio, share, add/sub of **measures on the same row** | `op: arithmetic` or `op: fn` | Repeating the same formula on `base_measures` |
+| This combo vs **all groups on this cut** (`SUM() OVER ()`) | `op: percent_of_total` | `fn: percent` (that only sees this row) |
+| Share **within** a parent dimension | `op: percent_of_total` + `partition_by:` | A second `group_by` on the measure (that is the cut) |
+| Rank reasons / regions | `op: rank` (same shape as `percent_of_total`) | Sorting in the host after the fact if you need engine ranks |
 | Nested formula over **other measures** | `op: expr` | `base_measures.expr` (that is per-row, then aggregated) |
 | A fixed target / goal | `op: constant` | Hard-coding the number in every `expr` |
 | Rank reasons / regions | `op: rank` | Sorting in the host after the fact if you need engine ranks |
@@ -182,7 +185,7 @@ Rules:
 - The time filter must carry **exactly one** value. Two values is not a range.
 - A missing time filter on a time-based KPI is an error. The engine never defaults to “latest” or `business_date`.
 - `time.timezone` is rejected. Convert in a `kind: sql` model if needed.
-- Omit the whole `time:` block for a snapshot KPI. Then only `point` (no offset), `dimension`, `arithmetic`, `fn`, `expr`, `constant`, `rank`, and hooks **without** lookback are allowed.
+- Omit the whole `time:` block for a snapshot KPI. Then only `point` (no offset), `dimension`, `arithmetic`, `fn`, `expr`, `constant`, `rank`, `percent_of_total`, and hooks **without** lookback are allowed.
 
 ---
 
@@ -341,6 +344,7 @@ Every host `measure_key` must be a key here. `op:` and `kind:` are the same fiel
 | `expr` | `expr:` | scalar | Nested `+ - * /` over measures |
 | `constant` | `value:` | scalar | Target / goal |
 | `rank` | `of:` measure or base | scalar | Rank within a cut |
+| `percent_of_total` | `of:` measure or base | scalar | This row / sum of rows on the cut × 100 |
 | `dimension` | key ∈ `dimensions:` | attribute | Host sent a dim as a measure |
 | `hook` | `hook:` + usually `of:` | scalar | Last-resort custom series math |
 
@@ -406,7 +410,7 @@ trend_12m:
 
 Fixed-length array; shared x-axis in `trend_axes`. Empty `sum`/`count` slots are `0`; others `null`. Cap: **50,000 cells** (rows × length) per cut.
 
-`cuts:` is honoured for **trend** and **rank** only.
+`cuts:` is honoured for **trend**, **rank**, and **percent_of_total** only.
 
 ### 8.4 `arithmetic` — built-in measure functions
 
@@ -462,7 +466,7 @@ agg_ratio:
 
 Same `+ - * / ( )` grammar. Identifiers are **measure keys**. Zero or null denominator → null.
 
-### 8.7 `constant` / `rank` / `dimension`
+### 8.7 `constant` / `rank` / `percent_of_total` / `dimension`
 
 ```yaml
 target:
@@ -472,15 +476,38 @@ target:
 reason_code_rank:
   op: rank
   of: current_value          # or a base measure (treated as anchor point)
-  group_by: [reason_code]
+  partition_by: [reason_code]  # optional; omit = whole cut. group_by: still works
   order: desc                # desc (default) | asc
   cuts: [G]
+
+percent_gt:
+  op: percent_of_total
+  of: current_value          # or a base measure
+  cuts: [R]                  # grain is the cut's group_by, not a second GROUP BY
+
+percent_within_site:
+  op: percent_of_total
+  of: current_value
+  partition_by: [site_category]  # SUM() OVER (PARTITION BY site_category)
+  cuts: [R]
 
 reason_code:
   kind: dimension            # key must match dimensions:
 ```
 
-Rank uses Pandas `RANK()` (ties share; next rank skips). Null sources stay null.
+**Cut `group_by` vs measure `partition_by`:** the cut decides which rows exist. `partition_by` only splits the window (`OVER ()` vs `OVER (PARTITION BY …)`). It does not add or drop rows. Omit `partition_by` for the stored-procedure `percent_gt` (share of every group on the cut).
+
+Rank uses Pandas `RANK()` (ties share; next rank skips). Null sources stay null. `percent_of_total` is `value * 100 / SUM(value)` on those rows; zero or null total → null. Neither can be `left` / `inputs` / `expr` of another measure in the same request.
+
+Same YAML shape for every cut-wide op:
+
+```yaml
+<measure_key>:
+  op: percent_of_total   # or rank
+  of: <point or window measure>
+  partition_by: []       # optional; omit = whole cut
+  cuts: [R]              # optional; default = default_cut
+```
 
 ---
 
@@ -695,7 +722,7 @@ Design around these; they are intentional.
 
 **Cuts and payload**
 
-- `measures.*.cuts` restricts **trend** and **rank** only; other ops ignore it.
+- `measures.*.cuts` restricts **trend**, **rank**, and **percent_of_total** only; other ops ignore it.
 - Trends default to `default_cut` only (high-cardinality trends explode the payload).
 - Trend cells capped at 50,000 per cut.
 - Physical joins: `inner`, `left`, `right` only.
@@ -749,6 +776,9 @@ Use local parquet fixtures (`tests/conftest.py`: `make_context`, `write_yaml`). 
 | `Filter '…' has no column mapping` | Add context mapping or `filter_map` |
 | `Illegal measure sql` / function calls not allowed | Use column names and `+ - * /` only; put `SUM` in `agg:` |
 | `unknown op` / `unknown fn` | Use a name from §7.3 / §8.4, or register one |
+| `op: percent_of_cut_total` | Use `op: percent_of_total` |
+| `percent_of_total requires of:` | Point `of:` at a measure or base |
+| `partition_by '…' is not a cut group_by` | Use a dimension / cut grouping name |
 | `uses expr: and cannot also set columns/op/sql` | Pick one style per base measure |
 | `Base measures span multiple models` | Add `model_relations` |
 | `dependency cycle` | Break the `fn` / `expr` / `arithmetic` loop |
@@ -826,3 +856,20 @@ measures:
 ```
 
 `suppliers_12m` is distinct across the whole year, not the sum of twelve monthly counts.
+
+### Share of all groups on a cut (`percent_gt`)
+
+```yaml
+cuts:
+  - name: R
+    group_by: [reason_code, site_category]
+default_cut: R
+measures:
+  current_value: { of: numerator, op: point, offset: { months: 0 } }
+  percent_gt:
+    op: percent_of_total
+    of: current_value
+    cuts: [R]
+```
+
+Grain is the cut. Omit `partition_by` so each row is `current_value / SUM(current_value on R) * 100`. Use `fn: percent` only when both operands are on the **same row**.

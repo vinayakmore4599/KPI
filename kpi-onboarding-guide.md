@@ -189,7 +189,7 @@ sql: |
 
 | Change | Do not change |
 |---|---|
-| New keys under `measures:` (`op: window/point/trend/arithmetic`) | Python |
+| New keys under `measures:` (`op: window/point/trend/arithmetic/rank/percent_of_total`) | Python |
 | `cuts:` / `measures.*.cuts` for which grains get a trend | Catalog kinds list unless you invent a new `op` |
 
 Example — 9 month trailing sum:

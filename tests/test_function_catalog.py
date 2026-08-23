@@ -18,9 +18,9 @@ import pytest
 from kpi_engine import compute
 from kpi_engine.core.binder import load_kpi
 from kpi_engine.exceptions import BindError, CatalogError
-from kpi_engine.extensions.functions import (
-    column_functions,
-    measure_functions,
+from kpi_engine.core.fn_apply import (
+    COLUMN_FNS,
+    MEASURE_FNS,
     register_column_fn,
     register_measure_fn,
     unregister_column_fn,
@@ -116,8 +116,8 @@ def _only_value(path, extra_config, kpi_id, measure="current_value"):
 
 def test_builtin_ops_are_registered():
     """Both registries carry the plain names and the older aliases."""
-    columns = column_functions()
-    measures = measure_functions()
+    columns = COLUMN_FNS
+    measures = MEASURE_FNS
     assert {"value", "sum", "subtract", "multiply", "divide", "min", "max", "avg"} <= set(columns)
     assert {"sum", "subtract", "multiply", "divide", "percent", "growth_pct"} <= set(measures)
     assert {"identity", "mul", "add", "sub", "div"} <= set(columns)

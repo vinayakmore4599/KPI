@@ -66,7 +66,7 @@ Work down this list and stop at the first row that fits.
 | Series stats (EWMA, hit rate, CAGR) | `op: hook` + a name from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) | Editing `core/` per KPI |
 | Echo a dimension as a `measure_key` | `op: dimension` | A fake numeric measure |
 | IF / NULLIF / IS NULL as a value | `op:` / `fn:` (`if_else`, `nullif`, `zero_if_null`, …) or `expr:` CASE | SQL `CASE` in DuckDB |
-| Math no listed kind can express (iterative, custom allocation) | new hook under `capabilities/hooks/` + `registries/hooks.yaml` | `eval()`, import paths, or `extensions/` |
+| Math no listed kind can express (iterative, custom allocation) | new hook under `capabilities/hooks/` + `registries/hooks.yaml` | `eval()` or import paths from YAML |
 
 ### 3.2 Columns vs expressions (the usual confusion)
 
@@ -810,7 +810,7 @@ Design around these; they are intentional.
 
 **Extensions**
 
-- Custom logic is allowlisted in `registries/` (impl under `capabilities/`). Dotted import paths and `context.udf.module_path` are rejected. `extensions/` is a compatibility shim only.
+- Custom logic is allowlisted in `registries/` (impl under `capabilities/`). Dotted import paths and `context.udf.module_path` are rejected.
 
 ---
 

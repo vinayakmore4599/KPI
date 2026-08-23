@@ -25,7 +25,7 @@ def _addon_rows(kind: str) -> list[dict]:
 
 def test_addon_ops_and_hooks_boot_from_packaged_yaml():
     from kpi_engine.core.loader import skipped_addons
-    from kpi_engine.extensions.hooks import REGISTRY
+    from kpi_engine.core.hook_registry import REGISTRY
 
     ops = _addon_rows("op")
     hooks = _addon_rows("hook")

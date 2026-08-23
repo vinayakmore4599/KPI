@@ -68,7 +68,7 @@ def _reset() -> None:
     global _loaded, _entries, _skipped_addons
     from kpi_engine.core.fn_apply import COLUMN_FNS, MEASURE_FNS, _COLUMN_META, _MEASURE_META
     from kpi_engine.core.op_registry import OP_KINDS, _ALIASES
-    from kpi_engine.extensions.hooks import REGISTRY
+    from kpi_engine.core.hook_registry import REGISTRY
 
     COLUMN_FNS.clear()
     MEASURE_FNS.clear()
@@ -244,7 +244,7 @@ def _register_one(item: dict[str, Any]) -> None:
         )
         return
     if kind == "hook":
-        from kpi_engine.extensions.hooks import register
+        from kpi_engine.core.hook_registry import register
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} hook must be callable.")

@@ -56,7 +56,7 @@ Onboard a new KPI with YAML. A new reusable name (op, hook, function) is `capabi
 | Trends | Authored `measure_key` whose value is an ordered array of monthly points (for graphs). |
 | Measures | Every `measure_key` is authored in KPI YAML. Nothing is inferred from catalog op ids. |
 | Catalog | YAML registries under `registries/` (ops, hooks, column fns, measure fns). Live page: `registries/CAPABILITIES.md`. Platform kinds (`point`, `window`, `trend`, `arithmetic`, `fn`, `expr`, `constant`, `dimension`, `hook`, `rank`, `percent_of_total`) plus allowlisted add-ons. |
-| Freeze | A new **name** does not edit `core/`, `extensions/`, `contracts.py`, or a hardcoded name list in tests. A new **agg**, filter operator, compose template, time format, or *common* measure field (`offset`-like) is engine work. |
+| Freeze | A new **name** does not edit `core/`, `contracts.py`, or a hardcoded name list in tests. A new **agg**, filter operator, compose template, time format, or *common* measure field (`offset`-like) is engine work. |
 | Cuts | Generic. G and R are examples. YAML: `group_by`, `ignore_filters`, `also_emit`. |
 | Level G (example) | Ignore region filter. Compute global (no region in group by) **and** regional (region in group by) from the same extract. |
 | Additivity | Declared per measure (`sum`, `avg`, `count`, `window`, …). Global is recomputed with that agg, never rolled up from regional rows for avg/window. |
@@ -64,7 +64,7 @@ Onboard a new KPI with YAML. A new reusable name (op, hook, function) is `capabi
 | Filters | Default operator **IN**. Scalar becomes a one-element list. Accept both `value` and `values`. |
 | Filter stage | YAML `filters.*.apply`: `extract` (DuckDB WHERE), `calc` (Pandas before measures; required when a cut `ignore_filters` that code), `result` (drop JSON rows after measures). Undeclared host `IN` lists default to extract unless a cut ignores them. Unbindable filter → **hard error**. |
 | Scope | One KPI, one view. All measures for that KPI live in that view. Assert `view_details` has exactly one entry. |
-| Custom logic | Named hook allowlisted in `registries/hooks.yaml`, body under `capabilities/hooks/`. Not dotted `importlib` paths from YAML. `extensions/` is a shim only. |
+| Custom logic | Named hook allowlisted in `registries/hooks.yaml`, body under `capabilities/hooks/`. Not dotted `importlib` paths from YAML. |
 | Pagination | After all calculation. Deterministic sort. Return `total_count` / `has_more`. Null `page_size` means return all rows. |
 
 ---
@@ -649,10 +649,10 @@ udfs/
       cuts.py                # generic cut planner
       calc_engine.py         # dispatch to plugins on the monthly frame
       fn_apply.py            # COLUMN_FNS / MEASURE_FNS maps + Pandas apply
+      hook_registry.py       # REGISTRY / register / run for named hooks
       orchestrator.py        # request lifecycle, one DuckDB session
     capabilities/            # function, op, and hook bodies
     registries/              # YAML allowlist + generated CAPABILITIES.md
-    extensions/              # compatibility shims only
     contracts.py
   config/
     models/                  # physical YAML or sql models
@@ -774,7 +774,7 @@ These do not block the first slice. They should be confirmed before many KPIs ar
 | Trend | Array of monthly values for graphs |
 | Measure key | Column name in JSON; must exist in KPI `measures` |
 | Capability | Allowlisted name (op, hook, column fn, measure fn) in `registries/` |
-| Freeze | A new capability name does not edit `core/` or `extensions/` |
+| Freeze | A new capability name does not edit `core/` |
 
 ---
 

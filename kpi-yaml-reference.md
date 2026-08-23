@@ -750,8 +750,6 @@ Work down this list and stop at the first row that fits.
 
 A new name never requires an engine change. Add the Python under `capabilities/` and a row under `registries/`. Then regenerate `registries/CAPABILITIES.md`. Both registries are validated at bind time, so a typo names the registered alternatives instead of failing mid-request. See [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md).
 
-`extensions/` is a compatibility shim. Do not `register_*` new names there.
-
 This registry does **not** cover filter operators, compose templates, time format aliases, or aggregations — those stay platform code in `core/`.
 
 ### 10.1 Column functions — `base_measures.op`
@@ -879,7 +877,7 @@ def blend_mom(series, *, kpi, plan, spec, **_):
     return 0.5 * current + 0.5 * prior
 ```
 
-Then allowlist it in `registries/hooks.yaml` (`module` / `attr`, plus `requires_value` or `extra_keys` if needed). Do not edit `core/` or `extensions/`.
+Then allowlist it in `registries/hooks.yaml` (`module` / `attr`, plus `requires_value` or `extra_keys` if needed). Do not edit `core/`.
 
 ```yaml
 measures:

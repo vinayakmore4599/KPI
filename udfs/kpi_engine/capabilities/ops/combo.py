@@ -356,7 +356,7 @@ class Hook(OpPlugin):
         if not hook:
             raise BindError(f"measures.{key} op=hook requires `hook:` (an allowlisted name).")
         from kpi_engine.core.loader import capability_extras
-        from kpi_engine.extensions.hooks import REGISTRY
+        from kpi_engine.core.hook_registry import REGISTRY
 
         if str(hook) not in REGISTRY:
             raise BindError(
@@ -416,7 +416,7 @@ class Hook(OpPlugin):
         return 0
 
     def evaluate(self, ctx: EvalCtx) -> Any:
-        from kpi_engine.extensions.hooks import run
+        from kpi_engine.core.hook_registry import run
 
         name = ctx.spec.hook or ctx.spec.fn
         if not name:

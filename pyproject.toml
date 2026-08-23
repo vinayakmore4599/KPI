@@ -27,10 +27,6 @@ include = ["udfs*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "udfs"]
-filterwarnings = [
-    "ignore:kpi_engine.extensions.functions is a compatibility shim:DeprecationWarning",
-    "ignore:kpi_engine.extensions.hooks is a compatibility shim:DeprecationWarning",
-]
 
 [tool.ruff]
 line-length = 100

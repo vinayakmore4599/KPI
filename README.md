@@ -27,7 +27,6 @@ udfs/                         Copy this folder into the platform
     core/                     Frozen engine (adapt, bind, extract, dispatch)
     capabilities/             Op / function / hook bodies
     registries/               YAML allowlist + generated CAPABILITIES.md
-    extensions/               Compatibility shims only — do not add names here
     contracts.py              Shared typed fields
   config/
     kpis/                     One YAML per kpi_id

@@ -226,7 +226,7 @@ A new **name** is not an engine change. Add the body under `capabilities/` and t
 
 | Change | Do not change |
 |---|---|
-| `capabilities/ops/` + `registries/ops.yaml` | `core/`, `extensions/`, `contracts.py` |
+| `capabilities/ops/` + `registries/ops.yaml` | `core/`, `contracts.py` |
 | `capabilities/hooks/` + `registries/hooks.yaml` (`requires_value` / `extra_keys` if needed) | `importlib` of a path from YAML |
 | `capabilities/functions/` + `registries/functions/` (`min_args` if the fn is variadic and not the default 2) | A one-off `if kpi_id == 3004` |
 | Optional: a `compute()` test under `tests/` | `udfs/sotif/main.py` |
@@ -288,12 +288,12 @@ Only if metadata **must** call `udfs.<something>.main`.
 | `core/cuts.py` | Cut walk / finest grain | Listing G/R in Python |
 | `core/calc_engine.py` | Pipeline dispatch (not a new op body) | A new measure kind |
 | `core/fn_apply.py` | Function maps and Pandas apply (engine) | New function bodies |
+| `core/hook_registry.py` | In-memory hook map (loader fills it) | New hook bodies |
 | `core/orchestrator.py` | Pipeline order | Business metrics |
 | `capabilities/functions/` + `registries/functions/` | A function every KPI should reuse | Per-KPI formulas |
 | `capabilities/ops/` + `registries/ops.yaml` | A new measure kind | Per-KPI formulas |
 | `capabilities/hooks/` + `registries/hooks.yaml` | A new named hook | Import paths from context |
 | `registries/CAPABILITIES.md` | Regenerated after a registry change (`write_generated_docs()`) | Hand edits |
-| `extensions/` | Never — compatibility shims | New names |
 | `udfs/sotif/main.py` | Never, except shim signature | Calculations |
 | `contracts.py` | New typed fields for YAML/context | Parsing or SQL |
 

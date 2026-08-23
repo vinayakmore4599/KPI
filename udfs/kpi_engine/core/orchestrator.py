@@ -47,7 +47,7 @@ from kpi_engine.core.fn_apply import (
     pandas_group_keys,
 )
 from kpi_engine.core.calc_engine import compute_cuts, densify
-from kpi_engine.core.cuts import emitted_cuts, finest_grain
+from kpi_engine.core.cuts import extract_grain
 from kpi_engine.core.filters import (
     apply_frame_filters,
     apply_result_filters,
@@ -57,11 +57,21 @@ from kpi_engine.core.filters import (
     split_filters,
 )
 from kpi_engine.core.model_sql import NON_ADDITIVE, compile_extract, extract
+from kpi_engine.core.pipelines import (
+    Pipeline,
+    assert_named_cuts_compatible,
+    available_extract_columns,
+    compatible_cuts,
+    cuts_for_keys,
+    join_keys_for,
+    pad_result_rows,
+    partition_request,
+)
 from kpi_engine.core.relations import join_monthly
-from kpi_engine.core.time_planner import plan_time
+from kpi_engine.core.time_planner import plan_time, span_for_keys
 from kpi_engine.dates import add_periods, iso_period
 from kpi_engine.exceptions import BindError, KPIEngineError
-from kpi_engine.identifiers import norm_name
+from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.platform import acquire_connection
 from kpi_engine.runlog import (
     end_run,
@@ -117,51 +127,64 @@ def _compute(
     kpi = load_kpi(request.kpi_id, root)
     request = replace(request, measure_keys=fold_measure_keys(kpi, request.measure_keys))
     assert_measure_keys(kpi, request.measure_keys)
-    requested, needed_bases = resolve_requested_graph(kpi, request.measure_keys)
-    scoped = replace(kpi, base_measures=needed_bases)
-    models = _models_for_kpi(scoped, root)
-    datasets = {}
-    for model in models:
-        datasets.update(bind_datasets(model, request))
+    requested, _needed_bases = resolve_requested_graph(kpi, request.measure_keys)
+    pipelines = partition_request(kpi, request.measure_keys)
+    models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
     log_step("plan_time")
     time_plan, remaining_filters = plan_time(request, kpi)
-    emitted = emitted_cuts(kpi)
-    grain = finest_grain(kpi, emitted)
-    extract_columns: set[str] = set()
-    for model in models:
-        extract_columns |= columns_for_source_filters(model, scoped, grain, datasets)
+    extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
     bound = bind_filters(remaining_filters, kpi, datasets, extract_columns)
-    source_filters, deferred, result_filters = split_filters(bound, emitted)
-    global_calc = filters_on_all_cuts(deferred, emitted)
     log_step("extract")
     con, owned = acquire_connection(connection)
+    rows: list[dict[str, Any]] = []
+    sqls: list[str] = []
+    applied_src: list = []
+    applied_def: list = []
+    applied_res: list = []
+    ignored: list[dict[str, Any]] = []
+    trend_axes: dict[str, list[str]] = {}
     try:
-        monthly, detail, sqls = _extract_all(
-            models=models,
-            kpi=kpi,
-            needed_bases=needed_bases,
-            datasets=datasets,
-            source_filters=source_filters,
-            calc_filters=global_calc,
-            plan=time_plan,
-            grain=grain,
-            request=request,
-            connection=con,
-        )
+        for pipe in pipelines:
+            prepared = _prepare_pipeline(
+                pipe, kpi, request, models_by_id, bound, time_plan
+            )
+            monthly, detail, pipe_sqls = _extract_all(
+                models=prepared["models"],
+                kpi=kpi,
+                needed_bases=pipe.bases,
+                datasets=prepared["datasets"],
+                source_filters=prepared["source_filters"],
+                calc_filters=prepared["global_calc"],
+                plan=prepared["plan"],
+                grain=prepared["grain"],
+                request=request,
+                connection=con,
+                joined=pipe.joined,
+            )
+            pipe_rows, axes = compute_cuts(
+                monthly,
+                kpi=replace(kpi, base_measures=pipe.bases),
+                emitted=prepared["cuts"],
+                deferred_filters=prepared["deferred"],
+                plan=prepared["plan"],
+                requested=pipe.measure_keys,
+                detail=detail,
+            )
+            pipe_rows = apply_result_filters(pipe_rows, prepared["result_filters"])
+            stamp = "+".join(pipe.model_ids) if pipe.joined else pipe.model_ids[0]
+            other = tuple(k for k in requested if k not in pipe.measure_keys)
+            pipe_rows = pad_result_rows(pipe_rows, kpi, other, stamp)
+            rows.extend(pipe_rows)
+            sqls.extend(pipe_sqls)
+            trend_axes.update(axes)
+            applied_src.extend(prepared["source_filters"])
+            applied_def.extend(prepared["deferred"])
+            applied_res.extend(prepared["result_filters"])
+            ignored.extend(_ignored(prepared["deferred"], prepared["cuts"]))
     finally:
         if owned:
             con.close()
     log_step("calculate")
-    rows, trend_axes = compute_cuts(
-        monthly,
-        kpi=kpi,
-        emitted=emitted,
-        deferred_filters=deferred,
-        plan=time_plan,
-        requested=requested,
-        detail=detail,
-    )
-    rows = apply_result_filters(rows, result_filters)
     rows = _sort_rows(rows, kpi)
     log_step("paginate")
     page_rows, pagination = _paginate(rows, request)
@@ -170,8 +193,8 @@ def _compute(
         "kpi_id": kpi.kpi_id,
         "request_id": request.request_id,
         "parameters": parameters,
-        "applied_filters": _applied(source_filters, deferred, result_filters),
-        "ignored_filters": _ignored(deferred, emitted),
+        "applied_filters": _dedupe_applied(_applied(applied_src, applied_def, applied_res)),
+        "ignored_filters": _dedupe_ignored(ignored),
         "trend_axes": trend_axes,
         "pagination": pagination,
         "sql": sqls[0] if sqls else "",
@@ -221,39 +244,33 @@ def _validate(
     kpi = load_kpi(request.kpi_id, root)
     request = replace(request, measure_keys=fold_measure_keys(kpi, request.measure_keys))
     assert_measure_keys(kpi, request.measure_keys)
-    _requested, needed_bases = resolve_requested_graph(kpi, request.measure_keys)
-    scoped = replace(kpi, base_measures=needed_bases)
-    models = _models_for_kpi(scoped, root)
-    datasets = {}
-    for model in models:
-        datasets.update(bind_datasets(model, request))
+    pipelines = partition_request(kpi, request.measure_keys)
+    models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
     time_plan, remaining = plan_time(request, kpi)
-    emitted = emitted_cuts(kpi)
-    grain = finest_grain(kpi, emitted)
-    extract_columns: set[str] = set()
-    for model in models:
-        extract_columns |= columns_for_source_filters(model, scoped, grain, datasets)
+    extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
     bound = bind_filters(remaining, kpi, datasets, extract_columns)
-    source_filters, _deferred, _result = split_filters(bound, emitted)
     sqls: list[str] = []
     param_count = 0
-    for model in models:
-        bound_ds = bind_datasets(model, request)
-        filter_cols = _model_filter_columns(model, bound_ds, grain, scoped)
-        owned = _owned_bases(needed_bases, kpi, model)
-        sub = replace(kpi, base_measures=tuple(owned), model_id=model.model_id)
-        sql, params = compile_extract(
-            model=model,
-            kpi=sub,
-            datasets=bound_ds,
-            source_filters=source_filters,
-            plan=time_plan,
-            grain=grain,
-            filter_columns=filter_cols,
-        )
-        log_sql(sql, params, model=model.model_id, row_level=True)
-        sqls.append(sql)
-        param_count += len(params)
+    for pipe in pipelines:
+        prepared = _prepare_pipeline(pipe, kpi, request, models_by_id, bound, time_plan)
+        scoped = replace(kpi, base_measures=pipe.bases)
+        for model in prepared["models"]:
+            bound_ds = bind_datasets(model, request)
+            filter_cols = _model_filter_columns(model, bound_ds, prepared["grain"], scoped)
+            owned = _owned_bases(pipe.bases, kpi, model)
+            sub = replace(kpi, base_measures=tuple(owned), model_id=model.model_id)
+            sql, params = compile_extract(
+                model=model,
+                kpi=sub,
+                datasets=bound_ds,
+                source_filters=prepared["source_filters"],
+                plan=prepared["plan"],
+                grain=prepared["grain"],
+                filter_columns=filter_cols,
+            )
+            log_sql(sql, params, model=model.model_id, row_level=True)
+            sqls.append(sql)
+            param_count += len(params)
     result = {
         "ok": True,
         "kpi_id": kpi.kpi_id,
@@ -280,6 +297,122 @@ def _models_for_kpi(kpi: KpiSpec, root: Path) -> list[ModelSpec]:
     if not ids and kpi.model_id:
         ids.append(kpi.model_id)
     return [load_model(mid, root) for mid in ids]
+
+
+def _bind_context_models(
+    kpi: KpiSpec, request, root: Path, pipelines: list[Pipeline]
+) -> tuple[dict[str, ModelSpec], dict]:
+    """Bind every KPI model the context can satisfy; required extracts must bind."""
+    required = {norm_name(mid) for pipe in pipelines for mid in pipe.model_ids}
+    loaded: dict[str, ModelSpec] = {}
+    datasets: dict = {}
+    for model in _models_for_kpi(kpi, root):
+        key = norm_name(model.model_id)
+        try:
+            bound = bind_datasets(model, request)
+        except BindError:
+            if key in required:
+                raise
+            continue
+        loaded[key] = model
+        datasets.update(bound)
+    for mid in required:
+        if mid not in loaded:
+            loaded[mid] = load_model(mid, root)
+    return loaded, datasets
+
+
+def _union_extract_columns(
+    models_by_id: dict[str, ModelSpec], datasets: dict, kpi: KpiSpec
+) -> set[str]:
+    """Columns any requested extract can bind a filter to."""
+    cols: set[str] = set()
+    for model in models_by_id.values():
+        known = available_extract_columns(model, datasets, kpi)
+        if known is None:
+            cols |= columns_for_source_filters(model, kpi, (), datasets)
+            continue
+        cols |= known
+    if kpi.time is not None:
+        cols.add(kpi.time.column)
+    cols.update(kpi.dimensions)
+    return cols
+
+
+def _prepare_pipeline(
+    pipe: Pipeline,
+    kpi: KpiSpec,
+    request,
+    models_by_id: dict[str, ModelSpec],
+    bound,
+    time_plan,
+) -> dict[str, Any]:
+    """Cuts, grain, filters, and time span for one extract (or join) pipeline."""
+    models = [models_by_id[norm_name(mid)] for mid in pipe.model_ids]
+    pipe_ds = {}
+    available: set[str] | None = set()
+    unknown = False
+    for model in models:
+        bound_ds = bind_datasets(model, request)
+        pipe_ds.update(bound_ds)
+        known = available_extract_columns(model, bound_ds, kpi)
+        if known is None:
+            unknown = True
+        else:
+            available |= known
+    if unknown:
+        available = None
+    candidates = cuts_for_keys(kpi, pipe.measure_keys)
+    time_col = kpi.time.column if kpi.time is not None else None
+    emitted = compatible_cuts(candidates, available, time_col, kpi)
+    assert_named_cuts_compatible(kpi, pipe.measure_keys, emitted)
+    extra = join_keys_for(kpi, pipe.model_ids) if pipe.joined else ()
+    grain = extract_grain(kpi, emitted, pipe.bases, extra=extra)
+    pipe_bound = tuple(
+        item
+        for item in bound
+        if available is None
+        or match_name(item.column, available) is not None
+        or (time_col is not None and norm_name(item.column) == norm_name(time_col))
+    )
+    source_filters, deferred, result_filters = split_filters(pipe_bound, emitted)
+    return {
+        "models": models,
+        "datasets": pipe_ds,
+        "cuts": emitted,
+        "grain": grain,
+        "plan": span_for_keys(kpi, pipe.measure_keys, time_plan),
+        "source_filters": source_filters,
+        "deferred": deferred,
+        "result_filters": result_filters,
+        "global_calc": filters_on_all_cuts(deferred, emitted),
+    }
+
+
+def _dedupe_applied(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the first metadata row per filter code / column / stage."""
+    seen: set[tuple] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = (row.get("filter_code"), row.get("column"), row.get("stage"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _dedupe_ignored(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the first ignore-reason row per filter / reason."""
+    seen: set[tuple] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = (row.get("filter_code"), row.get("reason"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
 
 
 def _owned_bases(
@@ -326,6 +459,7 @@ def _extract_all(
     grain: tuple[str, ...],
     request: AdaptedRequest,
     connection: Any | None = None,
+    joined: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame | None, list[str]]:
     """Per-model row-level retrieve of physical columns, then Pandas builds the monthly frame."""
     scoped = replace(kpi, base_measures=needed_bases)
@@ -363,8 +497,10 @@ def _extract_all(
         if not pandas_monthly.empty:
             frames[model.model_id] = pandas_monthly
     detail = pd.concat(detail_parts, ignore_index=True) if detail_parts else None
-    if frames:
+    if frames and joined:
         monthly = join_monthly(frames, scoped)
+    elif frames:
+        monthly = next(iter(frames.values()))
     else:
         cols = [kpi.time.column, "_observed"] if kpi.time is not None else ["_observed"]
         monthly = pd.DataFrame(columns=cols)

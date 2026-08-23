@@ -79,9 +79,16 @@ def densify(
         if col in merged.columns:
             observed = observed | merged[col].notna()
     merged["_observed"] = observed
+    last_observed = None
+    if not work.empty and time_col in work.columns:
+        last_observed = work[time_col].max()
     for col in fill_zero_cols:
-        if col in merged.columns:
-            merged.loc[~merged["_observed"], col] = merged.loc[~merged["_observed"], col].fillna(0)
+        if col not in merged.columns:
+            continue
+        fill = ~merged["_observed"]
+        if last_observed is not None:
+            fill = fill & (merged[time_col] <= last_observed)
+        merged.loc[fill, col] = merged.loc[fill, col].fillna(0)
     return merged
 
 

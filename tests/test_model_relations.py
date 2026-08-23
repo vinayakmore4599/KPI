@@ -62,7 +62,9 @@ def test_inner_join_drops_unmatched(parquet_path, extra_config, tmp_path):
 
 
 def test_two_models_require_relations(parquet_path, extra_config, tmp_path):
-    """Two base models without model_relations fail at bind."""
+    """A graph that spans extracts still needs model_relations; load_kpi does not."""
+    from kpi_engine.core.binder import load_kpi
+
     write_yaml(extra_config / "models" / "marketing.yaml", _marketing_model())
     spec = _ratio_kpi("outer")
     spec.pop("model_relations")
@@ -71,12 +73,51 @@ def test_two_models_require_relations(parquet_path, extra_config, tmp_path):
     pd.DataFrame([{"event_month": "2026-03-01", "region": "NA", "spend": 1}]).to_parquet(
         spend, index=False
     )
+    kpi = load_kpi(9030, extra_config)
+    assert kpi.model_relations == ()
+    ctx_one = _ratio_context(parquet_path, spend)
+    ctx_one["execution"]["view_details"][0]["measures_required"] = [
+        {"measure_key": "current_sotif"}
+    ]
+    result = compute(ctx_one, config_dir=extra_config)
+    assert result["rows"]
+    assert all(row["model"] == "sotif" for row in result["rows"])
     try:
         compute(_ratio_context(parquet_path, spend), config_dir=extra_config)
     except BindError as exc:
-        assert "model_relations" in str(exc)
+        assert "model_relations" in str(exc) or "spans models" in str(exc)
     else:
         raise AssertionError("expected BindError")
+
+
+def test_independent_measures_do_not_join_when_relations_exist(
+    parquet_path, extra_config, tmp_path
+):
+    """Join only when a requested graph spans models — not for two side-by-side points."""
+    spend = tmp_path / "spend.parquet"
+    pd.DataFrame(
+        [{"event_month": "2026-03-01", "region": "NA", "spend": 100}]
+    ).to_parquet(spend, index=False)
+    _write_ratio_kpi(extra_config, how="outer")
+    ctx = _ratio_context(parquet_path, spend)
+    ctx["execution"]["view_details"][0]["measures_required"] = [
+        {"measure_key": "current_sotif"},
+        {"measure_key": "current_spend"},
+    ]
+    result = compute(ctx, config_dir=extra_config)
+    models = {row["model"] for row in result["rows"]}
+    assert models == {"sotif", "marketing"}
+    sotif_na = next(
+        r for r in result["rows"] if r["model"] == "sotif" and r["region"] == "NA"
+    )
+    spend_na = next(
+        r for r in result["rows"] if r["model"] == "marketing" and r["region"] == "NA"
+    )
+    assert sotif_na["current_sotif"] == 36.0
+    assert sotif_na["current_spend"] is None
+    assert spend_na["current_spend"] == 100.0
+    assert spend_na["current_sotif"] is None
+    assert len(result["sqls"]) == 2
 
 
 def _write_ratio_kpi(extra_config, *, how: str) -> None:

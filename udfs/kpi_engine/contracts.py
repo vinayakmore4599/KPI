@@ -33,7 +33,24 @@ GrainName = Literal["day", "month", "quarter", "year"]
 OpName = str
 # Open set: any name registered in registries/functions/column.yaml.
 RowOpName = str
-WindowRangeName = Literal["trailing", "leading", "cumulative"]
+WindowRangeName = Literal[
+    "trailing",
+    "leading",
+    "cumulative",
+    "ytd",
+    "mtd",
+    "qtd",
+    "wtd",
+    "full_month",
+    "full_quarter",
+    "full_year",
+]
+PTD_RANGES = frozenset({"mtd", "qtd", "ytd", "wtd", "cumulative"})
+FULL_RANGES = frozenset({"full_month", "full_quarter", "full_year"})
+NAMED_WINDOW_RANGES = PTD_RANGES | FULL_RANGES
+WINDOW_RANGE_NAMES = frozenset(
+    {"trailing", "leading", "cumulative", "ytd", "mtd", "qtd", "wtd", "full_month", "full_quarter", "full_year"}
+)
 NON_ADDITIVE_AGGS = frozenset({"count_distinct", "median", "percentile", "first", "last"})
 
 

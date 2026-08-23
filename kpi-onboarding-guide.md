@@ -102,7 +102,7 @@ Set `kpi_id` and `model` to match.
 |---|---|---|
 | `dimension` | Context still sends a dimension as `measure_key` | `kind: dimension` |
 | `point` | One period (current, previous year) | `of`, `offset` |
-| `window` | Trailing 3/6/12 months as **one number** | `of`, `trailing.months`, `inclusive` |
+| `window` | Trailing N, QTD/YTD/MTD, or a full period as **one number** | `of`, `trailing:` or `range:` |
 | `trend` | Graph: array of monthly values | `of`, `trailing.months`, optional `cuts` |
 | `arithmetic` / `fn` / `expr` | YoY, ratio, or a formula over other measures | `fn` + `left`/`right` or `inputs:` or `expr:` |
 | `constant` | A literal target / goal | `value` |
@@ -112,7 +112,7 @@ Set `kpi_id` and `model` to match.
 
 Every `measure_key` the page can send must appear here. Unknown keys fail at bind time.
 
-Optional top-level keys: `row_set` (`span_union` default, or `anchor_only`), `filter_map` (filter code → column), and `model_relations` (join two models after aggregation).
+Optional top-level keys: `row_set` (`span_union` default, or `anchor_only`), `filter_map` (filter code → column), and `model_relations` (join two extracts when a requested graph spans models). Cuts and dimensions stay on the KPI — do not set `model:` on them.
 
 ### Step 5 — Align metadata
 

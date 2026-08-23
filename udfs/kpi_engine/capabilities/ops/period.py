@@ -117,7 +117,7 @@ class _Shift(OpPlugin):
             return child + shift
         return max(0, child - shift)
 
-    def lookforward(self, spec, by_key, seen, lookforward_for) -> int:
+    def lookforward(self, spec, by_key, seen, lookforward_for, time=None, anchor=None) -> int:
         if self.backward or spec.offset is None:
             child = 0
             if spec.of and spec.of in by_key:

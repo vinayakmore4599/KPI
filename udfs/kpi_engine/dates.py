@@ -244,6 +244,54 @@ def year_start(anchor: date, time: TimeSpec) -> date:
     return date(day.year, 1, 1)
 
 
+def month_start(anchor: date) -> date:
+    """First day of the calendar month that contains the anchor."""
+    day = parse_date(anchor)
+    return date(day.year, day.month, 1)
+
+
+def quarter_start(anchor: date, time: TimeSpec) -> date:
+    """First day of the calendar or fiscal quarter that contains the anchor."""
+    day = parse_date(anchor)
+    if time.calendar == "fiscal":
+        return _fiscal_quarter_start(day, time.fiscal_start_month)
+    month = ((day.month - 1) // 3) * 3 + 1
+    return date(day.year, month, 1)
+
+
+def week_start(anchor: date) -> date:
+    """Monday of the ISO week that contains the anchor."""
+    day = parse_date(anchor)
+    return day - timedelta(days=day.weekday())
+
+
+def period_end(anchor: date, kind: str, time: TimeSpec) -> date:
+    """Last grain-period start of the month, quarter, or year that contains `anchor`."""
+    day = parse_date(anchor)
+    if kind == "full_month":
+        start = month_start(day)
+        if time.grain == "day":
+            return add_days(add_months(start, 1), -1)
+        return truncate_period(start, time)
+    if kind == "full_quarter":
+        start = quarter_start(day, time)
+        if time.grain == "day":
+            return add_days(add_months(start, 3), -1)
+        if time.grain == "month":
+            return add_months(start, 2)
+        return truncate_period(start, time)
+    if kind == "full_year":
+        start = year_start(day, time)
+        if time.grain == "day":
+            return add_days(add_months(start, 12), -1)
+        if time.grain == "month":
+            return add_months(start, 11)
+        if time.grain == "quarter":
+            return add_months(start, 9)
+        return truncate_period(start, time)
+    raise TimePlanError(f"Unknown full-period kind {kind!r}.")
+
+
 def iso_month(value: date) -> str:
     """Format a period as YYYY-MM-01 for JSON metadata."""
     d = parse_month(value)

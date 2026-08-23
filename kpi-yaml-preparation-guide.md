@@ -346,7 +346,7 @@ base_measures:
   shipments: { sql: shipped_qty,  agg: sum, model: shipments }
 ```
 
-If more than one model is used, declare `model_relations` (see §11).
+If a requested measure graph reads more than one model, declare `model_relations` (see §11). Independent extracts in one KPI file do not need a join.
 
 ---
 
@@ -397,7 +397,12 @@ value_3m:
 value_ytd:
   of: sotif_value
   op: window
-  range: cumulative          # year start → anchor (calendar or fiscal)
+  range: ytd                 # year start → anchor (`cumulative` is an alias)
+
+value_qtd:
+  of: sotif_value
+  op: window
+  range: qtd                 # quarter start → anchor (not trailing 3)
 
 value_next_3m:
   of: sotif_value
@@ -408,9 +413,13 @@ value_next_3m:
 
 | `range` | Window |
 |---|---|
-| `trailing` (default) | last N periods vs anchor |
-| `leading` | next N periods vs anchor |
-| `cumulative` | start of calendar/fiscal year through anchor |
+| `trailing` (default) | last N periods vs the reference |
+| `leading` | next N periods; needs `trailing:` |
+| `mtd` / `qtd` / `ytd` / `wtd` | period start → reference (`wtd` is day grain only) |
+| `full_month` / `full_quarter` / `full_year` | whole period containing the reference |
+| `cumulative` | alias of `ytd` |
+
+`offset` on a window is backwards (same as `point`). Named ranges cannot also set `trailing:`.
 
 `inclusive: false` ends one period **before** the anchor.
 
@@ -639,7 +648,7 @@ measures:
     right: shipment_value
 ```
 
-Two models with no `model_relations` is an error (not a cross join).
+Two models with no `model_relations` is an error only when a requested graph spans them (not a cross join). Requesting one extract at a time is allowed. Cuts live on the KPI; do not set `model:` on cuts or dimensions.
 
 ---
 
@@ -852,7 +861,8 @@ Use local parquet fixtures (`tests/conftest.py`: `make_context`, `write_yaml`). 
 | `percent_of_total requires of:` | Point `of:` at a measure or base |
 | `partition_by '…' is not a cut group_by` | Use a dimension / cut grouping name |
 | `uses expr: and cannot also set columns/op/sql` | Pick one style per base measure |
-| `Base measures span multiple models` | Add `model_relations` |
+| `measures.<k> spans models` | Add `model_relations`, or request one extract |
+| `cuts '…' is not on this extract` | Point `cuts:` at a grain this model has |
 | `dependency cycle` | Break the `fn` / `expr` / `arithmetic` loop |
 | `input_text=heir` | Expand the hierarchy in the context builder |
 | `time.timezone is not supported` | Convert in a `kind: sql` model |

@@ -14,7 +14,7 @@ When to use
 import pytest
 
 from kpi_engine.contracts import BaseMeasure, CutSpec, KpiSpec, ModelRelation, OutputSpec, TimeSpec
-from kpi_engine.core.cuts import cut_group_dims, emitted_cuts, finest_grain
+from kpi_engine.core.cuts import cut_group_dims, emitted_cuts, extract_grain, finest_grain
 from kpi_engine.exceptions import BindError
 
 
@@ -142,3 +142,20 @@ def test_finest_grain_does_not_repeat_columns():
     grain = finest_grain(kpi, emitted_cuts(kpi))
     assert grain == ("event_month", "reason_code", "region")
     assert len(grain) == len(set(grain))
+
+
+def test_extract_grain_is_time_plus_these_cuts_only():
+    """A pipeline does not pull every KPI dimension — only the cuts it will emit."""
+    cuts = (
+        CutSpec(name="G156", group_by=("region",), ignore_filters=(), also_emit=()),
+        CutSpec(
+            name="G157",
+            group_by=("reason_code", "factor"),
+            ignore_filters=(),
+            also_emit=(),
+        ),
+    )
+    kpi = _kpi(cuts, "G156", dimensions=("region", "reason_code", "factor"))
+    grain = extract_grain(kpi, (cuts[1],))
+    assert grain == ("event_month", "reason_code", "factor")
+    assert "region" not in grain

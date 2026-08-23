@@ -83,7 +83,8 @@ def test_rows_carry_every_dimension_with_null_for_ungrouped_ones(parquet_path, c
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
     rows = compute(ctx, config_dir=config_dir)["rows"]
     for row in rows:
-        assert set(row) == {"output_cut", "reason_code", "region", "current_value"}
+        assert set(row) == {"output_cut", "reason_code", "region", "current_value", "model"}
+        assert row["model"] == "sotif"
     g_rows = [r for r in rows if r["output_cut"] == "G"]
     assert all(r["region"] is None for r in g_rows)
     r_rows = [r for r in rows if r["output_cut"] == "R"]

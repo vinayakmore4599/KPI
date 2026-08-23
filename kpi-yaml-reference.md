@@ -301,7 +301,7 @@ previous_year_value:
 
 Returns `null` when that period has no rows for this dimension combination.
 
-### 5.2 `window` — trailing, leading, or cumulative
+### 5.2 `window` — trailing, leading, period-to-date, or full period
 
 ```yaml
 value_3m:
@@ -310,10 +310,21 @@ value_3m:
   trailing: { months: 3 }
   inclusive: true          # default
 
+value_qtd:
+  of: sotif_value
+  op: window
+  range: qtd               # quarter start through the (offset) reference
+
 value_ytd:
   of: sotif_value
   op: window
-  range: cumulative        # calendar (or fiscal) year start through the anchor
+  range: ytd               # year start through the reference (`cumulative` is an alias)
+
+qtd_ly:
+  of: sotif_value
+  op: window
+  range: qtd
+  offset: { years: 1 }     # same as point: offset is backwards
 
 value_next_3m:
   of: sotif_value
@@ -325,9 +336,12 @@ value_next_3m:
 
 | `range` | Window |
 |---|---|
-| `trailing` (default) | last N periods relative to the anchor |
-| `leading` | next N periods relative to the anchor |
-| `cumulative` | from the start of the calendar/fiscal year through the anchor |
+| `trailing` (default) | last N periods relative to the reference |
+| `leading` | next N periods; requires `trailing:` for the length |
+| `mtd` / `qtd` / `ytd` / `wtd` | period start through the reference (`cumulative` = `ytd`; `wtd` needs `time.grain: day`) |
+| `full_month` / `full_quarter` / `full_year` | whole period containing the reference |
+
+`offset` on a window shifts the reference **backwards**, then the range is applied. Named ranges (`mtd`, `qtd`, `ytd`, `wtd`, `full_*`) cannot also set `trailing:`. `inclusive` applies only to trailing/leading. Fiscal vs calendar follows `time.calendar`.
 
 | `inclusive` | Trailing window | With anchor March |
 |---|---|---|
@@ -671,7 +685,8 @@ measures:
 - `on` must list the time column plus any shared dimensions. Join keys are added to the extract automatically.
 - Keys missing from one side are dropped from that join, so a global extract without `region` still joins on time.
 - `full` and `full_outer` are accepted as aliases for `outer`.
-- Two models with no `model_relations` is an error, not an implicit cross join.
+- Two models with no `model_relations` is fine when each request stays on one extract. A measure graph that spans extracts (`fn` / `arithmetic` / `of` mixing both) needs `model_relations` — it is not an implicit cross join.
+- Cuts and dimensions stay on the KPI YAML. Do not set `model:` on them. A cut applies to an extract when every `group_by` column is on that retrieve; a measure that names an incompatible cut is a bind error.
 
 ---
 
@@ -1026,7 +1041,8 @@ pytest -q
 | `Unknown op/kind 'percent_of_cut_total'` | That name is not an op | Use `op: percent_of_total` |
 | `measures.<k> op=percent_of_total requires of:` | Missing source | Point at a measure or base_measure |
 | `partition_by '…' is not a cut group_by` | Window key is not a dimension | Use a name from `dimensions` / `cuts[].group_by` |
-| `Base measures span multiple models; declare model_relations` | Two models, no join declared | Add `model_relations` (§8) |
+| `measures.<k> spans models … declare model_relations` | A requested graph reads two extracts with no join | Add `model_relations` (§8), or request one extract at a time |
+| `measures.<k> cuts '…' is not on this extract` | That cut's `group_by` is not on the base's model | Set `cuts:` to a grain those columns have, or retrieve them |
 | `measures.<k> names unknown hook '<x>'` | Hook not in `registries/hooks.yaml` | Add the function under `capabilities/hooks/` and a registry row |
 | `Filter '<x>' is hierarchical (input_text=heir)` | Hierarchy not expanded | Fix in the context builder |
 | `output.page must be >= 1` | Paging from 0 | Pages are 1-based |

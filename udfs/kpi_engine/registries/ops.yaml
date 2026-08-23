@@ -15,13 +15,12 @@ window:
   role: platform
   enabled: true
   aliases: []
-  description: Trailing, leading, or cumulative aggregate of a base measure.
+  description: Trailing, leading, period-to-date, or full-period aggregate of a base measure.
   example: |
-    value_3m:
+    value_qtd:
       op: window
       of: sotif_value
-      trailing: { months: 3 }
-      inclusive: true
+      range: qtd
   module: kpi_engine.capabilities.ops.combo
   attr: Window
 

@@ -287,12 +287,6 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
                 f"model_relations left/right must be base_measures names "
                 f"(got {rel.left!r}, {rel.right!r}; known {sorted(base_names)})."
             )
-    model_ids = {b.model_id or str(raw.get("model")) for b in bases}
-    if len(model_ids) > 1 and not relations:
-        raise BindError(
-            "Base measures span multiple models; declare model_relations to join them."
-        )
-
     kpi = KpiSpec(
         kpi_id=kpi_id,
         version=int(raw.get("version") or 1),
@@ -321,6 +315,10 @@ def _parse_dimension(raw: Any) -> DimensionSpec:
         return DimensionSpec(name=name, source=name)
     if not isinstance(raw, dict) or not raw.get("name"):
         raise BindError("Each dimension needs a name.")
+    if raw.get("model") is not None:
+        raise BindError(
+            "dimensions cannot set model:; dimensions live on the KPI, not the extract."
+        )
     name = require_ident(str(raw["name"]), what="dimension")
     source = require_ident(str(raw.get("from") or name), what="dimension.from")
     mapping_raw = raw.get("map") or {}
@@ -661,6 +659,8 @@ def _parse_cut(raw: Any) -> CutSpec:
     """Parse one cut: name, group_by dimensions, ignore_filters, also_emit."""
     if not isinstance(raw, dict):
         raise BindError("Each cut must be an object.")
+    if raw.get("model") is not None:
+        raise BindError("cuts cannot set model:; cuts live on the KPI, not the extract.")
     name = str(raw.get("name") or "")
     if not name:
         raise BindError("Cut name is required.")
@@ -730,10 +730,13 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
                 break
     window_range = raw.get("range")
     if window_range is not None:
+        from kpi_engine.contracts import WINDOW_RANGE_NAMES
+
         window_range = str(window_range)
-        if window_range not in {"trailing", "leading", "cumulative"}:
+        if window_range not in WINDOW_RANGE_NAMES:
             raise BindError(
-                f"measures.{key}.range must be trailing, leading, or cumulative."
+                f"measures.{key}.range must be trailing, leading, cumulative, "
+                "ytd, mtd, qtd, wtd, full_month, full_quarter, or full_year."
             )
     of_raw = raw.get("of")
     of = None

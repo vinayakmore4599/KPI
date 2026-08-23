@@ -22,15 +22,14 @@ previous_year_value:
 
 ### `window`
 
-Trailing, leading, or cumulative aggregate of a base measure.  
+Trailing, leading, period-to-date, or full-period aggregate of a base measure.  
 `role: platform` · `enabled: on`
 
 ```yaml
-value_3m:
+value_qtd:
   op: window
   of: sotif_value
-  trailing: { months: 3 }
-  inclusive: true
+  range: qtd
 ```
 
 ### `trend`

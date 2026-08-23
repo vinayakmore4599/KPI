@@ -157,8 +157,10 @@ class OpPlugin:
         by_key: dict[str, OutputSpec],
         seen: frozenset[str],
         lookforward_for: Callable[..., int],
+        time: TimeSpec | None = None,
+        anchor: Any = None,
     ) -> int:
-        """Grain periods after the anchor a leading window needs."""
+        """Grain periods after the anchor a leading or full-period window needs."""
         return 0
 
     def evaluate(self, ctx: EvalCtx) -> Any:

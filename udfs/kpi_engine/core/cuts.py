@@ -1,13 +1,14 @@
 """Cut planner: which grouping grains to emit for a request.
 
 What this file provides
-    emitted_cuts — default_cut plus also_emit (e.g. G also emits R).
+    emitted_cuts / emitted_cuts_from — default_cut or named roots plus also_emit.
     cut_group_dims — group_by minus the time column.
-    finest_grain — retrieve keys (time + dimensions ∪ cut keys).
+    finest_grain — union of all KPI dimensions (tests / full-KPI view).
+    extract_grain — time + this pipeline's cuts only (what DuckDB retrieves).
 
 Where it is used
-    orchestrator (what to extract and what to calculate). calc_engine
-    re-aggregates the monthly frame to each cut.
+    orchestrator (per-extract grain and cuts). calc_engine re-aggregates
+    the monthly frame to each cut.
 
 Capabilities
     G/R (or country, supplier, …) are data in YAML, not hardcoded. Each cut
@@ -20,7 +21,7 @@ When to use
 
 from __future__ import annotations
 
-from kpi_engine.contracts import CutSpec, KpiSpec
+from kpi_engine.contracts import BaseMeasure, CutSpec, KpiSpec
 from kpi_engine.exceptions import BindError
 from kpi_engine.runlog import traced
 
@@ -28,6 +29,11 @@ from kpi_engine.runlog import traced
 @traced
 def emitted_cuts(kpi: KpiSpec) -> tuple[CutSpec, ...]:
     """Walk default_cut and also_emit to get the full set of cuts for this request."""
+    return emitted_cuts_from(kpi, (kpi.default_cut,))
+
+
+def emitted_cuts_from(kpi: KpiSpec, roots: tuple[str, ...]) -> tuple[CutSpec, ...]:
+    """Walk these cut names and also_emit. Used per extract pipeline."""
     by_name = {c.name: c for c in kpi.cuts}
     names: list[str] = []
 
@@ -42,7 +48,8 @@ def emitted_cuts(kpi: KpiSpec) -> tuple[CutSpec, ...]:
         for extra in cut.also_emit:
             walk(extra)
 
-    walk(kpi.default_cut)
+    for root in roots:
+        walk(str(root))
     return tuple(by_name[n] for n in names)
 
 
@@ -77,3 +84,33 @@ def finest_grain(kpi: KpiSpec, emitted: tuple[CutSpec, ...]) -> tuple[str, ...]:
                 dims.append(name)
                 seen.add(name)
     return tuple(dims)
+
+
+def extract_grain(
+    kpi: KpiSpec,
+    emitted: tuple[CutSpec, ...],
+    bases: tuple[BaseMeasure, ...] = (),
+    extra: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Time + these cuts' group_by + where columns + extras. Not every KPI dimension."""
+    names: list[str] = []
+    seen: set[str] = set()
+    rename = {spec.name: spec.source or spec.name for spec in kpi.dimension_specs}
+
+    def add(name: str | None) -> None:
+        if not name or name in seen:
+            return
+        names.append(name)
+        seen.add(name)
+
+    if kpi.time is not None:
+        add(kpi.time.column)
+    for cut in emitted:
+        for name in cut.group_by:
+            add(rename.get(name, name))
+    for base in bases:
+        if base.where is not None:
+            add(base.where.column)
+    for name in extra:
+        add(name)
+    return tuple(names)

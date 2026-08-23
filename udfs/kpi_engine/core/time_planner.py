@@ -18,6 +18,8 @@ Capabilities
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from kpi_engine.contracts import (
     AdaptedRequest,
     IncomingFilter,
@@ -89,7 +91,7 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, t
     anchor = truncate_period(raw_anchor, kpi.time)
     keys = fold_measure_keys(kpi, request.measure_keys)
     lookback = max_lookback_months(kpi, keys, anchor=anchor)
-    forward = max_lookforward_periods(kpi, keys)
+    forward = max_lookforward_periods(kpi, keys, anchor=anchor)
     span_start = add_periods(anchor, -lookback, kpi.time)
     span_end_exclusive = add_periods(anchor, 1 + forward, kpi.time)
     return (
@@ -102,6 +104,21 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, t
             lookback_forward=forward,
         ),
         rest,
+    )
+
+
+def span_for_keys(kpi: KpiSpec, keys: tuple[str, ...], plan: TimePlan | None) -> TimePlan | None:
+    """Widen or shrink an already-claimed plan to this pipeline's measure keys."""
+    if plan is None or kpi.time is None:
+        return plan
+    lookback = max_lookback_months(kpi, keys, anchor=plan.anchor)
+    forward = max_lookforward_periods(kpi, keys, anchor=plan.anchor)
+    return replace(
+        plan,
+        span_start=add_periods(plan.anchor, -lookback, kpi.time),
+        span_end_exclusive=add_periods(plan.anchor, 1 + forward, kpi.time),
+        lookback_months=lookback,
+        lookback_forward=forward,
     )
 
 
@@ -132,11 +149,18 @@ def max_lookback_months(
     )
 
 
-def max_lookforward_periods(kpi: KpiSpec, requested: tuple[str, ...]) -> int:
-    """Periods after the anchor needed for leading windows."""
+def max_lookforward_periods(kpi: KpiSpec, requested: tuple[str, ...], anchor=None) -> int:
+    """Periods after the anchor needed for leading or full-period windows."""
     keys = fold_measure_keys(kpi, requested)
     by_key = {m.key: m for m in kpi.measures}
-    return max((lookforward_for(by_key[k], by_key) for k in keys if k in by_key), default=0)
+    return max(
+        (
+            lookforward_for(by_key[k], by_key, time=kpi.time, anchor=anchor)
+            for k in keys
+            if k in by_key
+        ),
+        default=0,
+    )
 
 
 def lookback_for(
@@ -169,13 +193,20 @@ def lookforward_for(
     output: OutputSpec,
     by_key: dict[str, OutputSpec],
     seen: frozenset[str] = frozenset(),
+    time: TimeSpec | None = None,
+    anchor=None,
 ) -> int:
-    """How many grain periods after the anchor a leading window needs."""
+    """How many grain periods after the anchor a leading or full-period window needs."""
     if output.key in seen:
         return 0
     from kpi_engine.core.op_registry import get_op
 
-    return get_op(output.kind).lookforward(output, by_key, seen, lookforward_for)
+    def _walk(child, by_key, seen=frozenset()):
+        return lookforward_for(child, by_key, seen=seen, time=time, anchor=anchor)
+
+    return get_op(output.kind).lookforward(
+        output, by_key, seen, _walk, time=time, anchor=anchor
+    )
 
 
 def _operand_keys(output: OutputSpec) -> list[str]:

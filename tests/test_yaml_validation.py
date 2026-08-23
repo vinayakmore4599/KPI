@@ -368,6 +368,43 @@ def test_default_paths_shape_is_validated(extra_config):
         load_model("blank_default", extra_config)
 
 
+def test_two_models_without_relations_load(extra_config):
+    """A KPI may name two extracts; join is required only when a request spans them."""
+    _write(
+        extra_config,
+        9150,
+        base_measures={
+            "sotif_value": {"sql": "amount", "agg": "sum"},
+            "reason_1": {"sql": "qty", "agg": "sum", "model": "reasons"},
+        },
+        measures={
+            "current_value": {"of": "sotif_value", "op": "point"},
+            "reason_count": {"of": "reason_1", "op": "point"},
+        },
+    )
+    kpi = load_kpi(9150, extra_config)
+    assert {b.model_id or kpi.model_id for b in kpi.base_measures} == {"sotif", "reasons"}
+    assert kpi.model_relations == ()
+
+
+def test_cuts_and_dimensions_cannot_set_model(extra_config):
+    """Cuts and dimensions stay on the KPI YAML; model: is extract-only."""
+    _write(
+        extra_config,
+        9151,
+        cuts=[{"name": "G", "group_by": ["region"], "model": "sotif"}],
+    )
+    with pytest.raises(BindError, match="cuts cannot set model"):
+        load_kpi(9151, extra_config)
+    _write(
+        extra_config,
+        9152,
+        dimensions=[{"name": "region", "model": "sotif"}],
+    )
+    with pytest.raises(BindError, match="dimensions cannot set model"):
+        load_kpi(9152, extra_config)
+
+
 def test_blank_source_path_is_treated_as_missing(extra_config):
     """A whitespace-only YAML path must not shadow the context path."""
     write_yaml(

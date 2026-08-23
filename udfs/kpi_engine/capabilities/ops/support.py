@@ -8,7 +8,10 @@ from typing import Any
 import pandas as pd
 
 from kpi_engine.contracts import (
+    FULL_RANGES,
+    NAMED_WINDOW_RANGES,
     NON_ADDITIVE_AGGS,
+    PTD_RANGES,
     CutSpec,
     KpiSpec,
     OutputSpec,
@@ -44,25 +47,120 @@ def truncate_period_safe(anchor: date, kpi: KpiSpec) -> date:
     return truncate_period(anchor, kpi.time)
 
 
-def window_bounds(anchor: date, spec: OutputSpec, kpi: KpiSpec) -> tuple[date, date]:
-    """Inclusive trailing N through the anchor; leading N after; cumulative YTD."""
-    from kpi_engine.dates import add_days, year_start
+def window_reference(anchor: date, spec: OutputSpec, kpi: KpiSpec) -> date:
+    """Anchor shifted backward by `offset`, then truncated to the KPI grain."""
+    return shifted_anchor(anchor, spec.offset, kpi, backward=True)
 
+
+def window_bounds(anchor: date, spec: OutputSpec, kpi: KpiSpec) -> tuple[date, date]:
+    """Named PTD/full period, or trailing/leading N, relative to the (offset) reference."""
+    from kpi_engine.dates import (
+        add_days,
+        month_start,
+        period_end,
+        quarter_start,
+        week_start,
+        year_start,
+    )
+
+    ref = window_reference(anchor, spec, kpi)
     kind = spec.window_range or "trailing"
+    if kind in {"ytd", "cumulative"}:
+        return year_start(ref, kpi.time), ref
+    if kind == "mtd":
+        return month_start(ref), ref
+    if kind == "qtd":
+        return quarter_start(ref, kpi.time), ref
+    if kind == "wtd":
+        return week_start(ref), ref
+    if kind in FULL_RANGES:
+        return {
+            "full_month": month_start(ref),
+            "full_quarter": quarter_start(ref, kpi.time),
+            "full_year": year_start(ref, kpi.time),
+        }[kind], period_end(ref, kind, kpi.time)
     n = spec.trailing_months or 1
-    if kind == "cumulative":
-        return year_start(anchor, kpi.time), anchor
     if kind == "leading":
         if spec.inclusive:
-            return anchor, add_periods(anchor, n - 1, kpi.time)
-        return add_periods(anchor, 1, kpi.time), add_periods(anchor, n, kpi.time)
+            return ref, add_periods(ref, n - 1, kpi.time)
+        return add_periods(ref, 1, kpi.time), add_periods(ref, n, kpi.time)
     if spec.trailing_unit == "day":
         if spec.inclusive:
-            return add_days(anchor, -(n - 1)), anchor
-        return add_days(anchor, -n), add_days(anchor, -1)
+            return add_days(ref, -(n - 1)), ref
+        return add_days(ref, -n), add_days(ref, -1)
     if spec.inclusive:
-        return add_periods(anchor, -(n - 1), kpi.time), anchor
-    return add_periods(anchor, -n, kpi.time), add_periods(anchor, -1, kpi.time)
+        return add_periods(ref, -(n - 1), kpi.time), ref
+    return add_periods(ref, -n, kpi.time), add_periods(ref, -1, kpi.time)
+
+
+def window_lookback_periods(spec: OutputSpec, time, anchor) -> int:
+    """Grain steps from window start to the request anchor (includes offset)."""
+    from datetime import date as date_cls
+
+    from kpi_engine.dates import periods_between, truncate_period
+
+    kind = spec.window_range or "trailing"
+    if time is None:
+        if kind in NAMED_WINDOW_RANGES or kind == "leading":
+            return 0
+        n = spec.trailing_months or 1
+        return max(n - 1, 0) if spec.inclusive else n
+    dummy = KpiSpec(
+        kpi_id=0,
+        version=1,
+        model_id="",
+        time=time,
+        dimensions=(),
+        base_measures=(),
+        cuts=(),
+        default_cut="",
+        measures=(),
+    )
+    ref_anchor = truncate_period(anchor or date_cls(2021, 12, 15), time)
+    start, _end = window_bounds(ref_anchor, spec, dummy)
+    if start >= ref_anchor:
+        return 0
+    return periods_between(start, ref_anchor, time)
+
+
+def window_lookforward_periods(spec: OutputSpec, time, anchor) -> int:
+    """Grain steps after the request anchor a full/leading window still needs."""
+    from datetime import date as date_cls
+
+    from kpi_engine.dates import periods_between, truncate_period
+
+    if time is None:
+        return 0
+    dummy = KpiSpec(
+        kpi_id=0,
+        version=1,
+        model_id="",
+        time=time,
+        dimensions=(),
+        base_measures=(),
+        cuts=(),
+        default_cut="",
+        measures=(),
+    )
+    ref_anchor = truncate_period(anchor or date_cls(2021, 6, 15), time)
+    _start, end = window_bounds(ref_anchor, spec, dummy)
+    if end <= ref_anchor:
+        return 0
+    return periods_between(ref_anchor, end, time)
+
+
+def assert_window_range(spec: OutputSpec, kpi: KpiSpec) -> None:
+    """Reject illegal range + trailing / grain combinations."""
+    kind = spec.window_range or "trailing"
+    if kind in NAMED_WINDOW_RANGES and spec.trailing_months is not None:
+        raise BindError(
+            f"measures.{spec.key} range={kind} cannot set trailing:. "
+            "Use trailing/leading for an N-period window."
+        )
+    if kind == "leading" and spec.trailing_months is None:
+        raise BindError(f"measures.{spec.key} range=leading requires trailing: (the length).")
+    if kind == "wtd" and (kpi.time is None or kpi.time.grain != "day"):
+        raise BindError(f"measures.{spec.key} range=wtd needs time.grain: day.")
 
 
 def point_value(

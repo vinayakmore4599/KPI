@@ -103,15 +103,13 @@ class Window(OpPlugin):
         support.require_base_of(spec, kpi)
         if kpi.time is None:
             raise BindError(f"measures.{spec.key} (window) needs a time: block.")
+        support.assert_window_range(spec, kpi)
 
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
-        return _window_lookback(spec, time, anchor)
+        return support.window_lookback_periods(spec, time, anchor)
 
-    def lookforward(self, spec, by_key, seen, lookforward_for) -> int:
-        if (spec.window_range or "trailing") != "leading":
-            return 0
-        n = spec.trailing_months or 1
-        return max(n - 1, 0) if spec.inclusive else n
+    def lookforward(self, spec, by_key, seen, lookforward_for, time=None, anchor=None) -> int:
+        return support.window_lookforward_periods(spec, time, anchor)
 
     def evaluate(self, ctx: EvalCtx) -> Any:
         if ctx.kpi.time is None or ctx.plan is None:
@@ -147,15 +145,13 @@ class Trend(OpPlugin):
         support.require_base_of(spec, kpi)
         if kpi.time is None:
             raise BindError(f"measures.{spec.key} (trend) needs a time: block.")
+        support.assert_window_range(spec, kpi)
 
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
-        return _window_lookback(spec, time, anchor)
+        return support.window_lookback_periods(spec, time, anchor)
 
-    def lookforward(self, spec, by_key, seen, lookforward_for) -> int:
-        if (spec.window_range or "trailing") != "leading":
-            return 0
-        n = spec.trailing_months or 1
-        return max(n - 1, 0) if spec.inclusive else n
+    def lookforward(self, spec, by_key, seen, lookforward_for, time=None, anchor=None) -> int:
+        return support.window_lookforward_periods(spec, time, anchor)
 
     def evaluate(self, ctx: EvalCtx) -> Any:
         if ctx.kpi.time is None or ctx.plan is None:
@@ -203,7 +199,7 @@ class Arithmetic(OpPlugin):
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
         return _max_dep_lookback(spec, by_key, time, anchor, seen, lookback_for)
 
-    def lookforward(self, spec, by_key, seen, lookforward_for) -> int:
+    def lookforward(self, spec, by_key, seen, lookforward_for, time=None, anchor=None) -> int:
         return _max_dep_lookforward(spec, by_key, seen, lookforward_for)
 
     def evaluate(self, ctx: EvalCtx) -> Any:
@@ -246,7 +242,7 @@ class Fn(OpPlugin):
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
         return _max_dep_lookback(spec, by_key, time, anchor, seen, lookback_for)
 
-    def lookforward(self, spec, by_key, seen, lookforward_for) -> int:
+    def lookforward(self, spec, by_key, seen, lookforward_for, time=None, anchor=None) -> int:
         return _max_dep_lookforward(spec, by_key, seen, lookforward_for)
 
     def evaluate(self, ctx: EvalCtx) -> Any:
@@ -296,7 +292,7 @@ class Expr(OpPlugin):
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
         return _max_dep_lookback(spec, by_key, time, anchor, seen, lookback_for)
 
-    def lookforward(self, spec, by_key, seen, lookforward_for) -> int:
+    def lookforward(self, spec, by_key, seen, lookforward_for, time=None, anchor=None) -> int:
         return _max_dep_lookforward(spec, by_key, seen, lookforward_for)
 
     def evaluate(self, ctx: EvalCtx) -> Any:
@@ -426,32 +422,6 @@ class Hook(OpPlugin):
             cut=ctx.cut, key=ctx.spec.key, op="hook", combo=_combo(ctx), result=value, hook=name
         )
         return value
-
-
-def _window_lookback(spec: OutputSpec, time: TimeSpec | None, anchor) -> int:
-    kind = spec.window_range or "trailing"
-    if kind == "leading":
-        return 0
-    if kind == "cumulative":
-        if time is None:
-            return 0
-        from datetime import date as date_cls
-        from kpi_engine.dates import periods_between, truncate_period, year_start
-
-        ref = truncate_period(anchor or date_cls(2021, 12, 15), time)
-        start = year_start(ref, time)
-        return periods_between(start, ref, time)
-    n = spec.trailing_months or 1
-    if spec.trailing_unit == "day" and time is not None and time.grain != "day":
-        from datetime import date as date_cls
-        from kpi_engine.dates import add_days, periods_between, truncate_period
-
-        ref = truncate_period(anchor or date_cls(2021, 6, 15), time)
-        start = add_days(ref, -(n - 1 if spec.inclusive else n))
-        return periods_between(truncate_period(start, time), ref, time)
-    if spec.inclusive:
-        return max(n - 1, 0)
-    return n
 
 
 def _dep_keys(spec: OutputSpec) -> list[str]:

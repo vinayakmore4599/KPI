@@ -65,6 +65,8 @@ def window_bounds(anchor: date, spec: OutputSpec, kpi: KpiSpec) -> tuple[date, d
 
     ref = window_reference(anchor, spec, kpi)
     kind = spec.window_range or "trailing"
+    if kind == "wtd" and (kpi.time is None or kpi.time.grain != "day"):
+        raise BindError(f"measures.{spec.key} range=wtd needs time.grain: day.")
     if kind in {"ytd", "cumulative"}:
         return year_start(ref, kpi.time), ref
     if kind == "mtd":
@@ -81,16 +83,55 @@ def window_bounds(anchor: date, spec: OutputSpec, kpi: KpiSpec) -> tuple[date, d
         }[kind], period_end(ref, kind, kpi.time)
     n = spec.trailing_months or 1
     if kind == "leading":
+        start, end = _count_window(ref, n, spec, kpi, leading=True)
+        return start, end
+    return _count_window(ref, n, spec, kpi, leading=False)
+
+
+def _count_window(ref, n: int, spec: OutputSpec, kpi: KpiSpec, *, leading: bool):
+    """Trailing/leading bounds. Calendar units stay calendar; periods follow the grain."""
+    from kpi_engine.dates import add_days, add_periods, apply_offset, truncate_period
+    from kpi_engine.contracts import Offset
+
+    unit = spec.trailing_unit
+    if leading:
+        if unit in {None, kpi.time.grain if kpi.time else None}:
+            if spec.inclusive:
+                return ref, add_periods(ref, n - 1, kpi.time)
+            return add_periods(ref, 1, kpi.time), add_periods(ref, n, kpi.time)
+        start = ref if spec.inclusive else _calendar_shift(ref, 1, unit)
+        end = _calendar_shift(ref, n - 1 if spec.inclusive else n, unit)
+        return start, truncate_period(end, kpi.time) if kpi.time else end
+    if unit in {None, kpi.time.grain if kpi.time else None}:
         if spec.inclusive:
-            return ref, add_periods(ref, n - 1, kpi.time)
-        return add_periods(ref, 1, kpi.time), add_periods(ref, n, kpi.time)
-    if spec.trailing_unit == "day":
-        if spec.inclusive:
-            return add_days(ref, -(n - 1)), ref
-        return add_days(ref, -n), add_days(ref, -1)
+            return add_periods(ref, -(n - 1), kpi.time), ref
+        return add_periods(ref, -n, kpi.time), add_periods(ref, -1, kpi.time)
     if spec.inclusive:
-        return add_periods(ref, -(n - 1), kpi.time), ref
-    return add_periods(ref, -n, kpi.time), add_periods(ref, -1, kpi.time)
+        start = _calendar_shift(ref, -(n - 1), unit)
+        return (truncate_period(start, kpi.time) if kpi.time else start), ref
+    start = _calendar_shift(ref, -n, unit)
+    end = _calendar_shift(ref, -1, unit)
+    if kpi.time:
+        return truncate_period(start, kpi.time), truncate_period(end, kpi.time)
+    return start, end
+
+
+def _calendar_shift(ref, steps: int, unit: str | None):
+    """Shift `ref` by calendar days/weeks/months/quarters/years."""
+    from kpi_engine.dates import add_days, apply_offset
+    from kpi_engine.contracts import Offset
+
+    if unit == "day":
+        return add_days(ref, steps)
+    if unit == "week":
+        return add_days(ref, steps * 7)
+    if unit == "month":
+        return apply_offset(ref, Offset(months=steps))
+    if unit == "quarter":
+        return apply_offset(ref, Offset(quarters=steps))
+    if unit == "year":
+        return apply_offset(ref, Offset(years=steps))
+    return apply_offset(ref, Offset(months=steps))
 
 
 def window_lookback_periods(spec: OutputSpec, time, anchor) -> int:
@@ -157,10 +198,14 @@ def assert_window_range(spec: OutputSpec, kpi: KpiSpec) -> None:
             f"measures.{spec.key} range={kind} cannot set trailing:. "
             "Use trailing/leading for an N-period window."
         )
-    if kind == "leading" and spec.trailing_months is None:
+    if kind == "leading" and spec.trailing_months is None and not spec.trailing_from:
         raise BindError(f"measures.{spec.key} range=leading requires trailing: (the length).")
-    if kind == "wtd" and (kpi.time is None or kpi.time.grain != "day"):
-        raise BindError(f"measures.{spec.key} range=wtd needs time.grain: day.")
+    if kind == "wtd":
+        allowed = kpi.time.grains or ((kpi.time.grain,) if kpi.time else ())
+        if kpi.time is None or "day" not in allowed:
+            raise BindError(f"measures.{spec.key} range=wtd needs time.grain: day.")
+        if not kpi.time.grains and kpi.time.grain != "day":
+            raise BindError(f"measures.{spec.key} range=wtd needs time.grain: day.")
 
 
 def point_value(
@@ -388,6 +433,7 @@ def negate_offset(offset):
         months=-offset.months,
         years=-offset.years,
         quarters=-offset.quarters,
+        weeks=-offset.weeks,
     )
 
 
@@ -409,7 +455,10 @@ def offset_lookback(offset, time, anchor) -> int:
     if offset is None:
         return 0
     if time is None or (
-        time.grain == "month" and offset.days == 0 and offset.quarters == 0
+        time.grain == "month"
+        and offset.days == 0
+        and offset.quarters == 0
+        and offset.weeks == 0
     ):
         return offset.total_months
     from kpi_engine.dates import apply_offset, periods_between, truncate_period

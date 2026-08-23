@@ -138,6 +138,8 @@ def truncate_period(value: date, time: TimeSpec) -> date:
     grain = time.grain
     if grain == "day":
         return day
+    if grain == "week":
+        return week_start(day)
     if grain == "month":
         return date(day.year, day.month, 1)
     if grain == "year":
@@ -170,6 +172,8 @@ def add_periods(anchor: date, periods: int, time: TimeSpec) -> date:
     start = truncate_period(anchor, time)
     if time.grain == "day":
         return add_days(start, periods)
+    if time.grain == "week":
+        return add_days(start, periods * 7)
     if time.grain == "month":
         return add_months(start, periods)
     if time.grain == "quarter":
@@ -183,7 +187,7 @@ def apply_offset(anchor: date, offset: Offset | None) -> date:
     """Apply day/month/quarter/year offset as calendar math (keeps day of month)."""
     if offset is None:
         return parse_date(anchor)
-    d = parse_date(anchor) + timedelta(days=offset.days)
+    d = parse_date(anchor) + timedelta(days=offset.days + offset.weeks * 7)
     month0 = d.month - 1 + offset.months + offset.years * 12 + offset.quarters * 3
     year = d.year + month0 // 12
     month = month0 % 12 + 1
@@ -270,20 +274,29 @@ def period_end(anchor: date, kind: str, time: TimeSpec) -> date:
     day = parse_date(anchor)
     if kind == "full_month":
         start = month_start(day)
+        last = add_days(add_months(start, 1), -1)
         if time.grain == "day":
-            return add_days(add_months(start, 1), -1)
+            return last
+        if time.grain == "week":
+            return week_start(last)
         return truncate_period(start, time)
     if kind == "full_quarter":
         start = quarter_start(day, time)
+        last = add_days(add_months(start, 3), -1)
         if time.grain == "day":
-            return add_days(add_months(start, 3), -1)
+            return last
+        if time.grain == "week":
+            return week_start(last)
         if time.grain == "month":
             return add_months(start, 2)
         return truncate_period(start, time)
     if kind == "full_year":
         start = year_start(day, time)
+        last = add_days(add_months(start, 12), -1)
         if time.grain == "day":
-            return add_days(add_months(start, 12), -1)
+            return last
+        if time.grain == "week":
+            return week_start(last)
         if time.grain == "month":
             return add_months(start, 11)
         if time.grain == "quarter":
@@ -299,11 +312,40 @@ def iso_month(value: date) -> str:
 
 
 def iso_period(value: date, time: TimeSpec | None = None) -> str:
-    """JSON period: YYYY-MM-DD for day grain, otherwise first-of-period YYYY-MM-DD."""
+    """JSON period: YYYY-MM-DD for day/week, first-of-period otherwise."""
     if time is None or time.grain == "month":
         return iso_month(value)
     d = truncate_period(value, time)
     return f"{d.year:04d}-{d.month:02d}-{d.day:02d}"
+
+
+_MONTH_ABBR = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+def period_label(value: date, time: TimeSpec | None = None) -> str:
+    """Chart label: 23 Mar, 2026-W30, Jul 2026, 2026-Q1, 2026. English, not locale."""
+    if time is None or time.grain == "month":
+        d = parse_month(value)
+        return f"{_MONTH_ABBR[d.month - 1]} {d.year}"
+    d = truncate_period(value, time)
+    if time.grain == "day":
+        return f"{d.day} {_MONTH_ABBR[d.month - 1]}"
+    if time.grain == "week":
+        iso = d.isocalendar()
+        return f"{iso.year}-W{iso.week:02d}"
+    if time.grain == "quarter":
+        start = quarter_start(d, time)
+        if time.calendar == "fiscal":
+            fy = year_start(d, time)
+            months_in = (start.year - fy.year) * 12 + (start.month - fy.month)
+            q = months_in // 3 + 1
+            return f"{fy.year}-Q{q}"
+        q = (start.month - 1) // 3 + 1
+        return f"{start.year}-Q{q}"
+    return f"{d.year}"
 
 
 def _fiscal_year_start(day: date, start_month: int) -> date:

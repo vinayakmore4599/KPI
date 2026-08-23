@@ -29,10 +29,10 @@ Related docs:
 
 ## 2. How a request is calculated (so YAML makes sense)
 
-1. The host sends `execution.kpi_id` and a list of keys (`measures_required` or `measures_requested`).
-2. Those keys must exist under `measures:`. An empty list computes **nothing** — it does not run the whole catalog.
-3. The engine walks dependencies (`of:`, `left`/`right`, `inputs:`, `expr:`) and extracts only the base facts that graph needs.
-4. The time filter is the **anchor** (exactly one value). It is never `WHERE month IN (...)`. Lookback widens the scan from the requested graph (`previous_year_value` → 12 months).
+1. The host sends `execution.kpi_id` and a list of keys (`measures_required` or `measures_requested`). If the host **omits** that field and YAML has `meta.SelectedMetrics`, those keys are the projection. An explicit `[]` still computes **nothing**.
+2. Those keys must exist under `measures:`. An empty list does not run the whole catalog.
+3. The engine walks dependencies (`of:`, `left`/`right`, `inputs:`, `expr:`, and `green_when.of`) and extracts only the base facts that graph needs.
+4. The time filter is the **anchor** (exactly one value). It is never `WHERE month IN (...)`. `execution.time_grain` may pick an allowlisted interval; lookback widens the scan from the requested graph (`previous_year_value` → 12 months).
 5. DuckDB returns physical columns. `filters:` with `apply: extract` (and undeclared `IN` lists) sit on that query. Pandas folds host spellings (`Amount` → `amount`), applies `apply: calc` masks, then `op:` / `expr:` / `agg:`.
 6. Each cut re-aggregates, then each requested measure is evaluated per dimension combination. `apply: result` drops output rows afterwards (measures already used the unfiltered cut).
 
@@ -53,8 +53,12 @@ Work down this list and stop at the first row that fits.
 | Row math across retrieved columns (product, ratio, coalesce) | `base_measures` + `columns:` + `op:` | `agg:` of two columns independently if you wanted the product first |
 | Nested `+ - * /`, CASE, or `coalesce(` on retrieved columns | `base_measures` + `expr:` | SQL `SUM()` / subqueries in KPI YAML |
 | One period’s value (current, last year, last quarter) | `measures` + `op: point` | A window of length 1 unless you really want window null/zero rules |
-| Trailing / leading / YTD total or avg | `op: window` | Summing several `point` measures by hand |
-| A graph series | `op: trend` | Returning many `point` keys |
+| Trailing / leading / YTD / QTD total or avg | `op: window` (`range: qtd` is quarter-to-date, not trailing 3) | Summing several `point` measures by hand |
+| A graph series | `op: trend` (axis in `trend_axes`, English labels in `trend_labels`) | Returning many `point` keys |
+| Same KPI at day / week / month | `time.grains` + `data_points` map; host sends `execution.time_grain` | Changing `trailing: { months: 3 }` to mean “3 weeks” |
+| Positive / Negative / Neutral | `op: fn` + `fn: sign_label` | A `green` flag (that is `green_when`) |
+| Row is on the good side of a bar | top-level `green_when` | `sign_label` or a host-side compare |
+| Default measure list when the host sends no keys | `meta.SelectedMetrics` | Treating explicit `[]` as “run the catalog” |
 | YoY, ratio, share, add/sub of **measures on the same row** | `op: arithmetic` or `op: fn` | Repeating the same formula on `base_measures` |
 | This combo vs **all groups on this cut** (`SUM() OVER ()`) | `op: percent_of_total` | `fn: percent` (that only sees this row) |
 | Share **within** a parent dimension | `op: percent_of_total` + `partition_by:` | A second `group_by` on the measure (that is the cut) |
@@ -123,10 +127,25 @@ model: sotif                 # MUST equal models/<file>.yaml model_id:
 
 time:
   column: event_month        # date column on the extract
-  grain: month               # day | month | quarter | year
+  grain: month               # day | week | month | quarter | year
+  # source_grain: day        # stored grain of the column; omit = same as grain
+  # grains: [day, week, month]   # allowlist for execution.time_grain
   filter_code: reporting_month
   calendar: gregorian        # gregorian | fiscal
   # format: yyyymm           # if the column / filter is 202607, not 2026-07
+
+# data_points: 12            # scalar only when grains is omitted or a single grain
+# data_points: { day: 30, week: 12, month: 12 }
+
+# meta:
+#   KPI: Sotif
+#   ParentKPI: Quality
+#   IsChild: false
+#   SelectedMetrics: [current_value, yoy_month, trend_n]
+
+# green_when:
+#   above: 0.98              # or below: 5 — not both
+#   of: current_value
 
 dimensions:
   - { name: reason_code, kind: dimension }
@@ -161,6 +180,7 @@ Required:
 - `kpi_id`, `model`, at least one `cut`, at least one `measure`
 - Either `time:` (period KPIs) or omit it entirely (snapshot KPIs)
 - Every host `measure_key` declared under `measures:`
+- `ParentKPI` / `IsChild` / `KPI` are echo-only; do not point `ParentKPI` at another YAML file
 
 ---
 
@@ -169,7 +189,9 @@ Required:
 | Key | Values | Default | When to set |
 |---|---|---|---|
 | `column` | identifier | required if `time:` is present | The date/timestamp DuckDB retrieves |
-| `grain` | `day`, `month`, `quarter`, `year` | `month` | The period every measure counts in |
+| `grain` | `day`, `week`, `month`, `quarter`, `year` | `month` | Default period every measure counts in. `week` is ISO Monday |
+| `source_grain` | same set as `grain` | `time.grain` | Stored grain of the time column. A pick **finer** than this fails (day < week < month < quarter < year). Monthly facts cannot become daily or weekly |
+| `grains` | list of grains | omitted = `{grain}` only | Allowlist for `execution.time_grain`. `time.grain` must appear in the list |
 | `filter_code` | context filter key | required if `time:` is present | The **selected period**. Not hardcoded to `reporting_month`. With `compose:`, this is the name after concat |
 | `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal changes `quarter` and `year` only |
 | `fiscal_start_month` | 1–12 | `4` | Only when `calendar: fiscal` |
@@ -190,10 +212,32 @@ time:
 
 `time.format` parses the **composed** string. Lookback still widens from requested measures. The `year` / `month` keys are removed so they are not leftover `IN` filters. If `reporting_month` is already on the context, that scalar wins.
 
+```yaml
+time:
+  column: event_date
+  grain: month
+  source_grain: day          # facts are daily; omit = same as grain
+  grains: [day, week, month]
+  filter_code: reporting_month
+```
+
+The host picks with `execution.time_grain` (adapter field, not a filter). Missing → `time.grain`. Not in `time.grains` (or not equal to `grain` when `grains` is omitted) → bind error. A pick finer than `source_grain` also fails. After bind, plan / DuckDB bucket / densify / `trailing.periods` use the pick. `parameters.time_grain` is the effective grain.
+
+Top-level `data_points` is the reusable length for `trailing: { from: data_points }`. Use a **scalar** only when `grains` is omitted or a single grain. More than one allowed grain → a map with a positive int for **every** listed grain.
+
+```yaml
+data_points:
+  day: 30
+  week: 12
+  month: 12
+```
+
 Rules:
 
 - The time filter must carry **exactly one** value. Two values is not a range.
 - A missing time filter on a time-based KPI is an error. The engine never defaults to “latest” or `business_date`.
+- A day pick requires a full `YYYY-MM-DD` unless `time.format` says otherwise. Week / month / quarter / year may accept `YYYY-MM` and truncate to the pick.
+- `week` buckets to ISO Monday (Python and DuckDB). Do not assume DuckDB `date_trunc('week')`.
 - `time.timezone` is rejected. Convert in a `kind: sql` model if needed.
 - Omit the whole `time:` block for a snapshot KPI. Then a measure may not use a nonzero `offset`, `trailing`, or any kind that requires time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not.
 
@@ -213,7 +257,7 @@ dimensions:
     default: Other
   - name: event_quarter                  # truncate a date column
     from: event_month
-    grain: quarter                       # day | month | quarter | year
+    grain: quarter                       # day | week | month | quarter | year
 ```
 
 `from` + `map` / `grain` run in Pandas after retrieve. Joins stay in the model YAML.
@@ -383,7 +427,7 @@ previous_year_value:
   offset: { years: 1 }       # 1 year BEFORE the anchor
 ```
 
-`offset` counts **backwards**. Units: `days`, `months`, `quarters`, `years` (they add: `{ years: 1, months: 2 }` = 14 months). Missing period → `null`.
+`offset` counts **backwards**. Units: `days`, `weeks`, `months`, `quarters`, `years` (they add: `{ years: 1, months: 2 }` = 14 months). Calendar keys keep that meaning after a grain pick (`offset: { weeks: 1 }` is always seven days). Missing period → `null`.
 
 ### 8.2 `window`
 
@@ -413,17 +457,17 @@ value_next_3m:
 
 | `range` | Window |
 |---|---|
-| `trailing` (default) | last N periods vs the reference |
-| `leading` | next N periods; needs `trailing:` |
-| `mtd` / `qtd` / `ytd` / `wtd` | period start → reference (`wtd` is day grain only) |
-| `full_month` / `full_quarter` / `full_year` | whole period containing the reference |
+| `trailing` (default) | last N vs the reference |
+| `leading` | next N; needs `trailing:` |
+| `mtd` / `qtd` / `ytd` / `wtd` | calendar period start → reference (`wtd` needs the **effective** grain `day`) |
+| `full_month` / `full_quarter` / `full_year` | whole calendar period containing the reference |
 | `cumulative` | alias of `ytd` |
 
-`offset` on a window is backwards (same as `point`). Named ranges cannot also set `trailing:`.
+`offset` on a window is backwards (same as `point`). Named PTD / `full_*` stay calendar when the pick changes (`qtd` is still quarter-to-date; month + `qtd` is valid). `wtd` binds when `day` is in `time.grains` and fails unless the pick is `day`. Named ranges cannot also set `trailing:`.
 
 `inclusive: false` ends one period **before** the anchor.
 
-`trailing` units: `periods`, `months`, `days`, `quarters`, `years`. The unit is a count of KPI-grain periods (except `days`, which is a calendar-day window). It is not a unit converter.
+`trailing` / `offset` keys `days`, `weeks`, `months`, `quarters`, `years` are **calendar** and do not change meaning when the pick changes (`trailing: { months: 3 }` on a week pick is three calendar months, not three weeks). `trailing: { periods: N }` and `trailing: { from: data_points }` count **picked grain** steps.
 
 The window uses the base measure’s own `agg`.
 
@@ -433,12 +477,17 @@ The window uses the base measure’s own `agg`.
 trend_12m:
   of: sotif_value
   op: trend
-  trailing: { months: 12 }
+  trailing: { months: 12 }   # always 12 calendar months
   inclusive: true
   cuts: [G]                  # default: default_cut only
+
+trend_n:
+  of: sotif_value
+  op: trend
+  trailing: { from: data_points }   # 30 / 12 / 12 by pick
 ```
 
-Fixed-length array; shared x-axis in `trend_axes`. Empty `sum`/`count` slots are `0`; others `null`. Cap: **50,000 cells** (rows × length) per cut.
+Fixed-length array. Shared x-axis is `trend_axes` (ISO period starts) plus `trend_labels` (fixed English: `23 Mar`, `2026-W30`, `Jul 2026`, `2026-Q1`, `2026`). Same keys and lengths; two days in the same week stay distinct. Labels are not locale-dependent. Empty `sum`/`count` slots are `0`; others `null`. Cap: **50,000 cells** (rows × length) per cut. A day pick plus a large `data_points` widens the extract spine; the cap still applies.
 
 `cuts:` is honoured for **trend**, **rank**, and **percent_of_total** only.
 
@@ -471,6 +520,7 @@ net_value:
 | `coalesce` / `if_null` | | 2+ / 2 | first non-null | null if all null |
 | `nullif` / `null_if_zero` / `zero_if_null` | | 2 / 1 / 1 | null helpers | — |
 | `is_null` / `is_not_null` / `if_else` | | 1 / 1 / 3 | flags and branch | `if_else` uses `other` when cond is 0 or null |
+| `sign_label` | `change_direction` | `value` | `Positive` / `Negative` / `Neutral` | null stays null; `0` is Neutral |
 
 `growth_pct` is a **ratio** (`0.05` = +5%). Use `percent` if the UI wants `5.0`.
 
@@ -485,7 +535,15 @@ yoy_growth:
   op: fn
   fn: growth_pct
   inputs: { current: current_value, previous: previous_year_value }
+
+direction:
+  op: fn
+  fn: sign_label             # alias: change_direction
+  inputs: [yoy_month]
+  # params: { positive: Up, negative: Down, neutral: Flat }
 ```
+
+`sign_label` is a leaf string. Null → null; `0` → Neutral; `> 0` → Positive; `< 0` → Negative. It is not the row `green` flag. String results do not feed arithmetic.
 
 Cycles (`a → b → a`) fail at bind. Shared inputs are computed once.
 
@@ -541,6 +599,26 @@ Same YAML shape for every cut-wide op:
   partition_by: []       # optional; omit = whole cut
   cuts: [R]              # optional; default = default_cut
 ```
+
+### 8.8 `meta` and `green_when`
+
+```yaml
+meta:
+  KPI: Sotif
+  ParentKPI: Quality
+  IsChild: false
+  SelectedMetrics: [current_value, yoy_month, trend_n]
+
+green_when:
+  above: 0.98            # or below: 5 — not both
+  of: current_value
+```
+
+`KPI` / `ParentKPI` / `IsChild` are copied onto the response. Do not validate `ParentKPI` as another YAML file.
+
+`SelectedMetrics` is the default projection **only** when the host omits `measures_required` / `measures_requested`. Explicit `[]` still computes nothing.
+
+`green_when` needs exactly one of `above:` or `below:`, plus `of:`. `green` is `true` when the named measure is `>= above` or `<= below`; `false` when the compare runs and fails; `null` when the value is null. `of` is always added to the resolved graph, so a request that left `current_value` off the list still computes it for `green` (it may appear on the row). Response `meta` copies YAML meta plus `{above|below, of}`. `green` is not `sign_label`.
 
 ---
 
@@ -777,9 +855,9 @@ Design around these; they are intentional.
 **Identity and request**
 
 - KPI `model:` must equal the model file `model_id:` (fold: case / space / underscore only). `sotif` ≠ `sotif_sql`.
-- Empty `measures_required` / `measures_requested` computes nothing. It does not expand to every YAML measure.
+- Empty `measures_required` / `measures_requested` (`[]`) computes nothing. It does not expand to every YAML measure. `meta.SelectedMetrics` applies only when the host **omits** the field.
 - Host keys fold onto YAML keys; unknown keys fail at bind with the valid list.
-- KPI YAML cannot reference another KPI’s measures.
+- KPI YAML cannot reference another KPI’s measures. `meta.ParentKPI` is echo-only.
 
 **SQL vs Pandas**
 
@@ -794,7 +872,10 @@ Design around these; they are intentional.
 - `calendar: fiscal` affects `quarter` and `year` only. Fiscal months are calendar months.
 - Time filter is a single anchor, not a range.
 - Snapshot KPIs (no `time:`) cannot use windows, trends, nonzero offsets, trailing, or time-requiring add-ons (`lag`, period hooks, …).
-- `trailing` counts grain periods; the unit key is not a converter.
+- `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) keep that meaning after `execution.time_grain` changes. `periods` and `from: data_points` follow the pick.
+- A pick finer than `time.source_grain` is rejected. Monthly facts cannot become daily or weekly.
+- `wtd` needs the effective grain `day`. Other named PTD / `full_*` ranges stay valid on a coarser pick.
+- Multi-grain KPIs require a `data_points` map covering every listed grain. A day pick plus a large `data_points` widens the spine; the 50,000 trend-cell cap still applies.
 
 **Cuts and payload**
 
@@ -848,6 +929,12 @@ Use local parquet fixtures (`tests/conftest.py`: `make_context`, `write_yaml`). 
 |---|---|
 | `No base_measures attach to model '…'` | Set KPI `model:` to the model file `model_id:` |
 | `Unknown measure_key(s)` | Add the key under `measures:`, or correct the host list |
+| `execution.time_grain … is not allowed` | Send a grain from `time.grains`, or omit the pick |
+| `finer than time.source_grain` | Do not pick day/week on monthly facts; raise `source_grain` or drop the pick |
+| `time.grain=day requires a full date` | Send `YYYY-MM-DD` when the pick is day |
+| `data_points must be a map` | Multi-`grains` needs `{ day: N, week: N, … }` covering every listed grain |
+| `range=wtd needs time.grain: day` | Allow `day` in `time.grains` and pick day, or drop `wtd` |
+| `green_when needs exactly one of above: or below:` | Set one threshold, not both |
 | `Missing month filter` | Set `time.filter_code` to the real filter, or omit `time:` |
 | `Month filter must contain exactly one value` | Anchor is one period, not a multi-select |
 | `Filter '…' has no column mapping` | Add context mapping or `filter_map` |
@@ -897,6 +984,48 @@ measures:
   yoy_month:           { op: arithmetic, fn: growth_pct, left: current_value, right: previous_year_value }
   trend_12m:           { of: sotif_value, op: trend, trailing: { months: 12 }, cuts: [G] }
 ```
+
+### Day / week / month switch with labels and green
+
+```yaml
+kpi_id: 3011
+model: sotif
+time:
+  column: event_date
+  grain: month
+  source_grain: day
+  grains: [day, week, month]
+  filter_code: reporting_month
+data_points:
+  day: 30
+  week: 12
+  month: 12
+meta:
+  KPI: Sotif
+  ParentKPI: Quality
+  IsChild: false
+  SelectedMetrics: [current_value, yoy_month, trend_n]
+green_when:
+  above: 0.98
+  of: current_value
+dimensions:
+  - { name: reason_code, kind: dimension }
+base_measures:
+  sotif_value: { sql: amount, agg: sum }
+cuts:
+  - { name: G, group_by: [reason_code], ignore_filters: [] }
+default_cut: G
+measures:
+  current_value: { of: sotif_value, op: point, offset: { months: 0 } }
+  previous_year_value: { of: sotif_value, op: point, offset: { years: 1 } }
+  value_3m:      { of: sotif_value, op: window, trailing: { months: 3 } }   # always 3 calendar months
+  value_qtd:     { of: sotif_value, op: window, range: qtd }
+  yoy_month:     { op: arithmetic, fn: growth_pct, left: current_value, right: previous_year_value }
+  direction:     { op: fn, fn: sign_label, inputs: [yoy_month] }
+  trend_n:       { of: sotif_value, op: trend, trailing: { from: data_points }, cuts: [G] }
+```
+
+Host sends `execution.time_grain: week` (or omits it to keep `month`). Chart labels come back in `trend_labels`, not as measures.
 
 ### Row product then sum (SOTIF-style)
 

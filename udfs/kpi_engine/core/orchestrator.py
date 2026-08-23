@@ -68,8 +68,8 @@ from kpi_engine.core.pipelines import (
     partition_request,
 )
 from kpi_engine.core.relations import join_monthly
-from kpi_engine.core.time_planner import plan_time, span_for_keys
-from kpi_engine.dates import add_periods, iso_period
+from kpi_engine.core.time_planner import apply_request_time, plan_time, span_for_keys
+from kpi_engine.dates import add_periods, iso_period, parse_date, period_label
 from kpi_engine.exceptions import BindError, KPIEngineError
 from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.platform import acquire_connection
@@ -125,10 +125,9 @@ def _compute(
     request = adapt(context)
     log_step("bind")
     kpi = load_kpi(request.kpi_id, root)
-    request = replace(request, measure_keys=fold_measure_keys(kpi, request.measure_keys))
-    assert_measure_keys(kpi, request.measure_keys)
-    requested, _needed_bases = resolve_requested_graph(kpi, request.measure_keys)
-    pipelines = partition_request(kpi, request.measure_keys)
+    request, kpi = _apply_host_defaults(request, kpi)
+    requested = request.measure_keys
+    pipelines = partition_request(kpi, requested)
     models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
     log_step("plan_time")
     time_plan, remaining_filters = plan_time(request, kpi)
@@ -185,7 +184,7 @@ def _compute(
         if owned:
             con.close()
     log_step("calculate")
-    rows = _sort_rows(rows, kpi)
+    rows = _stamp_green(_sort_rows(rows, kpi), kpi)
     log_step("paginate")
     page_rows, pagination = _paginate(rows, request)
     parameters = _parameters(kpi, time_plan)
@@ -196,6 +195,8 @@ def _compute(
         "applied_filters": _dedupe_applied(_applied(applied_src, applied_def, applied_res)),
         "ignored_filters": _dedupe_ignored(ignored),
         "trend_axes": trend_axes,
+        "trend_labels": _trend_labels(trend_axes, kpi),
+        "meta": _response_meta(kpi),
         "pagination": pagination,
         "sql": sqls[0] if sqls else "",
         "sqls": sqls,
@@ -242,8 +243,7 @@ def _validate(
     root = Path(config_dir) if config_dir else default_config_dir()
     request = adapt(context)
     kpi = load_kpi(request.kpi_id, root)
-    request = replace(request, measure_keys=fold_measure_keys(kpi, request.measure_keys))
-    assert_measure_keys(kpi, request.measure_keys)
+    request, kpi = _apply_host_defaults(request, kpi)
     pipelines = partition_request(kpi, request.measure_keys)
     models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
     time_plan, remaining = plan_time(request, kpi)
@@ -554,6 +554,71 @@ def _monthly_value_cols(kpi: KpiSpec) -> list[str]:
             continue
         cols.append(measure.name)
     return cols
+
+
+def _apply_host_defaults(
+    request: AdaptedRequest, kpi: KpiSpec
+) -> tuple[AdaptedRequest, KpiSpec]:
+    """SelectedMetrics when the host omitted measures; then pick the request grain."""
+    if request.measures_omitted and kpi.meta is not None and kpi.meta.selected_metrics:
+        request = replace(request, measure_keys=kpi.meta.selected_metrics)
+    request = replace(request, measure_keys=fold_measure_keys(kpi, request.measure_keys))
+    assert_measure_keys(kpi, request.measure_keys)
+    kpi = apply_request_time(kpi, request)
+    requested, _needed = resolve_requested_graph(kpi, request.measure_keys)
+    return replace(request, measure_keys=requested), kpi
+
+
+def _stamp_green(rows: list[dict[str, Any]], kpi: KpiSpec) -> list[dict[str, Any]]:
+    """Set row.green from green_when. Null value stays null."""
+    rule = kpi.green_when
+    if rule is None:
+        return rows
+    for row in rows:
+        raw = row.get(rule.of)
+        if raw is None:
+            row["green"] = None
+            continue
+        try:
+            if isinstance(raw, float) and raw != raw:
+                row["green"] = None
+                continue
+            number = float(raw)
+        except (TypeError, ValueError):
+            row["green"] = None
+            continue
+        if rule.above is not None:
+            row["green"] = number >= rule.above
+        else:
+            row["green"] = number <= float(rule.below)
+    return rows
+
+
+def _trend_labels(axes: dict[str, list[str]], kpi: KpiSpec) -> dict[str, list[str]]:
+    """English chart labels aligned to ISO trend_axes."""
+    return {
+        key: [period_label(parse_date(item), kpi.time) for item in values]
+        for key, values in axes.items()
+    }
+
+
+def _response_meta(kpi: KpiSpec) -> dict[str, Any] | None:
+    """YAML meta plus green_when threshold, or None when both are absent."""
+    if kpi.meta is None and kpi.green_when is None:
+        return None
+    out: dict[str, Any] = {}
+    if kpi.meta is not None:
+        out["KPI"] = kpi.meta.kpi
+        out["ParentKPI"] = kpi.meta.parent_kpi
+        out["IsChild"] = kpi.meta.is_child
+        out["SelectedMetrics"] = list(kpi.meta.selected_metrics)
+    if kpi.green_when is not None:
+        out["of"] = kpi.green_when.of
+        if kpi.green_when.above is not None:
+            out["above"] = kpi.green_when.above
+        else:
+            out["below"] = kpi.green_when.below
+    return out
 
 
 def _parameters(kpi: KpiSpec, time_plan: TimePlan | None) -> dict[str, Any]:

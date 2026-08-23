@@ -215,6 +215,28 @@ def test_wtd_rejects_month_grain(extra_config):
         load_kpi(9708, extra_config)
 
 
+def test_wtd_fails_on_month_pick_when_day_is_allowed(parquet_path, extra_config):
+    """wtd binds when day is in time.grains, then fails if the pick is not day."""
+    spec = minimal_kpi(
+        9711,
+        time={
+            "column": "event_month",
+            "grain": "month",
+            "source_grain": "day",
+            "grains": ["day", "week", "month"],
+            "filter_code": "reporting_month",
+        },
+        measures={"w": {"of": "sotif_value", "op": "window", "range": "wtd"}},
+    )
+    write_yaml(extra_config / "kpis" / "9711.yaml", spec)
+    load_kpi(9711, extra_config)
+    ctx = make_context(
+        parquet_path, measures=["w"], supplier=["ABC"], kpi_id=9711, time_grain="month"
+    )
+    with pytest.raises(BindError, match="time.grain: day"):
+        compute(ctx, config_dir=extra_config)
+
+
 def test_wtd_on_day_grain(tmp_path, extra_config):
     """Wednesday WTD is Mon–Wed."""
     frame = pd.DataFrame(

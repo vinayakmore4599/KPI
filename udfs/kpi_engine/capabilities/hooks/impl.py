@@ -252,7 +252,7 @@ def cagr(series, *, kpi, plan, spec, **_):
     steps = periods_between(first_date, last_date, kpi.time)
     if steps == 0:
         return None
-    per_year = {"day": 365, "month": 12, "quarter": 4, "year": 1}[kpi.time.grain]
+    per_year = {"day": 365, "week": 52, "month": 12, "quarter": 4, "year": 1}[kpi.time.grain]
     years = float(steps) / float(per_year)
     return float(last / first) ** (1.0 / years) - 1.0
 

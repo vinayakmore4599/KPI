@@ -66,7 +66,9 @@ def test_measures_required_may_be_omitted(parquet_path):
     """A view with no measures_required yields an empty projection, not an error."""
     ctx = make_context(parquet_path, measures=[])
     ctx["execution"]["view_details"][0]["measures_required"] = None
-    assert adapt(ctx).measure_keys == ()
+    request = adapt(ctx)
+    assert request.measure_keys == ()
+    assert request.measures_omitted is True
 
 
 def test_measures_required_shape_is_validated(parquet_path):

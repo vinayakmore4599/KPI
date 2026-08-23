@@ -35,6 +35,8 @@ def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
         "applied_filters",
         "ignored_filters",
         "trend_axes",
+        "trend_labels",
+        "meta",
         "pagination",
         "sql",
         "sqls",
@@ -262,3 +264,9 @@ def test_trend_axes_only_lists_requested_trends(parquet_path, config_dir):
         config_dir=config_dir,
     )
     assert list(with_trend["trend_axes"]) == ["trend_12m"]
+    assert list(with_trend["trend_labels"]) == ["trend_12m"]
+    assert len(with_trend["trend_labels"]["trend_12m"]) == len(
+        with_trend["trend_axes"]["trend_12m"]
+    )
+    assert without["trend_labels"] == {}
+    assert without["meta"] is None

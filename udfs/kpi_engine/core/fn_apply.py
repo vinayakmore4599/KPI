@@ -12,7 +12,7 @@ When to use
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, NamedTuple
 
 import pandas as pd
@@ -616,7 +616,9 @@ def apply_dimension_maps(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
         series = work[actual]
         if spec.grain:
             series = pd.to_datetime(series, errors="coerce").dt.to_period(
-                {"day": "D", "month": "M", "quarter": "Q", "year": "Y"}[spec.grain]
+                {"day": "D", "week": "W-MON", "month": "M", "quarter": "Q", "year": "Y"}[
+                    spec.grain
+                ]
             ).dt.start_time.dt.normalize()
         if spec.mapping:
             mapped = series.astype(str).map(spec.mapping)
@@ -734,11 +736,17 @@ def _fold(step: Callable[[Any, Any], Any], args: tuple[Any, ...]) -> Any:
     return result
 
 
-def call_measure_fn(fn: str, values: list[Any], params: tuple[str, ...] = ()) -> Any:
+def call_measure_fn(
+    fn: str,
+    values: list[Any],
+    params: tuple[str, ...] = (),
+    extras: Mapping[str, Any] | None = None,
+) -> Any:
     """Call a registered measure function with one argument per input measure.
 
     A strictly two-argument function given more than two values is folded left to
     right, which is what `arithmetic` with a three-name `of:` list has always meant.
+    `extras` are YAML `params:` literals that match optional function keywords.
     """
     step = MEASURE_FNS.get(fn)
     if step is None:
@@ -751,11 +759,17 @@ def call_measure_fn(fn: str, values: list[Any], params: tuple[str, ...] = ()) ->
     problem = measure_fn_error(fn, len(values), params)
     if problem:
         raise CatalogError(f"Measure fn {problem}")
+    names = set(measure_fn_meta(fn).params)
+    kwargs = {
+        key: extras[key]
+        for key in (extras or {})
+        if key in names and key not in params
+    }
     if params:
-        return step(**dict(zip(params, values)))
+        return step(**dict(zip(params, values)), **kwargs)
     if measure_fn_meta(fn).max_args == 2 and len(values) > 2:
         return _fold(step, tuple(values))
-    return step(*values)
+    return step(*values, **kwargs)
 
 
 def _sum_or_null(series: pd.Series) -> float:

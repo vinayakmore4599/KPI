@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from kpi_engine.contracts import (
+    GRAIN_RANK,
     AdaptedRequest,
     IncomingFilter,
     KpiSpec,
@@ -105,6 +106,47 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, t
         ),
         rest,
     )
+
+
+def apply_request_time(kpi: KpiSpec, request: AdaptedRequest) -> KpiSpec:
+    """Pick the request grain, reject finer-than-source, resolve data_points trailing."""
+    if kpi.time is None:
+        return kpi
+    allowed = kpi.time.grains or (kpi.time.grain,)
+    pick = request.time_grain or kpi.time.grain
+    if pick not in allowed:
+        raise BindError(
+            f"execution.time_grain {pick!r} is not allowed "
+            f"(time.grains {list(allowed)})."
+        )
+    source = kpi.time.source_grain or kpi.time.grain
+    if GRAIN_RANK[pick] < GRAIN_RANK[source]:
+        raise BindError(
+            f"execution.time_grain {pick!r} is finer than time.source_grain {source!r}."
+        )
+    time = replace(kpi.time, grain=pick)
+    measures = []
+    for spec in kpi.measures:
+        if spec.trailing_from != "data_points":
+            measures.append(spec)
+            continue
+        n = _data_points_for(kpi, pick)
+        measures.append(replace(spec, trailing_months=n, trailing_unit=None))
+    return replace(kpi, time=time, measures=tuple(measures))
+
+
+def _data_points_for(kpi: KpiSpec, grain: str) -> int:
+    """Positive length from YAML data_points for this effective grain."""
+    raw = kpi.data_points
+    if raw is None:
+        raise TimePlanError("trailing.from: data_points needs a top-level data_points:.")
+    if isinstance(raw, int):
+        return raw
+    if grain not in raw:
+        raise TimePlanError(
+            f"data_points has no entry for grain {grain!r} (have {sorted(raw)})."
+        )
+    return int(raw[grain])
 
 
 def span_for_keys(kpi: KpiSpec, keys: tuple[str, ...], plan: TimePlan | None) -> TimePlan | None:

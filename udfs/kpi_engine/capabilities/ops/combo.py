@@ -33,7 +33,9 @@ def _combo(ctx: EvalCtx) -> dict[str, Any]:
 def _offset_nonzero(offset) -> bool:
     if offset is None:
         return False
-    return bool(offset.months or offset.years or offset.days or offset.quarters)
+    return bool(
+        offset.months or offset.years or offset.days or offset.quarters or offset.weeks
+    )
 
 
 class Point(OpPlugin):
@@ -50,7 +52,10 @@ class Point(OpPlugin):
         if not spec.offset:
             return 0
         if time is None or (
-            time.grain == "month" and spec.offset.days == 0 and spec.offset.quarters == 0
+            time.grain == "month"
+            and spec.offset.days == 0
+            and spec.offset.quarters == 0
+            and spec.offset.weeks == 0
         ):
             return spec.offset.total_months
         from kpi_engine.dates import apply_offset, periods_between, truncate_period
@@ -80,6 +85,7 @@ class Point(OpPlugin):
                 months=-spec.offset.months,
                 years=-spec.offset.years,
                 quarters=-spec.offset.quarters,
+                weeks=-spec.offset.weeks,
             )
             target = truncate_period(apply_offset(plan.anchor, lookback), kpi.time)
         base = support.base_measure(kpi, spec.of) if spec.of else None
@@ -208,7 +214,7 @@ class Arithmetic(OpPlugin):
 
 class Fn(OpPlugin):
     name = "fn"
-    extra_keys = frozenset({"fn", "inputs"})
+    extra_keys = frozenset({"fn", "inputs", "params"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -232,8 +238,17 @@ class Fn(OpPlugin):
         problem = measure_fn_error(fn_name, len(inputs), input_params)
         if problem:
             raise BindError(f"measures.{key} fn {problem}")
+        extra = raw.get("params") or {}
+        if extra and not isinstance(extra, dict):
+            raise BindError(f"measures.{key}.params must be an object.")
         return OutputSpec(
-            **{**spec.__dict__, "fn": raw.get("fn"), "inputs": inputs, "input_params": input_params}
+            **{
+                **spec.__dict__,
+                "fn": raw.get("fn"),
+                "inputs": inputs,
+                "input_params": input_params,
+                "params": extra,
+            }
         )
 
     def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
@@ -397,7 +412,12 @@ class Hook(OpPlugin):
 
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
         if spec.offset:
-            if time is None or time.grain == "month":
+            if time is None or (
+                time.grain == "month"
+                and spec.offset.days == 0
+                and spec.offset.quarters == 0
+                and spec.offset.weeks == 0
+            ):
                 return spec.offset.total_months
             from kpi_engine.dates import apply_offset, periods_between, truncate_period
             from datetime import date as date_cls
@@ -491,6 +511,7 @@ def _compose(ctx: EvalCtx, *, kind: str) -> Any:
         spec.fn or ("divide" if kind == "arithmetic" else ""),
         values,
         spec.input_params if kind == "fn" else (),
+        extras=spec.params if kind == "fn" else None,
     )
     keys = list(spec.input_params) if kind == "fn" and spec.input_params else names
     log_measure_calc(

@@ -23,7 +23,7 @@ model: sotif                 # config/models/sotif.yaml
 
 time:
   column: event_month        # date column on the extract
-  grain: month               # day | month | quarter | year
+  grain: month               # day | week | month | quarter | year
   filter_code: reporting_month   # context filter that carries the selected period
   calendar: gregorian        # gregorian | fiscal
   fiscal_start_month: 4      # only read when calendar: fiscal
@@ -103,7 +103,9 @@ The practical consequences:
 | Key | Values | Default | Notes |
 |---|---|---|---|
 | `column` | column name | required if `time:` is present | Date or timestamp on the extract |
-| `grain` | `day`, `month`, `quarter`, `year` | `month` | The period every measure counts in |
+| `grain` | `day`, `week`, `month`, `quarter`, `year` | `month` | Default period every measure counts in. `week` is ISO Monday. |
+| `source_grain` | same set as `grain` | `time.grain` | Stored grain of the time column. A request pick **finer** than this is rejected (day < week < month < quarter < year). Monthly facts cannot become daily or weekly. |
+| `grains` | list of grains | omitted = `{grain}` only | Allowlist for `execution.time_grain`. `time.grain` must appear in the list. |
 | `filter_code` | context filter key | required if `time:` is present | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month` — each KPI names its own filter. When `compose:` is set, this is the **synthetic** name after concat (need not exist on the context). |
 | `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal affects `quarter` and `year` only |
 | `fiscal_start_month` | 1–12 | `4` | First month of the fiscal year |
@@ -116,8 +118,12 @@ Rules the engine enforces:
 
 - When `time:` is declared, that filter must carry **exactly one** value. Two values or zero values is an error, not a range.
 - A missing time filter on a time-based KPI is an error. The engine never defaults to "latest data" or to `business_date`.
-- `grain: day` requires a full `YYYY-MM-DD` unless `time.format` says otherwise.
-- Truncation happens in SQL (`date_trunc` after the column is parsed with `time.format`), so a mid-period date anchors on the period start.
+- `execution.time_grain` (adapter, not a filter) picks one allowlisted grain. Missing → `time.grain`. Not in `time.grains` (or not equal to `grain` when `grains` is omitted) → bind error. After bind, plan / DuckDB bucket / densify / `trailing.periods` use the pick.
+- A day pick requires a full `YYYY-MM-DD` unless `time.format` says otherwise. Week / month / quarter / year may accept `YYYY-MM` and truncate to the pick.
+- Truncation happens in SQL (ISO Monday for `week`; otherwise `date_trunc` after the column is parsed with `time.format`), so a mid-period date anchors on the period start.
+- Top-level `data_points` is a positive int when `grains` is omitted or a single grain. More than one allowed grain requires a map with a positive int for **every** listed grain. `trailing: { from: data_points }` reads the pick's length.
+- `meta.KPI` / `ParentKPI` / `IsChild` are echoed onto the response. `meta.SelectedMetrics` is the default projection only when the host **omits** `measures_required` / `measures_requested`. An explicit `[]` still computes nothing.
+- `green_when` is exactly one of `above:` or `below:`, plus `of:`. The row flag `green` is true when the named measure is `>= above` or `<= below`. `of` is always added to the resolved graph. Response `meta` copies YAML meta plus `{above\|below, of}`.
 - A `kind: sql` model may contain any number of CTEs. Context IN filters and the time range are applied on the **wrapper around the final SELECT**, not inside earlier CTEs. `Region` / `region` / `Reason_code` / `reason_code` are the same name.
 
 Fiscal example — with `fiscal_start_month: 4`, March 2026 belongs to fiscal year starting **2025-04-01** and to the fiscal quarter starting **2026-01-01**.
@@ -338,17 +344,17 @@ value_next_3m:
 |---|---|
 | `trailing` (default) | last N periods relative to the reference |
 | `leading` | next N periods; requires `trailing:` for the length |
-| `mtd` / `qtd` / `ytd` / `wtd` | period start through the reference (`cumulative` = `ytd`; `wtd` needs `time.grain: day`) |
-| `full_month` / `full_quarter` / `full_year` | whole period containing the reference |
+| `mtd` / `qtd` / `ytd` / `wtd` | calendar period start through the reference (`cumulative` = `ytd`; `wtd` needs the **effective** grain `day`) |
+| `full_month` / `full_quarter` / `full_year` | whole calendar period containing the reference |
 
-`offset` on a window shifts the reference **backwards**, then the range is applied. Named ranges (`mtd`, `qtd`, `ytd`, `wtd`, `full_*`) cannot also set `trailing:`. `inclusive` applies only to trailing/leading. Fiscal vs calendar follows `time.calendar`.
+`offset` on a window shifts the reference **backwards**, then the range is applied. Named PTD / `full_*` ranges stay calendar and do not change meaning when the grain pick changes (`qtd` is still quarter-to-date; month + `qtd` is valid). `wtd` binds when `day` is allowed and fails at evaluate unless the pick is `day`. Named ranges cannot also set `trailing:`. `inclusive` applies only to trailing/leading. Fiscal vs calendar follows `time.calendar`.
 
 | `inclusive` | Trailing window | With anchor March |
 |---|---|---|
 | `true` (default) | the last N periods **including** the anchor | Jan, Feb, Mar |
 | `false` | N periods **ending one period before** the anchor | Dec, Jan, Feb |
 
-`trailing: { days: N }` is a calendar-day window. `periods`, `months`, `quarters`, and `years` are counts of **KPI grain periods**.
+`trailing` / `offset` keys `days`, `weeks`, `months`, `quarters`, `years` are **calendar** and keep that meaning after a grain pick (`trailing: { months: 3 }` on a week pick is three calendar months, not three weeks). `trailing: { periods: N }` and `trailing: { from: data_points }` count **picked grain** steps.
 
 The window aggregates using the base measure's own `agg`: a `min` base gives the minimum over the window, a `sum` base gives the total, a `last` base gives the last snapshot in the window.
 
@@ -363,7 +369,7 @@ trend_12m:
   cuts: [G]                # optional; default is default_cut only
 ```
 
-- Returns a fixed-length array; the shared x-axis is in `trend_axes` in the response, so length always matches.
+- Returns a fixed-length array; the shared x-axis is in `trend_axes` (ISO period starts) and `trend_labels` (fixed English: `23 Mar`, `2026-W30`, `Jul 2026`, `2026-Q1`, `2026`). Same keys and lengths. Labels are unique enough for a chart and are not locale-dependent.
 - A period with no rows keeps its slot: `0` for `sum`/`count`, `null` for everything else.
 - Trends are emitted **only on the default cut** unless `cuts:` lists more. This is deliberate — a trend on a high-cardinality cut multiplies the payload.
 - Guardrail: rows × array length may not exceed **50,000 cells** per cut, otherwise the request fails and asks you to narrow `cuts`.
@@ -1055,7 +1061,8 @@ Known boundaries, so you do not design around something that is not there:
 
 - Timestamps are bucketed as stored; there is no timezone conversion, and `time.timezone` is rejected at bind rather than silently ignored. Convert the column in a `kind: sql` model if you need it.
 - `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months.
-- `trailing` counts grain periods; the unit key is an alias, not a converter (§5.2).
+- `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) do not change meaning when `execution.time_grain` changes. `periods` and `from: data_points` follow the pick (§5.2).
+- A day pick plus a large `data_points` widens the extract spine; the 50,000 trend-cell cap still applies.
 - `measures.*.cuts` restricts **trend**, **rank**, **percent_of_total**, and other cut-phase kinds (`ntile`, `top_n`, …).
 - `percent_of_total` windows **this cut's** rows only. Share of a different cut's total is a different problem (`ignore_filters` / `also_emit`, or a later op).
 - `filters:` is one mask for the pipeline (then cuts / `ignore_filters`). There is no per-measure filter block.

@@ -172,6 +172,7 @@ def make_context(
     limit: int | None = None,
     business_date: str | None = "2099-01-01",
     extra_datasets: dict | None = None,
+    time_grain: str | None = None,
 ) -> dict:
     """Build a metadata-shaped context pointing at a local parquet path."""
     filters = {
@@ -236,6 +237,7 @@ def make_context(
             ],
             "user_id": "id",
             "business_date": business_date,
+            **({} if time_grain is None else {"time_grain": time_grain}),
         },
         "filters": filters,
         "datasets": datasets,

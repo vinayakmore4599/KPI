@@ -32,13 +32,16 @@ from typing import Any
 import yaml
 
 from kpi_engine.contracts import (
+    GRAIN_NAMES,
     AdaptedRequest,
     BaseMeasure,
     CutSpec,
     DatasetBinding,
     DimensionSpec,
     FilterApplySpec,
+    GreenWhen,
     JoinSpec,
+    KpiMeta,
     KpiSpec,
     MeasureWhere,
     ModelRelation,
@@ -200,7 +203,10 @@ def resolve_requested_graph(
     An empty measures_required list computes nothing — it does not expand to
     every key in the KPI YAML.
     """
-    emit = tuple(dict.fromkeys(fold_measure_keys(kpi, requested)))
+    keys = list(requested)
+    if requested and kpi.green_when is not None:
+        keys.append(kpi.green_when.of)
+    emit = tuple(dict.fromkeys(fold_measure_keys(kpi, tuple(keys))))
     by_key = {m.key: m for m in kpi.measures}
     by_base = {b.name: b for b in kpi.base_measures}
     needed: set[str] = set()
@@ -279,6 +285,9 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     if row_set not in {"span_union", "anchor_only"}:
         raise BindError("row_set must be span_union or anchor_only.")
 
+    data_points = _parse_data_points(raw.get("data_points"), time)
+    meta = _parse_meta(raw.get("meta"), tuple(m.key for m in measures))
+    green_when = _parse_green_when(raw.get("green_when"), tuple(m.key for m in measures))
     relations = tuple(_parse_relation(r) for r in raw.get("model_relations") or [])
     base_names = {b.name for b in bases}
     for rel in relations:
@@ -302,8 +311,15 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         row_set=row_set,  # type: ignore[arg-type]
         model_relations=relations,
         dimension_specs=dim_specs,
+        data_points=data_points,
+        meta=meta,
+        green_when=green_when,
     )
     for spec in kpi.measures:
+        if spec.trailing_from == "data_points" and data_points is None:
+            raise BindError(
+                f"measures.{spec.key} trailing.from: data_points needs a top-level data_points:."
+            )
         get_op(spec.kind).validate(spec, kpi)
     return kpi
 
@@ -326,8 +342,10 @@ def _parse_dimension(raw: Any) -> DimensionSpec:
         raise BindError(f"dimensions.{name}.map must be an object.")
     mapping = {str(k): str(v) for k, v in mapping_raw.items()}
     grain = raw.get("grain")
-    if grain is not None and grain not in {"day", "month", "quarter", "year"}:
-        raise BindError(f"dimensions.{name}.grain must be day, month, quarter, or year.")
+    if grain is not None and grain not in GRAIN_NAMES:
+        raise BindError(
+            f"dimensions.{name}.grain must be day, week, month, quarter, or year."
+        )
     default = raw.get("default")
     return DimensionSpec(
         name=name,
@@ -484,8 +502,29 @@ def _parse_time(raw: Any) -> TimeSpec | None:
             "or omit the time: block if this KPI has no time column."
         )
     grain = raw.get("grain", "month")
-    if grain not in {"day", "month", "quarter", "year"}:
-        raise BindError(f"Unknown time.grain {grain!r}. Use day, month, quarter, or year.")
+    if grain not in GRAIN_NAMES:
+        raise BindError(
+            f"Unknown time.grain {grain!r}. Use day, week, month, quarter, or year."
+        )
+    source_grain = raw.get("source_grain")
+    if source_grain is not None and source_grain not in GRAIN_NAMES:
+        raise BindError(
+            f"Unknown time.source_grain {source_grain!r}. "
+            "Use day, week, month, quarter, or year."
+        )
+    raw_grains = raw.get("grains")
+    grains: tuple[str, ...] = ()
+    if raw_grains is not None:
+        if not isinstance(raw_grains, (list, tuple)) or not raw_grains:
+            raise BindError("time.grains must be a non-empty list of grains.")
+        grains = tuple(str(g) for g in raw_grains)
+        unknown = [g for g in grains if g not in GRAIN_NAMES]
+        if unknown:
+            raise BindError(
+                f"Unknown time.grains {unknown}. Use day, week, month, quarter, or year."
+            )
+        if grain not in grains:
+            raise BindError(f"time.grain {grain!r} must appear in time.grains {list(grains)}.")
     calendar = str(raw.get("calendar") or "gregorian")
     if calendar not in {"gregorian", "fiscal"}:
         raise BindError(f"Unknown time.calendar {calendar!r}. Use gregorian or fiscal.")
@@ -515,6 +554,8 @@ def _parse_time(raw: Any) -> TimeSpec | None:
         fiscal_start_month=fiscal_start,
         format=time_format,
         compose_template=compose_template,
+        source_grain=source_grain,
+        grains=grains,  # type: ignore[arg-type]
     )
 
 
@@ -712,17 +753,32 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
             years=int(off.get("years") or 0),
             days=int(off.get("days") or 0),
             quarters=int(off.get("quarters") or 0),
+            weeks=int(off.get("weeks") or 0),
         )
     trailing = None
     trailing_unit = None
+    trailing_from = None
     if raw.get("trailing"):
         trail = raw["trailing"]
-        for unit in ("periods", "months", "days", "quarters", "years"):
+        if not isinstance(trail, dict):
+            raise BindError(f"measures.{key}.trailing must be an object.")
+        if trail.get("from") is not None:
+            trailing_from = str(trail["from"])
+            if trailing_from != "data_points":
+                raise BindError(
+                    f"measures.{key}.trailing.from must be data_points (got {trailing_from!r})."
+                )
+        for unit in ("periods", "months", "weeks", "days", "quarters", "years"):
             if trail.get(unit) is not None:
+                if trailing_from:
+                    raise BindError(
+                        f"measures.{key}.trailing cannot set both from: and {unit}:."
+                    )
                 trailing = int(trail[unit])
                 trailing_unit = {
                     "periods": None,
                     "months": "month",
+                    "weeks": "week",
                     "days": "day",
                     "quarters": "quarter",
                     "years": "year",
@@ -753,6 +809,7 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
             operands=operands,
             offset=offset,
             trailing_months=trailing,
+            trailing_from=trailing_from,
             trailing_unit=trailing_unit,
             inclusive=bool(raw.get("inclusive", True)),
             cuts=cuts,
@@ -857,6 +914,92 @@ def _parse_default_paths(raw: Any) -> dict[str, str]:
             raise BindError(f"default_paths.{alias} needs a path.")
         out[str(alias)] = str(path)
     return out
+
+
+def _parse_data_points(raw: Any, time: TimeSpec | None) -> int | dict[str, int] | None:
+    """Scalar length, or one positive int per allowed grain."""
+    if raw is None:
+        return None
+    grains = tuple(time.grains) if time is not None and time.grains else (
+        (time.grain,) if time is not None else ()
+    )
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, dict)):
+        raise BindError("data_points must be a positive integer or a grain map.")
+    if isinstance(raw, (int, float)):
+        if len(grains) > 1:
+            raise BindError(
+                "data_points must be a map when time.grains lists more than one grain."
+            )
+        n = int(raw)
+        if n < 1:
+            raise BindError("data_points must be a positive integer.")
+        return n
+    out: dict[str, int] = {}
+    for key, value in raw.items():
+        if str(key) not in GRAIN_NAMES:
+            raise BindError(
+                f"data_points key {key!r} is not day, week, month, quarter, or year."
+            )
+        n = int(value)
+        if n < 1:
+            raise BindError(f"data_points.{key} must be a positive integer.")
+        out[str(key)] = n
+    if len(grains) > 1:
+        missing = [g for g in grains if g not in out]
+        if missing:
+            raise BindError(
+                f"data_points must list every time.grains entry (missing {missing})."
+            )
+    return out
+
+
+def _parse_meta(raw: Any, measure_keys: tuple[str, ...]) -> KpiMeta | None:
+    """Literal KPI / ParentKPI / IsChild / SelectedMetrics."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BindError("meta must be an object.")
+    selected = raw.get("SelectedMetrics", raw.get("selected_metrics")) or []
+    if not isinstance(selected, (list, tuple)):
+        raise BindError("meta.SelectedMetrics must be a list of measure keys.")
+    names = tuple(str(x) for x in selected)
+    unknown = [n for n in names if n not in measure_keys]
+    if unknown:
+        raise BindError(f"meta.SelectedMetrics names unknown measure(s) {unknown}.")
+    kpi_name = raw.get("KPI", raw.get("kpi"))
+    parent = raw.get("ParentKPI", raw.get("parent_kpi"))
+    is_child = raw.get("IsChild", raw.get("is_child"))
+    return KpiMeta(
+        kpi=None if kpi_name is None else str(kpi_name),
+        parent_kpi=None if parent is None else str(parent),
+        is_child=None if is_child is None else bool(is_child),
+        selected_metrics=names,
+    )
+
+
+def _parse_green_when(raw: Any, measure_keys: tuple[str, ...]) -> GreenWhen | None:
+    """Threshold: green when the named measure is >= above or <= below."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BindError("green_when must be an object.")
+    of = raw.get("of")
+    if not of:
+        raise BindError("green_when.of must name a measure.")
+    of = str(of)
+    if of not in measure_keys:
+        raise BindError(
+            f"green_when.of {of!r} is not a measure key. Declared: {sorted(measure_keys)}."
+        )
+    has_above = raw.get("above") is not None
+    has_below = raw.get("below") is not None
+    if has_above == has_below:
+        raise BindError("green_when needs exactly one of above: or below:.")
+    return GreenWhen(
+        of=of,
+        above=float(raw["above"]) if has_above else None,
+        below=float(raw["below"]) if has_below else None,
+    )
 
 
 def _optional_path(value: Any) -> str | None:

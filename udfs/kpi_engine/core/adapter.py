@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from kpi_engine.contracts import (
+    GRAIN_NAMES,
     AdaptedRequest,
     DatasetBinding,
     FilterMapping,
@@ -57,8 +58,9 @@ def adapt(context: dict[str, Any]) -> AdaptedRequest:
     if not isinstance(view, dict):
         raise ContextError("execution.view_details[0] must be an object.")
 
-    raw_measures, _field = _measures_field(view, execution)
-    measure_keys = _measure_keys(raw_measures)
+    raw_measures, field = _measures_field(view, execution)
+    measures_omitted = field is None or raw_measures is None
+    measure_keys = () if measures_omitted else _measure_keys(raw_measures)
     filters = _filters(context.get("filters") or {})
     datasets = _datasets(context.get("datasets") or {})
     pagination = _pagination(context.get("output") or {})
@@ -71,26 +73,50 @@ def adapt(context: dict[str, Any]) -> AdaptedRequest:
         datasets=datasets,
         pagination=pagination,
         raw=context,
+        time_grain=_time_grain(execution),
+        measures_omitted=measures_omitted,
     )
 
 
 def _measures_field(view: dict[str, Any], execution: dict[str, Any]) -> tuple[Any, str | None]:
     """Host list of requested measures: measures_required or measures_requested."""
     for owner in (view, execution):
-        found = _lookup(owner, "measures_required", "measures_requested")
-        if found[0] is not None:
-            return found
+        found, field = _lookup_present(owner, "measures_required", "measures_requested")
+        if field is not None:
+            return found, field
+    return None, None
+
+
+def _lookup_present(obj: dict[str, Any], *names: str) -> tuple[Any, str | None]:
+    """Return (value, original_key) when the folded name is present, including []."""
+    wanted = {norm_name(name).replace("_", "") for name in names}
+    for key, value in obj.items():
+        folded = norm_name(str(key)).replace("_", "")
+        if folded in wanted:
+            return value, str(key)
     return None, None
 
 
 def _lookup(obj: dict[str, Any], *names: str) -> tuple[Any, str | None]:
     """Return (value, original_key) matching a name after case/space fold."""
-    wanted = {norm_name(name).replace("_", "") for name in names}
-    for key, value in obj.items():
-        folded = norm_name(str(key)).replace("_", "")
-        if folded in wanted and value is not None and value != []:
-            return value, str(key)
+    found, field = _lookup_present(obj, *names)
+    if field is not None and found is not None and found != []:
+        return found, field
     return None, None
+
+
+def _time_grain(execution: dict[str, Any]) -> str | None:
+    """Optional execution.time_grain pick; missing means YAML time.grain."""
+    raw = execution.get("time_grain")
+    if raw is None or raw == "":
+        return None
+    grain = str(raw)
+    if grain not in GRAIN_NAMES:
+        raise ContextError(
+            "execution.time_grain must be day, week, month, quarter, or year "
+            f"(got {grain!r})."
+        )
+    return grain
 
 
 def _measure_keys(raw: Any) -> tuple[str, ...]:

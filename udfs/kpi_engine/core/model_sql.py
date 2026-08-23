@@ -499,6 +499,10 @@ def _time_bucket_expr(
             f"CAST(date_trunc('quarter', {casted} - INTERVAL {shift} MONTH) "
             f"+ INTERVAL {shift} MONTH AS DATE)"
         )
+    if grain == "week":
+        return (
+            f"CAST({casted} - ((DAYOFWEEK({casted}) + 6) % 7) * INTERVAL 1 DAY AS DATE)"
+        )
     unit = {"day": "day", "month": "month", "quarter": "quarter", "year": "year"}[grain]
     return f"CAST(date_trunc('{unit}', {casted}) AS DATE)"
 

@@ -78,6 +78,7 @@ def test_parse_month_drops_the_day():
     ("grain", "calendar", "value", "expected"),
     [
         ("day", "gregorian", date(2026, 3, 17), date(2026, 3, 17)),
+        ("week", "gregorian", date(2026, 3, 25), date(2026, 3, 23)),
         ("month", "gregorian", date(2026, 3, 17), date(2026, 3, 1)),
         ("quarter", "gregorian", date(2026, 3, 17), date(2026, 1, 1)),
         ("quarter", "gregorian", date(2026, 5, 17), date(2026, 4, 1)),
@@ -106,9 +107,17 @@ def test_fiscal_year_start_month_shifts_the_whole_calendar():
 def test_unknown_grain_is_rejected():
     """A TimeSpec built outside the binder still cannot use an unknown grain."""
     with pytest.raises(TimePlanError, match="Unknown time.grain"):
-        truncate_period(date(2026, 3, 1), _spec("week"))
+        truncate_period(date(2026, 3, 1), _spec("fortnight"))
     with pytest.raises(TimePlanError, match="Unknown time.grain"):
-        add_periods(date(2026, 3, 1), 1, _spec("week"))
+        add_periods(date(2026, 3, 1), 1, _spec("fortnight"))
+
+
+def test_week_add_periods_and_offset_are_seven_days():
+    """ISO weeks step by 7 days; offset.weeks is calendar, not grain periods."""
+    week = _spec("week")
+    monday = date(2026, 3, 23)
+    assert add_periods(monday, 1, week) == date(2026, 3, 30)
+    assert apply_offset(monday, Offset(weeks=1)) == date(2026, 3, 30)
 
 
 def test_invalid_fiscal_start_month_is_rejected_by_the_calendar():

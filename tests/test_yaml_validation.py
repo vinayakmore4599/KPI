@@ -41,8 +41,8 @@ def test_time_block_is_validated(extra_config):
     with pytest.raises(BindError, match="time must be an object"):
         load_kpi(9101, extra_config)
 
-    _write(extra_config, 9102, time=_time(grain="week"))
-    with pytest.raises(BindError, match="Unknown time.grain 'week'"):
+    _write(extra_config, 9102, time=_time(grain="fortnight"))
+    with pytest.raises(BindError, match="Unknown time.grain 'fortnight'"):
         load_kpi(9102, extra_config)
 
     _write(extra_config, 9103, time=_time(calendar="lunar"))

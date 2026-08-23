@@ -147,3 +147,20 @@ def if_else_scalars(cond: Any, then: Any, other: Any) -> float | None:
     """`then` if `cond` is non-null and nonzero, otherwise `other`."""
     chosen = then if _is_true(cond) else other
     return None if _is_null(chosen) else float(chosen)
+
+
+def sign_label(
+    value: Any,
+    positive: Any = "Positive",
+    negative: Any = "Negative",
+    neutral: Any = "Neutral",
+) -> str | None:
+    """Label the sign of a scalar. Null stays null; zero is Neutral."""
+    if _is_null(value):
+        return None
+    number = float(value)
+    if number > 0:
+        return str(positive)
+    if number < 0:
+        return str(negative)
+    return str(neutral)

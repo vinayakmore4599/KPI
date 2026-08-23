@@ -807,6 +807,18 @@ picked:
   inputs: { cond: flag, then: current_value, other: target }
 ```
 
+### `sign_label` (aliases: change_direction)
+
+Positive / Negative / Neutral from a scalar. Null stays null; zero is Neutral.  
+`role: platform` · `enabled: on`
+
+```yaml
+direction:
+  op: fn
+  fn: sign_label
+  inputs: [yoy_month]
+```
+
 ## Hooks (`measures.hook`)
 
 ### `seasonal_index`

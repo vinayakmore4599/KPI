@@ -45,10 +45,11 @@ class CommonMeasureFields:
     operands: tuple[str, ...]
     offset: Offset | None
     trailing_months: int | None
-    trailing_unit: str | None
     inclusive: bool
     cuts: tuple[str, ...] | None
     window_range: str | None
+    trailing_from: str | None = None
+    trailing_unit: str | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -56,7 +57,9 @@ def offset_is_nonzero(offset: Offset | None) -> bool:
     """True when a calendar offset actually shifts the anchor."""
     if offset is None:
         return False
-    return bool(offset.months or offset.years or offset.days or offset.quarters)
+    return bool(
+        offset.months or offset.years or offset.days or offset.quarters or offset.weeks
+    )
 
 
 class OpPlugin:
@@ -73,7 +76,12 @@ class OpPlugin:
 
     def needs_time(self, spec: OutputSpec) -> bool:
         """True when this measure cannot run on a snapshot KPI (no time: block)."""
-        return self.requires_time or offset_is_nonzero(spec.offset) or bool(spec.trailing_months)
+        return (
+            self.requires_time
+            or offset_is_nonzero(spec.offset)
+            or bool(spec.trailing_months)
+            or bool(spec.trailing_from)
+        )
 
     def parse(
         self,
@@ -89,6 +97,7 @@ class OpPlugin:
             of=common.of,
             offset=common.offset,
             trailing_months=common.trailing_months,
+            trailing_from=common.trailing_from,
             inclusive=common.inclusive,
             cuts=common.cuts,
             window_range=common.window_range,  # type: ignore[arg-type]

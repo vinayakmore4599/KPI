@@ -70,3 +70,35 @@ def test_rejects_hierarchy_filters(parquet_path):
         assert "heir" in str(exc)
     else:
         raise AssertionError("expected FilterError")
+
+
+def test_empty_measures_required_is_not_omitted(parquet_path):
+    """Explicit [] is a projection of nothing, not a missing field."""
+    ctx = make_context(parquet_path, measures=[])
+    request = adapt(ctx)
+    assert request.measure_keys == ()
+    assert request.measures_omitted is False
+
+
+def test_omitted_measures_required_is_flagged(parquet_path):
+    """Host omitted the measures field so SelectedMetrics may apply later."""
+    ctx = make_context(parquet_path, measures=["current_value"])
+    ctx["execution"]["view_details"][0].pop("measures_required", None)
+    request = adapt(ctx)
+    assert request.measure_keys == ()
+    assert request.measures_omitted is True
+
+
+def test_execution_time_grain_is_adapted(parquet_path):
+    request = adapt(make_context(parquet_path, measures=["current_value"], time_grain="week"))
+    assert request.time_grain == "week"
+
+
+def test_unknown_time_grain_is_rejected(parquet_path):
+    ctx = make_context(parquet_path, measures=["current_value"], time_grain="fortnight")
+    try:
+        adapt(ctx)
+    except ContextError as exc:
+        assert "time_grain" in str(exc)
+    else:
+        raise AssertionError("expected ContextError")

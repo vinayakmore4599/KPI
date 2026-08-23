@@ -264,3 +264,16 @@ if_else:
       inputs: { cond: flag, then: current_value, other: target }
   module: kpi_engine.capabilities.functions.measure.impl
   attr: if_else_scalars
+
+sign_label:
+  role: platform
+  enabled: true
+  aliases: [change_direction]
+  description: Positive / Negative / Neutral from a scalar. Null stays null; zero is Neutral.
+  example: |
+    direction:
+      op: fn
+      fn: sign_label
+      inputs: [yoy_month]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: sign_label

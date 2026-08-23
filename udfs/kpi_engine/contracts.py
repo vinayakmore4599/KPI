@@ -28,7 +28,9 @@ from typing import Any, Literal, Mapping
 AggName = Literal[
     "sum", "avg", "count", "count_distinct", "min", "max", "median", "percentile", "first", "last"
 ]
-GrainName = Literal["day", "month", "quarter", "year"]
+GrainName = Literal["day", "week", "month", "quarter", "year"]
+GRAIN_NAMES = frozenset({"day", "week", "month", "quarter", "year"})
+GRAIN_RANK = {"day": 0, "week": 1, "month": 2, "quarter": 3, "year": 4}
 # Open set: any name enabled in registries/ops.yaml.
 OpName = str
 # Open set: any name registered in registries/functions/column.yaml.
@@ -134,6 +136,8 @@ class AdaptedRequest:
     datasets: tuple[DatasetBinding, ...]
     pagination: Pagination
     raw: dict[str, Any]
+    time_grain: GrainName | None = None
+    measures_omitted: bool = False
 
 
 @dataclass(frozen=True)
@@ -150,6 +154,8 @@ class TimeSpec:
     fiscal_start_month: int = 4
     format: str | None = None
     compose_template: str | None = None
+    source_grain: GrainName | None = None
+    grains: tuple[GrainName, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -206,6 +212,7 @@ class Offset:
     years: int = 0
     days: int = 0
     quarters: int = 0
+    weeks: int = 0
 
     @property
     def total_months(self) -> int:
@@ -222,6 +229,7 @@ class OutputSpec:
     of: str | None = None
     offset: Offset | None = None
     trailing_months: int | None = None
+    trailing_from: str | None = None
     inclusive: bool = True
     fn: str | None = None
     hook: str | None = None
@@ -258,6 +266,28 @@ class KpiSpec:
     row_set: Literal["span_union", "anchor_only"] = "span_union"
     model_relations: tuple["ModelRelation", ...] = ()
     dimension_specs: tuple[DimensionSpec, ...] = ()
+    data_points: int | Mapping[str, int] | None = None
+    meta: "KpiMeta | None" = None
+    green_when: "GreenWhen | None" = None
+
+
+@dataclass(frozen=True)
+class KpiMeta:
+    """Literal KPI master fields copied onto the response."""
+
+    kpi: str | None = None
+    parent_kpi: str | None = None
+    is_child: bool | None = None
+    selected_metrics: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class GreenWhen:
+    """Row is green when the named measure is at or beyond this threshold."""
+
+    of: str
+    above: float | None = None
+    below: float | None = None
 
 
 @dataclass(frozen=True)

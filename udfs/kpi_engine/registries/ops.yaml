@@ -98,6 +98,21 @@ dimension:
   module: kpi_engine.capabilities.ops.combo
   attr: Dimension
 
+predicate:
+  role: platform
+  enabled: true
+  aliases: []
+  description: 1/0 flag when all (or any) measure predicates pass. Does not drop rows.
+  example: |
+    healthy:
+      op: predicate
+      match: all
+      predicates:
+        - { of: total_profit, cmp: gt, value: 0 }
+        - { of: return_rate, cmp: lt, value: 0.20 }
+  module: kpi_engine.capabilities.ops.combo
+  attr: Predicate
+
 hook:
   role: platform
   enabled: true

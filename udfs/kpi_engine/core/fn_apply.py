@@ -209,8 +209,24 @@ def measure_fn_error(name: str, count: int, params: tuple[str, ...] = ()) -> str
     )
 
 
-def input_columns(measure: BaseMeasure) -> tuple[str, ...]:
+def input_columns(measure: BaseMeasure, by_name: dict[str, BaseMeasure] | None = None) -> tuple[str, ...]:
     """Physical columns DuckDB must retrieve for this fact. Never a formula."""
+    from kpi_engine.core.row_pipeline import physical_input_columns
+
+    if by_name:
+        return physical_input_columns(measure, by_name)
+    if measure.lookup is not None:
+        cols = (measure.lookup.column,)
+        if measure.columns:
+            return tuple(dict.fromkeys([*measure.columns, *cols]))
+        return cols
+    if measure.over is not None:
+        names = list(measure.over.partition_by) + list(measure.over.order_by)
+        if measure.over.of:
+            names.append(measure.over.of)
+        if measure.columns:
+            names = list(measure.columns) + names
+        return tuple(dict.fromkeys(names))
     if measure.columns:
         return measure.columns
     source = measure.expr or measure.sql
@@ -226,6 +242,8 @@ def uses_pandas_row_op(measure: BaseMeasure) -> bool:
     if measure.row_op is not None and measure.row_op not in PASSTHROUGH_OPS:
         return True
     if measure.expr:
+        return True
+    if measure.lookup is not None or measure.over is not None:
         return True
     if measure.sql and not is_simple_ident(measure.sql):
         return True
@@ -272,7 +290,11 @@ def _ident_series(node: Ident, frame: pd.DataFrame, *, raw: bool) -> pd.Series:
     if actual is None:
         raise CatalogError(f"Expression names column {node.name!r}, which is not on the extract.")
     column = frame[actual]
-    return column if raw else pd.to_numeric(column, errors="coerce")
+    if raw:
+        return column
+    if pd.api.types.is_datetime64_any_dtype(column):
+        return column
+    return pd.to_numeric(column, errors="coerce")
 
 
 def eval_expr_series(node: Expr, frame: pd.DataFrame, *, raw: bool = False) -> pd.Series:
@@ -661,9 +683,16 @@ def fold_extract_columns(
             if spec.source:
                 wanted.append(spec.source)
     for measure in kpi.base_measures:
-        wanted.extend(input_columns(measure))
+        wanted.extend(input_columns(measure, {m.name: m for m in kpi.base_measures}))
         if measure.where is not None:
             wanted.append(measure.where.column)
+        if measure.lookup is not None:
+            wanted.append(measure.lookup.column)
+        if measure.over is not None:
+            wanted.extend(measure.over.partition_by)
+            wanted.extend(measure.over.order_by)
+            if measure.over.of:
+                wanted.append(measure.over.of)
     rename: dict[str, str] = {}
     taken: set[str] = set()
     for yaml_name in wanted:
@@ -719,7 +748,9 @@ def apply_dimension_maps(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
 
 @traced
 def apply_pandas_facts(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
-    """Compute every base measure from retrieved physical columns."""
+    """Compute every base measure from retrieved physical columns (topo order)."""
+    from kpi_engine.core.row_pipeline import apply_lookup, apply_over, topo_bases
+
     if frame.empty:
         return frame
     token = _EXPR_ENV.set(dict(kpi.bound_parameters))
@@ -727,23 +758,42 @@ def apply_pandas_facts(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
         work = fold_extract_columns(frame, kpi)
         if work is frame:
             work = frame.copy()
-        for measure in kpi.base_measures:
-            work[measure.name] = _base_measure_series(work, measure)
+        retrieved = {str(c) for c in work.columns}
+        by_name = {m.name: m for m in kpi.base_measures}
+        for measure in topo_bases(kpi.base_measures):
+            writes = bool(measure.expr or measure.lookup or measure.over)
+            if writes and measure.name in retrieved and not measure.replace:
+                raise CatalogError(
+                    f"base_measures.{measure.name} would overwrite extract column "
+                    f"{measure.name!r}. Set replace: true if that is intended."
+                )
+            if measure.lookup is not None:
+                series = apply_lookup(work, measure.lookup, name=measure.name)
+            elif measure.over is not None:
+                series = apply_over(work, measure)
+            else:
+                series = _base_measure_series(work, measure, by_name)
+            work[measure.name] = series
         return work
     finally:
         _EXPR_ENV.reset(token)
 
 
-def _base_measure_series(work: pd.DataFrame, measure: BaseMeasure) -> pd.Series:
+def _base_measure_series(
+    work: pd.DataFrame, measure: BaseMeasure, by_name: dict[str, BaseMeasure] | None = None
+) -> pd.Series:
     """One row-level series for a base measure (op, expr, sql column, or where)."""
     cols = input_columns(measure)
     resolved = [_frame_column(work, c) for c in cols]
     missing = [c for c, actual in zip(cols, resolved) if actual is None]
     if missing:
+        # Later row steps may already be on `work` under the helper name.
+        missing = [c for c in missing if c not in work.columns]
+    if missing:
         raise CatalogError(
             f"base_measures.{measure.name} needs columns {missing} on the extract."
         )
-    cols = tuple(actual for actual in resolved if actual is not None)
+    cols = tuple(actual or col for col, actual in zip(cols, resolved))
     if measure.row_op is not None and measure.row_op not in PASSTHROUGH_OPS:
         series = apply_row_op(work, cols, measure.row_op, measure.column_params)
     elif measure.expr:
@@ -884,15 +934,21 @@ def collapse_pandas_detail(
     detail: pd.DataFrame,
     kpi: KpiSpec,
     grain: tuple[str, ...],
+    *,
+    facts_applied: bool = False,
 ) -> pd.DataFrame:
     """Compute KPI YAML facts per row, then fold additive aggs to the extract grain."""
     from kpi_engine.core.model_sql import NON_ADDITIVE
+    from kpi_engine.core.row_pipeline import is_helper
 
     if detail is None or detail.empty:
         return pd.DataFrame()
-    work = fold_extract_columns(detail, kpi, grain)
-    work = apply_dimension_maps(work, kpi)
-    work = apply_pandas_facts(work, kpi)
+    if facts_applied:
+        work = detail.copy()
+    else:
+        work = fold_extract_columns(detail, kpi, grain)
+        work = apply_dimension_maps(work, kpi)
+        work = apply_pandas_facts(work, kpi)
     time_col = kpi.time.column if kpi.time is not None else None
     if time_col is not None:
         actual_time = _frame_column(work, time_col)
@@ -902,10 +958,10 @@ def collapse_pandas_detail(
     if time_col is not None and time_col in work.columns:
         keys = [time_col, *keys]
     keys = [c for c in keys if c in work.columns]
-    aggs: dict[str, str] = {}
+    aggs: dict[str, Any] = {}
     foldable = {"sum", "avg", "min", "max", "count", "first", "last"}
     for measure in kpi.base_measures:
-        if measure.name not in work.columns:
+        if is_helper(measure) or measure.name not in work.columns:
             continue
         if measure.agg in NON_ADDITIVE:
             continue
@@ -924,6 +980,9 @@ def collapse_pandas_detail(
             aggs[measure.name] = _sum_or_null
             continue
         aggs[measure.name] = measure.agg
+    drop_internal = [c for c in ("_kpi_row_id",) if c in work.columns]
+    if drop_internal:
+        work = work.drop(columns=drop_internal)
     if not aggs:
         return pd.DataFrame()
     if time_col is not None and time_col in work.columns:

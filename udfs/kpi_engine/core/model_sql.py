@@ -30,6 +30,7 @@ from typing import Any
 import duckdb
 
 from kpi_engine.contracts import (
+    BaseMeasure,
     BoundFilter,
     DatasetBinding,
     ExtractResult,
@@ -297,6 +298,7 @@ def _select_model_columns(
     """SELECT context fact columns, grain, needed facts, and used join columns."""
     from kpi_engine.core.fn_apply import input_columns
 
+    bases = _bases_by_name(kpi)
     _assert_facts_on_context(kpi, model=model, datasets=datasets)
     time_col = kpi.time.column if kpi.time is not None else None
     parts: list[str] = []
@@ -319,7 +321,7 @@ def _select_model_columns(
     for col in grain:
         add(col, time=bool(time_col and norm_name(col) == norm_name(time_col)))
     for measure in kpi.base_measures:
-        for col in input_columns(measure):
+        for col in input_columns(measure, bases):
             add(col)
         if measure.where is not None:
             add(measure.where.column)
@@ -356,7 +358,12 @@ def _fact_dataset_columns(
 
     if not datasets:
         return []
-    needed = {norm_name(col) for measure in kpi.base_measures for col in input_columns(measure)}
+    bases = _bases_by_name(kpi)
+    needed = {
+        norm_name(col)
+        for measure in kpi.base_measures
+        for col in input_columns(measure, bases)
+    }
     if kpi.time is not None:
         needed.add(norm_name(kpi.time.column))
     cols: list[str] = []
@@ -383,8 +390,9 @@ def _used_column_names(
     from kpi_engine.core.fn_apply import input_columns
 
     used = {norm_name(col) for col in grain}
+    bases = _bases_by_name(kpi)
     for measure in kpi.base_measures:
-        used.update(norm_name(col) for col in input_columns(measure))
+        used.update(norm_name(col) for col in input_columns(measure, bases))
         if measure.where is not None:
             used.add(norm_name(measure.where.column))
     for item in source_filters:
@@ -418,8 +426,9 @@ def _used_join_columns(
     used = _used_column_names(kpi, grain, source_filters)
     from kpi_engine.core.fn_apply import input_columns
 
+    bases = _bases_by_name(kpi)
     fact_needed = {
-        norm_name(col) for measure in kpi.base_measures for col in input_columns(measure)
+        norm_name(col) for measure in kpi.base_measures for col in input_columns(measure, bases)
     }
     if kpi.time is not None:
         fact_needed.add(norm_name(kpi.time.column))
@@ -451,6 +460,11 @@ def _used_join_columns(
     return cols
 
 
+def _bases_by_name(kpi: KpiSpec) -> dict[str, BaseMeasure]:
+    """Lookup from YAML base name to spec, used to walk helpers to physical columns."""
+    return {measure.name: measure for measure in kpi.base_measures}
+
+
 def _assert_facts_on_context(
     kpi: KpiSpec,
     model: ModelSpec | None,
@@ -466,8 +480,9 @@ def _assert_facts_on_context(
         return
     allowed = {norm_name(col) for col in catalog}
     aliases = sorted({ds.alias for ds in (datasets or {}).values()}) or ["(none)"]
+    bases = _bases_by_name(kpi)
     for measure in kpi.base_measures:
-        for col in input_columns(measure):
+        for col in input_columns(measure, bases):
             if norm_name(col) in allowed:
                 continue
             raise BindError(

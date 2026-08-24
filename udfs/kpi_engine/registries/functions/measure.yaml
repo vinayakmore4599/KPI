@@ -277,3 +277,94 @@ sign_label:
       inputs: [yoy_month]
   module: kpi_engine.capabilities.functions.measure.impl
   attr: sign_label
+
+round:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Round a measure scalar. Optional decimals defaults to 0.
+  example: |
+    rounded:
+      op: fn
+      fn: round
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: round_scalar
+
+floor:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Floor of a measure scalar.
+  example: |
+    whole:
+      op: fn
+      fn: floor
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: floor_scalar
+
+ceil:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Ceiling of a measure scalar.
+  example: |
+    whole:
+      op: fn
+      fn: ceil
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: ceil_scalar
+
+power:
+  role: platform
+  enabled: true
+  aliases: []
+  description: base ** exp. Domain errors are null.
+  example: |
+    squared:
+      op: fn
+      fn: power
+      inputs: [current_value, two]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: power_scalars
+
+log:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Natural log. Non-positive is null.
+  example: |
+    ln_amt:
+      op: fn
+      fn: log
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: log_scalar
+
+log10:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Base-10 log. Non-positive is null.
+  example: |
+    log_amt:
+      op: fn
+      fn: log10
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: log10_scalar
+
+sqrt:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Square root. Negative is null.
+  example: |
+    root:
+      op: fn
+      fn: sqrt
+      inputs: [current_value]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: sqrt_scalar

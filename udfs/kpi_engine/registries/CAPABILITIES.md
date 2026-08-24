@@ -100,6 +100,20 @@ region:
   op: dimension
 ```
 
+### `predicate`
+
+1/0 flag when all (or any) measure predicates pass. Does not drop rows.  
+`role: platform` · `enabled: on`
+
+```yaml
+healthy:
+  op: predicate
+  match: all
+  predicates:
+    - { of: total_profit, cmp: gt, value: 0 }
+    - { of: return_rate, cmp: lt, value: 0.20 }
+```
+
 ### `hook`
 
 Call an allowlisted Python hook for logic the catalog cannot express.  
@@ -565,6 +579,114 @@ picked:
   op: if_else
 ```
 
+### `round`
+
+Round a numeric column. Optional decimals defaults to 0.  
+`role: platform` · `enabled: on`
+
+```yaml
+rounded:
+  columns: [amount]
+  op: round
+```
+
+### `floor`
+
+Floor of one numeric column.  
+`role: platform` · `enabled: on`
+
+```yaml
+whole:
+  columns: [amount]
+  op: floor
+```
+
+### `ceil`
+
+Ceiling of one numeric column.  
+`role: platform` · `enabled: on`
+
+```yaml
+whole:
+  columns: [amount]
+  op: ceil
+```
+
+### `power`
+
+base ** exp. Domain errors are null.  
+`role: platform` · `enabled: on`
+
+```yaml
+squared:
+  columns: { base: amount, exp: two }
+  op: power
+```
+
+### `log`
+
+Natural log. Non-positive is null.  
+`role: platform` · `enabled: on`
+
+```yaml
+ln_amt:
+  columns: [amount]
+  op: log
+```
+
+### `log10`
+
+Base-10 log. Non-positive is null.  
+`role: platform` · `enabled: on`
+
+```yaml
+log_amt:
+  columns: [amount]
+  op: log10
+```
+
+### `sqrt`
+
+Square root. Negative is null.  
+`role: platform` · `enabled: on`
+
+```yaml
+root:
+  columns: [amount]
+  op: sqrt
+```
+
+### `date_diff`
+
+end minus start in day, week, month, or year. Null in either side is null.  
+`role: platform` · `enabled: on`
+
+```yaml
+gap:
+  expr: "date_diff(prev_date, order_date, 'day')"
+```
+
+### `date_add`
+
+Add n day/week/month/year units to a date.  
+`role: platform` · `enabled: on`
+
+```yaml
+next:
+  expr: "date_add(order_date, 1, 'month')"
+```
+
+### `epoch_day`
+
+Integer days since 1970-01-01.  
+`role: platform` · `enabled: on`
+
+```yaml
+epoch:
+  columns: [order_date]
+  op: epoch_day
+```
+
 ## Measure functions (`measures.fn`)
 
 ### `growth_pct` (aliases: yoy, mom, percent_change)
@@ -817,6 +939,90 @@ direction:
   op: fn
   fn: sign_label
   inputs: [yoy_month]
+```
+
+### `round`
+
+Round a measure scalar. Optional decimals defaults to 0.  
+`role: platform` · `enabled: on`
+
+```yaml
+rounded:
+  op: fn
+  fn: round
+  inputs: [current_value]
+```
+
+### `floor`
+
+Floor of a measure scalar.  
+`role: platform` · `enabled: on`
+
+```yaml
+whole:
+  op: fn
+  fn: floor
+  inputs: [current_value]
+```
+
+### `ceil`
+
+Ceiling of a measure scalar.  
+`role: platform` · `enabled: on`
+
+```yaml
+whole:
+  op: fn
+  fn: ceil
+  inputs: [current_value]
+```
+
+### `power`
+
+base ** exp. Domain errors are null.  
+`role: platform` · `enabled: on`
+
+```yaml
+squared:
+  op: fn
+  fn: power
+  inputs: [current_value, two]
+```
+
+### `log`
+
+Natural log. Non-positive is null.  
+`role: platform` · `enabled: on`
+
+```yaml
+ln_amt:
+  op: fn
+  fn: log
+  inputs: [current_value]
+```
+
+### `log10`
+
+Base-10 log. Non-positive is null.  
+`role: platform` · `enabled: on`
+
+```yaml
+log_amt:
+  op: fn
+  fn: log10
+  inputs: [current_value]
+```
+
+### `sqrt`
+
+Square root. Negative is null.  
+`role: platform` · `enabled: on`
+
+```yaml
+root:
+  op: fn
+  fn: sqrt
+  inputs: [current_value]
 ```
 
 ## Hooks (`measures.hook`)

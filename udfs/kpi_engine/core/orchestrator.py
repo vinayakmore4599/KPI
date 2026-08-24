@@ -152,6 +152,7 @@ def _compute(
     applied_res: list = []
     ignored: list[dict[str, Any]] = []
     trend_axes: dict[str, list[str]] = {}
+    dropped_groups: list[dict[str, Any]] = []
     try:
         for pipe in pipelines:
             prepared = _prepare_pipeline(
@@ -170,7 +171,7 @@ def _compute(
                 connection=con,
                 joined=pipe.joined,
             )
-            pipe_rows, axes = compute_cuts(
+            pipe_rows, axes, pipe_dropped = compute_cuts(
                 monthly,
                 kpi=replace(kpi, base_measures=pipe.bases),
                 emitted=prepared["cuts"],
@@ -194,6 +195,7 @@ def _compute(
             rows.extend(pipe_rows)
             sqls.extend(pipe_sqls)
             trend_axes.update(axes)
+            dropped_groups.extend(pipe_dropped)
             applied_src.extend(prepared["source_filters"])
             applied_def.extend(prepared["deferred"])
             applied_res.extend(prepared["result_filters"])
@@ -217,6 +219,7 @@ def _compute(
         "selected_dimensions": list(kpi.request_grain),
         "applied_cuts": _applied_cuts(kpi, tuple(applied_emitted)),
         "dropped_cuts": _dedupe_dropped(dropped_cuts),
+        "dropped_groups": dropped_groups,
         "grain_warnings": _grain_warnings(kpi),
         "trend_axes": trend_axes,
         "trend_labels": _trend_labels(trend_axes, kpi),
@@ -565,8 +568,15 @@ def _extract_all(
         folded = fold_extract_columns(raw, kpi, grain)
         mapped = apply_dimension_maps(folded, kpi)
         mapped = apply_frame_filters(mapped, calc_filters)
-        detail_parts.append(apply_pandas_facts(mapped, sub) if not mapped.empty else mapped)
-        pandas_monthly = collapse_pandas_detail(mapped, sub, grain)
+        if mapped.empty:
+            detail_parts.append(mapped)
+            continue
+        from kpi_engine.core.row_pipeline import stabilize_detail
+
+        mapped = stabilize_detail(mapped, kpi)
+        facted = apply_pandas_facts(mapped, sub)
+        detail_parts.append(facted)
+        pandas_monthly = collapse_pandas_detail(facted, sub, grain, facts_applied=True)
         if not pandas_monthly.empty:
             frames[model.model_id] = pandas_monthly
     detail = pd.concat(detail_parts, ignore_index=True) if detail_parts else None
@@ -622,7 +632,7 @@ def _monthly_value_cols(kpi: KpiSpec) -> list[str]:
     """Columns densify must carry (named facts plus avg carry columns)."""
     cols: list[str] = []
     for measure in kpi.base_measures:
-        if measure.agg in NON_ADDITIVE:
+        if measure.agg is None or measure.agg in NON_ADDITIVE:
             continue
         if measure.agg == "avg":
             cols.extend([f"{measure.name}__sum", f"{measure.name}__count"])
@@ -742,7 +752,7 @@ def _applied_cuts(kpi: KpiSpec, emitted: tuple) -> list[dict[str, Any]]:
 
 
 def _grain_warnings(kpi: KpiSpec) -> list[dict[str, str]]:
-    """Author-declared high-cardinality dims that are in this request grain."""
+    """Author-declared high-cardinality dims and explicit window/replace overrides."""
     high = {
         spec.name: spec
         for spec in kpi.dimension_specs
@@ -752,6 +762,11 @@ def _grain_warnings(kpi: KpiSpec) -> list[dict[str, str]]:
     for name in kpi.request_grain:
         if name in high:
             out.append({"dimension": name, "reason": "high_cardinality"})
+    for base in kpi.base_measures:
+        if base.replace:
+            out.append({"base": base.name, "reason": "replace_extract_column"})
+        if base.agg_ok:
+            out.append({"base": base.name, "reason": "window_agg_ok"})
     return out
 
 

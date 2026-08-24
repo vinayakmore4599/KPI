@@ -370,6 +370,73 @@ class Dimension(OpPlugin):
         return None
 
 
+class Predicate(OpPlugin):
+    name = "predicate"
+    extra_keys = frozenset({"match", "predicates"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        from kpi_engine.core.predicates import parse_match, parse_predicates, predicate_names
+
+        raw = dict(common.raw)
+        predicates = parse_predicates(raw.get("predicates"), what=f"measures.{key}")
+        match = parse_match(raw.get("match"), what=f"measures.{key}")
+        names = predicate_names(predicates)
+        return OutputSpec(
+            **{
+                **spec.__dict__,
+                "inputs": names,
+                "params": {
+                    **spec.params,
+                    "match": match,
+                    "predicates": predicates,
+                },
+            }
+        )
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        from kpi_engine.core.predicates import assert_scalar_ofs
+
+        predicates = spec.params.get("predicates") or ()
+        by_key = {m.key for m in kpi.measures}
+        known = {b.name for b in kpi.base_measures}
+        for name in spec.inputs:
+            if name not in by_key and name not in known:
+                raise BindError(
+                    f"measures.{spec.key} predicate of={name!r} is not a measure or base."
+                )
+        assert_scalar_ofs(tuple(predicates), kpi.measures, what=f"measures.{spec.key}")
+
+    def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
+        return spec.inputs
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        return _max_dep_lookback(spec, by_key, time, anchor, seen, lookback_for)
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        from kpi_engine.core.predicates import eval_predicate_list
+
+        predicates = ctx.spec.params.get("predicates") or ()
+        match = str(ctx.spec.params.get("match") or "all")
+        values: dict[str, Any] = {}
+        for name in ctx.spec.inputs:
+            if name in ctx.catalog:
+                values[name] = ctx.evaluate(ctx.catalog[name])
+            else:
+                values[name] = ctx.evaluate(OutputSpec(key=name, kind="point", of=name))
+        flag = eval_predicate_list(tuple(predicates), match, values)
+        value = 1.0 if flag else 0.0
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="predicate",
+            combo=_combo(ctx),
+            result=value,
+            inputs=values,
+        )
+        return value
+
+
 class Hook(OpPlugin):
     name = "hook"
     extra_keys = frozenset({"hook", "fn", "value"})

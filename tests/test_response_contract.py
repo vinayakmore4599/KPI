@@ -46,6 +46,7 @@ def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
         "selected_dimensions",
         "applied_cuts",
         "dropped_cuts",
+        "dropped_groups",
         "grain_warnings",
     }
     assert result["kpi_id"] == 3004

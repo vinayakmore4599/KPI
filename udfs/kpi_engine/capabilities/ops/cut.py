@@ -16,7 +16,7 @@ class Rank(OpPlugin):
     name = "rank"
     phase = "cut"
     cut_restricted = True
-    extra_keys = frozenset({"order", "partition_by", "group_by"})
+    extra_keys = frozenset({"order", "partition_by", "group_by", "order_by"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -29,6 +29,7 @@ class Rank(OpPlugin):
                 **spec.__dict__,
                 "rank_order": order,
                 "rank_group_by": support.parse_partition_by(key, "rank", raw),
+                "params": {**spec.params, "order_by": _parse_order_by(key, raw, "rank")},
             }
         )
 
@@ -65,7 +66,7 @@ class PercentOfTotal(OpPlugin):
     name = "percent_of_total"
     phase = "cut"
     cut_restricted = True
-    extra_keys = frozenset({"partition_by", "group_by"})
+    extra_keys = frozenset({"partition_by", "group_by", "order_by"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -74,6 +75,7 @@ class PercentOfTotal(OpPlugin):
             **{
                 **spec.__dict__,
                 "rank_group_by": support.parse_partition_by(key, "percent_of_total", raw),
+                "params": {**spec.params, "order_by": _parse_order_by(key, raw, "percent_of_total")},
             }
         )
 
@@ -126,7 +128,9 @@ def _apply_partitioned(cut_rows, spec: OutputSpec, cut_dims: list[str], *, write
 def _write_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
     values = [cut_rows[i].get(src) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
-    ranks = support.sql_rank(values, descending=descending)
+    ranks = support.sql_rank(
+        values, descending=descending, tie_keys=_tie_keys(cut_rows, spec, indexes)
+    )
     for i, rank, source in zip(indexes, ranks, values):
         cut_rows[i][spec.key] = rank
         cut_rows[i].pop(src, None)
@@ -169,12 +173,23 @@ def _parse_order(key: str, raw: dict[str, Any], kind: str) -> str:
     return order
 
 
+def _parse_order_by(key: str, raw: dict[str, Any], kind: str) -> tuple[str, ...]:
+    value = raw.get("order_by")
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise BindError(f"measures.{key} op={kind} order_by must be a list.")
+    from kpi_engine.identifiers import require_ident
+
+    return tuple(require_ident(str(item), what=f"{kind} order_by") for item in value)
+
+
 class _CutBase(OpPlugin):
     """Shared bind/source path for cut-phase add-ons."""
 
     phase = "cut"
     cut_restricted = True
-    extra_keys = frozenset({"order", "partition_by", "group_by"})
+    extra_keys = frozenset({"order", "partition_by", "group_by", "order_by"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -184,6 +199,7 @@ class _CutBase(OpPlugin):
                 **spec.__dict__,
                 "rank_order": _parse_order(key, raw, self.name),
                 "rank_group_by": support.parse_partition_by(key, self.name, raw),
+                "params": {**spec.params, "order_by": _parse_order_by(key, raw, self.name)},
             }
         )
 
@@ -414,10 +430,31 @@ def _write_row_number(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) 
         )
 
 
-def _ordered_indexes(values: list[Any], indexes: list[int], *, descending: bool) -> list[int]:
+def _tie_keys(cut_rows, spec: OutputSpec, indexes: list[int]) -> list[tuple[Any, ...]]:
+    order_by = tuple((spec.params or {}).get("order_by") or ())
+    return [
+        tuple(cut_rows[i].get(dim) for dim in order_by) + (pos,)
+        for pos, i in enumerate(indexes)
+    ]
+
+
+def _ordered_indexes(
+    values: list[Any],
+    indexes: list[int],
+    *,
+    descending: bool,
+    cut_rows: list[dict[str, Any]] | None = None,
+    spec: OutputSpec | None = None,
+) -> list[int]:
+    order_by = tuple((spec.params or {}).get("order_by") or ()) if spec is not None else ()
+
     def sort_key(pos: int):
         number = support.numeric_or_none(values[pos])
-        return (number is None, -(number or 0) if descending else (number or 0))
+        extras: tuple[Any, ...] = ()
+        if cut_rows is not None and order_by:
+            row = cut_rows[indexes[pos]]
+            extras = tuple(row.get(dim) for dim in order_by)
+        return (number is None, -(number or 0) if descending else (number or 0), extras, pos)
 
     return sorted(range(len(indexes)), key=sort_key)
 
@@ -427,7 +464,9 @@ def _write_cumulative_share(cut_rows, spec: OutputSpec, src: str, indexes: list[
     total = sum(v for v in values if v is not None)
     descending = (spec.rank_order or "desc") == "desc"
     running = 0.0
-    for pos in _ordered_indexes(values, indexes, descending=descending):
+    for pos in _ordered_indexes(
+        values, indexes, descending=descending, cut_rows=cut_rows, spec=spec
+    ):
         i = indexes[pos]
         source = values[pos]
         if source is None or total == 0:
@@ -452,7 +491,9 @@ def _write_running_total(cut_rows, spec: OutputSpec, src: str, indexes: list[int
     values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
     running = 0.0
-    for pos in _ordered_indexes(values, indexes, descending=descending):
+    for pos in _ordered_indexes(
+        values, indexes, descending=descending, cut_rows=cut_rows, spec=spec
+    ):
         i = indexes[pos]
         source = values[pos]
         if source is None:
@@ -598,7 +639,9 @@ def _write_running_avg(cut_rows, spec: OutputSpec, src: str, indexes: list[int])
     descending = (spec.rank_order or "desc") == "desc"
     running = 0.0
     count = 0
-    for pos in _ordered_indexes(values, indexes, descending=descending):
+    for pos in _ordered_indexes(
+        values, indexes, descending=descending, cut_rows=cut_rows, spec=spec
+    ):
         i = indexes[pos]
         source = values[pos]
         if source is None:

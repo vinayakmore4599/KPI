@@ -164,3 +164,75 @@ def sign_label(
     if number < 0:
         return str(negative)
     return str(neutral)
+
+
+def _finite_or_none(value: float) -> float | None:
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return float(value)
+
+
+def round_scalar(value: Any, decimals: Any = 0) -> float | None:
+    """Round a measure scalar. Null stays null."""
+    if _is_null(value):
+        return None
+    places = 0 if _is_null(decimals) else int(float(decimals))
+    return float(round(float(value), places))
+
+
+def floor_scalar(value: Any) -> float | None:
+    import math
+
+    if _is_null(value):
+        return None
+    return float(math.floor(float(value)))
+
+
+def ceil_scalar(value: Any) -> float | None:
+    import math
+
+    if _is_null(value):
+        return None
+    return float(math.ceil(float(value)))
+
+
+def power_scalars(base: Any, exp: Any) -> float | None:
+    if _is_null(base) or _is_null(exp):
+        return None
+    try:
+        return _finite_or_none(float(base) ** float(exp))
+    except Exception:
+        return None
+
+
+def log_scalar(value: Any) -> float | None:
+    import math
+
+    if _is_null(value) or float(value) <= 0:
+        return None
+    try:
+        return _finite_or_none(math.log(float(value)))
+    except Exception:
+        return None
+
+
+def log10_scalar(value: Any) -> float | None:
+    import math
+
+    if _is_null(value) or float(value) <= 0:
+        return None
+    try:
+        return _finite_or_none(math.log10(float(value)))
+    except Exception:
+        return None
+
+
+def sqrt_scalar(value: Any) -> float | None:
+    import math
+
+    if _is_null(value) or float(value) < 0:
+        return None
+    try:
+        return _finite_or_none(math.sqrt(float(value)))
+    except Exception:
+        return None

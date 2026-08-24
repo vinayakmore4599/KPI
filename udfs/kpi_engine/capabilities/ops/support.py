@@ -351,6 +351,8 @@ def agg_detail(
             work = work.sort_values(order_col)
         series = work[col]
         value = series.iloc[0] if base.agg == "first" else series.iloc[-1]
+        if isinstance(value, (list, tuple)):
+            return list(value)
         return _num_or_none(value)
     series = work[col]
     if base.agg == "count_distinct":
@@ -470,21 +472,36 @@ def offset_lookback(offset, time, anchor) -> int:
     return periods_between(target, dummy_t, time)
 
 
-def sql_rank(values: list[Any], *, descending: bool) -> list[int | None]:
+def sql_rank(
+    values: list[Any],
+    *,
+    descending: bool,
+    tie_keys: list[tuple[Any, ...]] | None = None,
+) -> list[int | None]:
     """RANK(): equal values share a rank; the next rank skips (1, 2, 2, 4)."""
     ranked: list[int | None] = [None] * len(values)
+    ties = tie_keys or [() for _ in values]
     order = [
         (i, v)
         for i, v in enumerate(values)
         if v is not None and not (isinstance(v, float) and pd.isna(v))
     ]
-    order.sort(key=lambda item: item[1], reverse=descending)
-    last_value: Any = object()
+
+    def sort_key(item: tuple[int, Any]) -> tuple:
+        i, value = item
+        number = numeric_or_none(value)
+        null = number is None
+        ordered = 0.0 if null else (-number if descending else number)
+        return (null, ordered, ties[i])
+
+    order.sort(key=sort_key)
+    last_key: Any = object()
     rank = 0
     for pos, (i, value) in enumerate(order):
-        if pos == 0 or value != last_value:
+        key = (value, ties[i])
+        if pos == 0 or key != last_key:
             rank = pos + 1
-            last_value = value
+            last_key = key
         ranked[i] = rank
     return ranked
 
@@ -629,8 +646,8 @@ def parse_partition_by(key: str, kind: str, raw: dict[str, Any]) -> tuple[str, .
 
 
 def require_base_of(spec: OutputSpec, kpi: KpiSpec) -> None:
-    """`of` must name a declared base measure."""
-    known = {b.name for b in kpi.base_measures}
+    """`of` must name a declared folded base measure (not a row helper)."""
+    known = {b.name: b for b in kpi.base_measures}
     if not spec.of:
         raise BindError(
             f"measures.{spec.key} op={spec.kind} requires `of:` naming the base "
@@ -640,6 +657,12 @@ def require_base_of(spec: OutputSpec, kpi: KpiSpec) -> None:
         raise BindError(
             f"measures.{spec.key} of={spec.of!r} is not a base measure. "
             f"Declared base_measures: {sorted(known)}."
+        )
+    base = known[spec.of]
+    if base.agg is None:
+        raise BindError(
+            f"measures.{spec.key} of={spec.of!r} is a row helper (no agg:). "
+            "Add agg: on that base, or use it only in later base expr/over."
         )
 
 
@@ -658,6 +681,13 @@ def require_measure_or_base_of(spec: OutputSpec, kpi: KpiSpec) -> None:
             f"measures.{spec.key} of={spec.of!r} is not a measure or base "
             f"measure. Declared measures: {sorted(by_key)}; "
             f"base_measures: {sorted(known)}."
+        )
+    by_base = {b.name: b for b in kpi.base_measures}
+    helper = by_base.get(spec.of)
+    if helper is not None and helper.agg is None:
+        raise BindError(
+            f"measures.{spec.key} of={spec.of!r} is a row helper (no agg:). "
+            "Add agg: on that base, or use it only in later base expr/over."
         )
 
 

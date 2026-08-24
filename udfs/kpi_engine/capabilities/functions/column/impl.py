@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from kpi_engine.exceptions import CatalogError
+
 
 def _fold(step: Callable[[Any, Any], Any], args: tuple[Any, ...]) -> Any:
     """Apply a two-argument step left to right."""
@@ -112,3 +114,160 @@ def if_else_columns(cond: pd.Series, then: pd.Series, other: pd.Series) -> pd.Se
     numeric = pd.to_numeric(cond, errors="coerce")
     pick = numeric.notna() & (numeric != 0)
     return then.where(pick, other)
+
+
+def _numeric(column: pd.Series) -> pd.Series:
+    return pd.to_numeric(column, errors="coerce")
+
+
+def round_columns(value: pd.Series, decimals: pd.Series | None = None) -> pd.Series:
+    """Round a numeric column. Optional decimals defaults to 0."""
+    numeric = _numeric(value)
+    if decimals is None:
+        return numeric.round()
+    places = _numeric(decimals)
+    if places.nunique(dropna=True) == 1 and places.notna().any():
+        return numeric.round(int(places.dropna().iloc[0]))
+    out = [
+        None if pd.isna(v) or pd.isna(n) else round(float(v), int(n))
+        for v, n in zip(numeric, places)
+    ]
+    return pd.Series(out, index=value.index, dtype="float64")
+
+
+def floor_columns(value: pd.Series) -> pd.Series:
+    """Floor of one numeric column."""
+    import math
+
+    return _numeric(value).map(lambda v: None if pd.isna(v) else float(math.floor(v)))
+
+
+def ceil_columns(value: pd.Series) -> pd.Series:
+    """Ceiling of one numeric column."""
+    import math
+
+    return _numeric(value).map(lambda v: None if pd.isna(v) else float(math.ceil(v)))
+
+
+def power_columns(base: pd.Series, exp: pd.Series) -> pd.Series:
+    """base ** exp. Domain errors (inf/nan) are null."""
+    import numpy as np
+
+    a = _numeric(base).astype("float64")
+    b = _numeric(exp).astype("float64")
+    with np.errstate(all="ignore"):
+        out = np.power(a.to_numpy(), b.to_numpy())
+    result = pd.Series(out, index=base.index, dtype="float64")
+    return result.mask(~np.isfinite(result))
+
+
+def log_columns(value: pd.Series) -> pd.Series:
+    """Natural log. Non-positive is null."""
+    import numpy as np
+
+    numeric = _numeric(value).astype("float64")
+    with np.errstate(all="ignore"):
+        out = np.log(numeric.to_numpy())
+    result = pd.Series(out, index=value.index, dtype="float64")
+    result = result.mask(numeric <= 0)
+    return result.mask(~np.isfinite(result))
+
+
+def log10_columns(value: pd.Series) -> pd.Series:
+    """Base-10 log. Non-positive is null."""
+    import numpy as np
+
+    numeric = _numeric(value).astype("float64")
+    with np.errstate(all="ignore"):
+        out = np.log10(numeric.to_numpy())
+    result = pd.Series(out, index=value.index, dtype="float64")
+    result = result.mask(numeric <= 0)
+    return result.mask(~np.isfinite(result))
+
+
+def sqrt_columns(value: pd.Series) -> pd.Series:
+    """Square root. Negative is null."""
+    import numpy as np
+
+    numeric = _numeric(value).astype("float64")
+    with np.errstate(all="ignore"):
+        out = np.sqrt(numeric.to_numpy())
+    result = pd.Series(out, index=value.index, dtype="float64")
+    result = result.mask(numeric < 0)
+    return result.mask(~np.isfinite(result))
+
+
+def _naive_datetime(series: pd.Series, *, name: str) -> pd.Series:
+    ts = pd.to_datetime(series, errors="coerce")
+    tz = getattr(getattr(ts, "dt", None), "tz", None)
+    if tz is not None:
+        raise CatalogError(f"{name} requires tz-naive timestamps.")
+    return ts
+
+
+def _unit_name(unit: pd.Series | str | None) -> str:
+    if unit is None:
+        return "day"
+    if isinstance(unit, str):
+        return unit.strip().lower()
+    present = unit.dropna()
+    if present.empty:
+        return "day"
+    return str(present.iloc[0]).strip().lower()
+
+
+def date_diff_columns(
+    start: pd.Series, end: pd.Series, unit: pd.Series | str | None = None
+) -> pd.Series:
+    """end - start in day/week/month/year. Null in either side is null."""
+    left = _naive_datetime(start, name="date_diff")
+    right = _naive_datetime(end, name="date_diff")
+    kind = _unit_name(unit)
+    allowed = {"day", "week", "month", "year"}
+    if kind not in allowed:
+        raise CatalogError(f"date_diff unit must be day, week, month, or year (got {kind!r}).")
+    if kind == "day":
+        delta = (right - left).dt.days.astype("float64")
+    elif kind == "week":
+        delta = ((right - left).dt.days // 7).astype("float64")
+    elif kind == "month":
+        delta = (
+            (right.dt.year - left.dt.year) * 12 + (right.dt.month - left.dt.month)
+        ).astype("float64")
+    else:
+        delta = (right.dt.year - left.dt.year).astype("float64")
+    return delta.mask(left.isna() | right.isna())
+
+
+def date_add_columns(
+    value: pd.Series, n: pd.Series, unit: pd.Series | str | None = None
+) -> pd.Series:
+    """Add n day/week/month/year units to a date. Null in is null."""
+    stamp = _naive_datetime(value, name="date_add")
+    amount = _numeric(n)
+    kind = _unit_name(unit)
+    if kind not in {"day", "week", "month", "year"}:
+        raise CatalogError(f"date_add unit must be day, week, month, or year (got {kind!r}).")
+    shifted: list[Any] = []
+    for ts, add in zip(stamp, amount):
+        if pd.isna(ts) or pd.isna(add):
+            shifted.append(pd.NaT)
+            continue
+        step = int(add)
+        if kind == "day":
+            shifted.append(ts + pd.Timedelta(days=step))
+        elif kind == "week":
+            shifted.append(ts + pd.Timedelta(weeks=step))
+        elif kind == "month":
+            shifted.append(ts + pd.DateOffset(months=step))
+        else:
+            shifted.append(ts + pd.DateOffset(years=step))
+    return pd.Series(shifted, index=value.index)
+
+
+def epoch_day_columns(value: pd.Series) -> pd.Series:
+    """Integer days since 1970-01-01 (tz-naive date)."""
+    stamp = _naive_datetime(value, name="epoch_day")
+    origin = pd.Timestamp("1970-01-01")
+    days = (stamp.dt.normalize() - origin).dt.days.astype("float64")
+    return days.mask(stamp.isna())

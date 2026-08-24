@@ -34,7 +34,7 @@ Hosts and YAML authors must treat these as breaks, not silent extras:
 - **Rows:** required `grouped_dimensions` (effective grain for that `output_cut`, may be `[]`). Dimensions not in that grain stay on the row as `null`.
 - **Result filters:** `apply: result` on a dim not in that cut’s effective grain is skipped (`not_in_grain`). Region IN no longer hides G by matching stamped null.
 - **Hosts that drop rows when all catalog dim columns are null** must use `grouped_dimensions` / `applied_cuts`. Worldwide G is valid.
-- **Payload:** `selected_dimensions`, `applied_cuts`, `dropped_cuts`, `grain_warnings`.
+- **Payload:** `selected_dimensions`, `applied_cuts`, `dropped_cuts`, `dropped_groups`, `grain_warnings`.
 
 ---
 
@@ -104,7 +104,11 @@ measures:                    # every measure_key the UI can send
 | YoY, ratio, same-row share, n-ary add/sub | `op: arithmetic` |
 | Share of **all groups on this cut** | `op: percent_of_total` (see §5.3c) |
 | Rank of groups on a cut | `op: rank` |
-| A formula over retrieved columns | `expr:` on a base measure (see §4) — `+ - * /`, CASE, allowlisted calls |
+| A formula over retrieved columns | `expr:` on a base measure (see §4) — named steps, `+ - * /`, CASE, allowlisted calls |
+| A static map (payment fee, tier rebate) | `lookup:` on a base measure (see §4.1) |
+| Entity window (sequence, days-since, running sum) | `over:` on a **pre-fold** base (see §4.2). Not calendar `op: lag` |
+| Drop groups below a measure floor | KPI `having:` (see §5.8). `op: predicate` flags 1/0 without dropping |
+| Share of **surviving** groups after a floor | `having.then_group_by` then `op: percent_of_total` |
 | A formula over other measures | `op: expr` (see §5.6) |
 | A named function over other measures' values | `op: fn` + `inputs:` (see §5.5) |
 | A named function over retrieved columns | `columns:` + `op:` on a base measure (see §10.1) |
@@ -120,9 +124,9 @@ Understanding this makes the YAML obvious.
 
 1. The **anchor** is the single value of the `time.filter_code` filter, truncated to `time.grain`. It is never applied as `WHERE month IN (...)`.
 2. The engine reads the **requested** `measure_key`s, works out the deepest lookback among them, and scans `[anchor − lookback, anchor]` as a **date range**. Measures nobody asked for cost nothing.
-3. DuckDB retrieves **model columns only** (time bucket, dimensions, and physical columns named by KPI YAML). `filters:` with `apply: extract` become the extract `WHERE` (plus undeclared context `IN` lists). It does not run `agg:`, `op:`, or `expr:`.
-4. Pandas computes every base measure on those rows, applies `apply: calc` masks, folds with `agg:`, then puts the result on a **dense period spine** so shifts move by the calendar, not by row position.
-5. Each cut re-aggregates that spine to its **effective group_by** (request grain minus `exclude_from_grain`, then YAML extras), skipping `ignore_filters` on `apply: calc` filters. Every requested measure is evaluated per dimension combination. `apply: result` then drops output rows without changing the math. Result filters on dims not in that cut’s grain skip (`not_in_grain`).
+3. DuckDB retrieves **model columns only** (time bucket, dimensions, and physical columns the row pipeline walks to). `filters:` with `apply: extract` become the extract `WHERE` (plus undeclared context `IN` lists). It does not run `agg:`, `op:`, named `expr:` steps, `lookup:`, or `over:`. A `kind: sql` model may still shape **this extract** (joins, filters, optional SQL math).
+4. After retrieve, the engine stable-sorts detail (time, grain dims, `over.order_by`) and assigns `_kpi_row_id`. Pandas then topo-sorts `base_measures` (helpers, `lookup:`, `expr:`, `over:`), folds bases that declare `agg:`, densifies, and computes combo measures (point / window / trend / `expr` / `fn` / `op: predicate`).
+5. Each cut re-aggregates that spine to its **effective group_by**. **HAVING** drops groups by measure predicates (per cut), optionally `then_group_by` re-folds survivors from filtered facts, then **all** cut-phase ops (`rank`, `percent_of_total`, …) run on what remains. `apply: result` is dim-only and runs after that. `green_when` stamps remaining rows; pagination `total` is remaining rows. Result filters on dims not in that cut’s grain skip (`not_in_grain`).
 
 The practical consequences:
 
@@ -325,9 +329,13 @@ base_measures:
 
 `sql: amount` + `agg: sum` names the physical column DuckDB retrieves. Pandas then sums it. KPI YAML formulas never appear in the DuckDB SQL.
 
-Prefer `expr:` for nested arithmetic, or `columns:` + `op:` for a registered function. `expr: (col_a * col_b) / (col_a + col_b)` with `agg: sum` is the **sum of per-row ratios**. The ratio of totals is a measure-level `op: expr` over two summed facts (see §5.6).
+Prefer `expr:` for nested arithmetic, or `columns:` + `op:` for a registered function. Do **not** desugar `arithmetic` / `fn` / `columns`+`op` into `expr` — those kinds stay for plugins and existing YAML. The preferred authoring path for new KPIs is named `expr:` steps (and `lookup:` / `over:`).
 
-Prefer `columns:` + `op:` when Pandas must combine retrieved columns. `op: multiply` with `columns: [ontime, fullqty]` is the row-wise product, then `agg: sum` adds those products (`1*10 + 0*4 = 10`, not `(1+0)*(10+4)`). `agg` may be omitted; it defaults to `sum` so a one-row extract is just the product.
+`expr:` / `lookup:` / `over:` without `agg:` are **row helpers**: they exist only in the row pipeline. They are not densify-filled and cannot be `measures.of` (BindError). Add `agg:` to fold them. Omit `agg` on `sql:` / `columns:`+`op` and it still defaults to `sum`.
+
+A later `expr:` may name an earlier base. Cycles are BindError. If an extract column and a YAML `expr:` / `over:` / `lookup:` share a name: BindError, unless the base sets `replace: true` (Pandas overwrites and `grain_warnings` records `replace_extract_column`).
+
+`sql:` / `expr:` name physical columns **or earlier helpers** (and optional `+ - * /`, CASE, or allowlisted calls including `date_diff` / `date_add` / `epoch_day` and `round` / `floor` / `ceil` / `power` / `log` / `log10` / `sqrt`). SQL `SUM()` / subqueries are rejected in KPI `sql:`; put the aggregation in `agg:`. DuckDB only SELECTs the physical column names; Pandas evaluates the formula. A `kind: sql` model may still contain `SUM(` / `LAG(` to shape **this extract**.
 
 `op:` names a function in the column registry, and every entry in `columns:` is handed to it as a numeric Series. Register your own for a custom calculation (see §10.1). These are built in:
 
@@ -343,7 +351,9 @@ Prefer `columns:` + `op:` when Pandas must combine retrieved columns. `op: multi
 | `divide` | `numerator`, `denominator` | zero denominator yields null, not `inf` |
 | `percent_of` | `part`, `whole` | the share, scaled to 0-100 |
 | `abs` | `column` | absolute value |
-| `value` | `column` | passes the column through |
+| `round` / `floor` / `ceil` | 1 (+ optional decimals) | Domain-safe rounding |
+| `power` / `log` / `log10` / `sqrt` | 1 or 2 | Domain errors (log/sqrt of negative, 0^negative) → null |
+| `date_diff` / `date_add` / `epoch_day` | dates | tz-naive only; units `day` / `week` / `month` / `year` |
 
 Older files may use `add`, `sub`, `mul`, `product`, `mean`, `ratio`, `share`, `div`, or `identity`; these are aliases of the names above and keep working.
 
@@ -361,9 +371,38 @@ base_measures:
 
 How many columns an `op` accepts, and what its parameters are called, come from the function's own Python signature. A function declared `def rate(shipped, ordered)` takes exactly two; one declared `def total(*columns)` takes any number and cannot be called by name. An unknown op, the wrong number of columns, or a parameter that does not exist all fail at bind time with the valid alternatives listed.
 
-`sql:` / `expr:` name physical columns (and optional `+ - * /`, CASE, or allowlisted calls). SQL `SUM()` / subqueries are rejected; put the aggregation in `agg:`. DuckDB only SELECTs the column names; Pandas evaluates the formula.
-
 Do **not** use `agg: sum` on a per-row ratio if you wanted a ratio of two totals. Declare two base measures and `op: expr` (or `op: arithmetic`) instead.
+
+### 4.1 `lookup:` — static maps
+
+```yaml
+platform_fee:
+  lookup: { column: payment_method, map: { COD: 25 }, default: 10 }
+rebate_pct:
+  lookup: { column: customer_tier, map: { Gold: 0.05, Silver: 0.02 }, strict: true }
+```
+
+Keys are compared after `str()` + strip. Unknown → `default` if set, else null. `strict: true` cannot combine with `default:`; any unknown key at eval is CatalogError. Mutually exclusive with `expr:` / `over:` / `sql:` / `columns:`+`op` on the same base.
+
+### 4.2 `over:` — entity windows on pre-fold rows
+
+Calendar `op: lag` stays on the densified spine vs the **anchor**. Entity sequence / days-since / running totals use `over:` on the **detail frame before fold**. `over:` is illegal on a combo measure. `op: lag` with `partition_by` is BindError.
+
+```yaml
+order_seq:
+  over: { fn: row_number, partition_by: [customer_id], order_by: [order_date, order_id] }
+  agg: max
+running_final:
+  over: { fn: running_sum, of: final_amount, partition_by: [customer_id], order_by: [order_date, order_id] }
+  agg: max
+```
+
+`fn`: `lag` / `lead` / `row_number` / `rank` / `dense_rank` / `running_sum` / `running_avg` / `last_n`. `order_by` is required (≥1 column). Window sort is `order_by` then `_kpi_row_id`; nulls sort last. `over.of` defaults to a named numeric helper/column; required for `running_*` / `last_n` / `lag` of a value. `last_n` writes a JSON list of the last n `of` values; fold only with `first`/`last` (or `agg_ok`).
+
+Caps: `OVER_ROW_CAP` (500,000 detail rows) and `OVER_PARTITION_CAP` (50,000 distinct partition tuples). Exceed → CatalogError; no silent truncate.
+
+`agg: sum|avg|count|count_distinct` on a window is BindError unless `agg_ok: true` (computes + `grain_warnings` `window_agg_ok`). Allowed identity aggs: `first|last|min|max`. Densify / `fill_zero` never feed `over:`. Snapshot KPIs may use `over:` with a non-time `order_by`. Two-model KPIs: `partition_by` / `order_by` / `lookup.column` must be on **that** model's retrieve (BindError if they name a base on the other extract). Combo/measure `of`/`expr` may only name folded bases (`agg` present) or other measures — never a row helper.
+
 
 ### Built-in aggregations
 
@@ -520,6 +559,9 @@ reason_code_rank:
 
 Pandas `RANK()` after the cut (ties share a rank; the next rank skips). Rank is across the whole cut when `partition_by` is omitted or equals that cut's keys. A **subset** of the cut keys restarts the rank inside each group. Null sources stay null. Defaults to `default_cut` unless `cuts:` lists more.
 
+`order_by: [order_date]` on cut ops (`rank`, `row_number`, `running_total`, `percent_of_total`, …) sorts groups by those dim columns **after** the existing `of` measure order. Default remains sort-by-measure. Final tiebreak: original combo index.
+
+
 ### 5.3c `percent_of_total` — share of groups on a cut
 
 ```yaml
@@ -547,6 +589,38 @@ percent_within_site:
 ```
 
 Null source → null. Zero or null total → null (never `inf`). Scale is 0–100. Same two-phase pass as `rank`; cannot be `left` / `inputs` / `expr` of another measure in the same request. `group_by:` is accepted as an alias for `partition_by`.
+
+### 5.3d `having:` — drop groups by measure predicates
+
+KPI-level (not a measure). Runs **per cut** after combo scalars exist and **before** cut ops, so rank/share never include dropped groups. Empty survivors → zero rows for that cut (not BindError). `dropped_groups` lists `{ cut, reason: "having", key: { dim: value, ... } }` (dim keys only; cap is `OVER_PARTITION_CAP`).
+
+```yaml
+having:
+  match: all                 # all (default) or any
+  predicates:
+    - { of: total_profit, cmp: gt, value: 0 }
+    - { of: return_rate, cmp: lt, value: 0.20 }
+  then_group_by: [product_category]   # optional
+```
+
+`cmp`: `gt|gte|lt|lte|eq|ne|between` (`between` needs inclusive `low`/`high`). Literal `value:` or `vs:` another **scalar** measure. Null `of` fails the predicate. Trend-array `of` is BindError. `of:` keys are auto-included like `green_when.of`. Worldwide rate ≠ regional rate: each cut (including `also_emit`) gets its own having + rollup.
+
+`then_group_by` must be a subset of that cut’s **pre-having** effective grain (empty list = one worldwide survivor row). Survivors are identified by fine-grain keys → filter `cut_monthly` / `cut_detail` → re-collapse to `then_group_by` → re-run combo then cut ops. Do **not** sum already-computed avgs/margins.
+
+HAVING sees the same combo scalars the client would have seen (post densify/`fill_zero`). Zero-filled sparse groups can fail `gt: 0`. `apply: result` stays dim-only and runs **after** having/rollup/cut ops.
+
+### 5.3e `predicate` — 1/0 flag (does not drop)
+
+```yaml
+healthy:
+  op: predicate
+  match: all
+  predicates:
+    - { of: total_profit, cmp: gt, value: 0 }
+    - { of: return_rate, cmp: lt, value: 0.20 }
+```
+
+Combo-phase. Same `cmp` set as `having:`. Can itself be `having.of`. Use this to flag; use `having:` to filter.
 
 ### 5.4 `arithmetic` — combine measures
 
@@ -1190,13 +1264,16 @@ Known boundaries, so you do not design around something that is not there:
 - Timestamps are bucketed as stored; there is no timezone conversion, and `time.timezone` is rejected at bind rather than silently ignored. Convert the column in a `kind: sql` model if you need it.
 - `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months.
 - `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) do not change meaning when `parameters.time_grain` changes. `periods` and `from: data_points` follow the pick (§5.2).
-- A day pick plus a large `data_points` widens the extract spine; the 50,000 trend-cell cap still applies.
+- `over:` detail is capped at 500,000 rows and 50,000 partitions; densify trends still use the 50,000 cell cap. Larger extracts fail fast — narrow filters, coarsen retrieve, or pre-aggregate in a SQL model.
 - `measures.*.cuts` restricts **trend**, **rank**, **percent_of_total**, and other cut-phase kinds (`ntile`, `top_n`, …).
-- `percent_of_total` windows **this cut's** rows only. Share of a different cut's total is a different problem (`ignore_filters` / `also_emit`, or a later op).
-- `filters:` is one mask for the pipeline (then cuts / `ignore_filters`). There is no per-measure filter block.
+- `percent_of_total` windows **this cut's** rows only (after having). Share of a different cut's total is a different problem (`ignore_filters` / `also_emit`, or a later op).
+- `filters:` is one mask for the pipeline (then cuts / `ignore_filters`). There is no per-measure filter block. KPI `having:` is the measure-predicate drop.
 - `rank` and `percent_of_total` cannot feed `arithmetic` / `fn` / `expr` in the same request.
 - Physical joins support `inner`, `left` and `right`. Anything else belongs in a `kind: sql` model.
-- `base_measures.sql` is a column name. Expressions belong in the model.
+- KPI `base_measures.sql` is a column name or a Pandas formula. DuckDB `SUM(` / `LAG(` belong in a `kind: sql` **model** when you opt into SQL extract shaping — not in KPI YAML.
+- Regex, JSON, geospatial, ML, and arbitrary Python remain **hooks** or `kind: sql`. The closed catalog is the ops/fns in this document plus [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md).
 - KPI YAML cannot reference another KPI's measures.
-- Non-additive aggregations re-read row-level data; they are the expensive option.
+- Non-additive aggregations (`median` / `percentile` / `count_distinct`) fold the **post-pipeline** fact series, not the pre-CASE columns.
 - `expr:` CASE is Pandas, not DuckDB. No `SUM(CASE)`, `LIKE`, `IN ('A','B')`, or simple `CASE status WHEN 'O'`. `columns:` + `op:` stays numeric.
+- Host ownership (ADLS, auth, jobs, context builder) stays outside `compute(context)`.
+- We do not claim identical IEEE bits across pandas versions; post-extract stable sort + `_kpi_row_id` makes window order deterministic.

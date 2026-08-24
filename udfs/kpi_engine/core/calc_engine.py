@@ -41,7 +41,7 @@ from kpi_engine.core.model_sql import NON_ADDITIVE
 from kpi_engine.core.op_protocol import EvalCtx
 from kpi_engine.core.op_registry import get_op
 from kpi_engine.dates import period_range_inclusive
-from kpi_engine.exceptions import CatalogError, KPIEngineError
+from kpi_engine.exceptions import BindError, CatalogError, KPIEngineError
 from kpi_engine.identifiers import match_name
 from kpi_engine.runlog import traced
 
@@ -127,13 +127,14 @@ def compute_cuts(
     plan: TimePlan | None,
     requested: tuple[str, ...],
     detail: pd.DataFrame | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
-    """Evaluate requested measures at each cut; return JSON rows and shared trend axes."""
+) -> tuple[list[dict[str, Any]], dict[str, list[str]], list[dict[str, Any]]]:
+    """Evaluate requested measures at each cut; return JSON rows, trend axes, dropped_groups."""
     measures = {m.key: m for m in kpi.measures}
     need = [k for k in requested if not get_op(measures[k].kind).echo_dimension]
     dim_keys = [k for k in requested if get_op(measures[k].kind).echo_dimension]
     rows: list[dict[str, Any]] = []
     trend_axes: dict[str, list[str]] = {}
+    dropped_groups: list[dict[str, Any]] = []
 
     for cut in emitted:
         cut_monthly = _cut_monthly(monthly, cut, deferred_filters, kpi)
@@ -155,65 +156,115 @@ def compute_cuts(
             if combo_frame.empty:
                 continue
 
-        trend_keys = [
-            k
-            for k in need
-            if get_op(measures[k].kind).emits_trend
-            and (
-                not get_op(measures[k].kind).cut_restricted
-                or cut_limited_applies(measures[k], cut, kpi)
-            )
-        ]
-        cut_phase_keys = [
-            k
-            for k in need
-            if get_op(measures[k].kind).phase == "cut"
-            and (
-                not get_op(measures[k].kind).cut_restricted
-                or cut_limited_applies(measures[k], cut, kpi)
-            )
-        ]
+        trend_keys, cut_phase_keys = _phase_keys(need, measures, cut, kpi)
         _guard_trend_payload(len(combo_frame), trend_keys, measures, cut, kpi)
 
-        cut_rows: list[dict[str, Any]] = []
-        for _, combo in combo_frame.iterrows():
-            series = _combo_series(
-                cut_monthly, group_dims, combo, kpi.time.column if kpi.time else ""
-            )
-            memo: dict[str, Any] = {}
-            row: dict[str, Any] = {
-                "output_cut": cut.name,
-                "grouped_dimensions": list(group_dims),
-            }
-            for dim in kpi.dimensions:
-                if dim in group_dims:
-                    row[dim] = _json_value(combo[dim]) if dim in combo.index else None
-                else:
-                    row[dim] = None
-            for key in dim_keys:
-                if key not in row:
-                    row[key] = row.get(key)
-            for key in need:
-                spec = measures[key]
-                plugin = get_op(spec.kind)
-                if plugin.cut_restricted and not cut_limited_applies(spec, cut, kpi):
-                    continue
-                if plugin.phase == "cut":
-                    row[f"__cut_src_{key}"] = evaluate(
-                        spec,
-                        series,
-                        kpi,
-                        plan,
-                        measures,
-                        detail=cut_detail,
-                        combo=combo,
-                        group_dims=group_dims,
-                        memo=memo,
-                        cut=cut.name,
-                        source_only=True,
-                    )
-                    continue
-                value = evaluate(
+        cut_rows = _evaluate_combos(
+            combo_frame,
+            cut_monthly,
+            cut_detail,
+            cut,
+            group_dims,
+            kpi,
+            plan,
+            measures,
+            need,
+            dim_keys,
+            trend_axes,
+        )
+        if kpi.having is not None:
+            kept, dropped = _apply_having(cut_rows, kpi, cut, group_dims)
+            dropped_groups.extend(dropped)
+            from kpi_engine.core.row_pipeline import OVER_PARTITION_CAP
+
+            if len(dropped_groups) > OVER_PARTITION_CAP:
+                raise CatalogError(
+                    f"dropped_groups has {len(dropped_groups)} entries, cap "
+                    f"{OVER_PARTITION_CAP}."
+                )
+            cut_rows = kept
+            if kpi.having.then_group_by is not None:
+                cut_rows, extra_axes = _rollup_after_having(
+                    cut_rows,
+                    cut,
+                    group_dims,
+                    cut_monthly,
+                    cut_detail,
+                    kpi,
+                    plan,
+                    measures,
+                    need,
+                    dim_keys,
+                    deferred_filters,
+                )
+                trend_axes.update(extra_axes)
+                group_dims = list(kpi.having.then_group_by)
+                trend_keys, cut_phase_keys = _phase_keys(need, measures, cut, kpi)
+        for key in cut_phase_keys:
+            get_op(measures[key].kind).apply_to_cut(cut_rows, measures[key], group_dims)
+        rows.extend(cut_rows)
+    return rows, trend_axes, dropped_groups
+
+
+def _phase_keys(need, measures, cut, kpi):
+    trend_keys = [
+        k
+        for k in need
+        if get_op(measures[k].kind).emits_trend
+        and (
+            not get_op(measures[k].kind).cut_restricted
+            or cut_limited_applies(measures[k], cut, kpi)
+        )
+    ]
+    cut_phase_keys = [
+        k
+        for k in need
+        if get_op(measures[k].kind).phase == "cut"
+        and (
+            not get_op(measures[k].kind).cut_restricted
+            or cut_limited_applies(measures[k], cut, kpi)
+        )
+    ]
+    return trend_keys, cut_phase_keys
+
+
+def _evaluate_combos(
+    combo_frame: pd.DataFrame,
+    cut_monthly: pd.DataFrame,
+    cut_detail: pd.DataFrame | None,
+    cut: CutSpec,
+    group_dims: list[str],
+    kpi: KpiSpec,
+    plan: TimePlan | None,
+    measures: dict[str, OutputSpec],
+    need: list[str],
+    dim_keys: list[str],
+    trend_axes: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    cut_rows: list[dict[str, Any]] = []
+    time_col = kpi.time.column if kpi.time else ""
+    for _, combo in combo_frame.iterrows():
+        series = _combo_series(cut_monthly, group_dims, combo, time_col)
+        memo: dict[str, Any] = {}
+        row: dict[str, Any] = {
+            "output_cut": cut.name,
+            "grouped_dimensions": list(group_dims),
+        }
+        for dim in kpi.dimensions:
+            if dim in group_dims:
+                row[dim] = _json_value(combo[dim]) if dim in combo.index else None
+            else:
+                row[dim] = None
+        for key in dim_keys:
+            if key not in row:
+                row[key] = row.get(key)
+        for key in need:
+            spec = measures[key]
+            plugin = get_op(spec.kind)
+            if plugin.cut_restricted and not cut_limited_applies(spec, cut, kpi):
+                continue
+            if plugin.phase == "cut":
+                row[f"__cut_src_{key}"] = evaluate(
                     spec,
                     series,
                     kpi,
@@ -224,18 +275,159 @@ def compute_cuts(
                     group_dims=group_dims,
                     memo=memo,
                     cut=cut.name,
+                    source_only=True,
                 )
-                if plugin.emits_trend:
-                    axis, values = value
-                    trend_axes[key] = axis
-                    row[key] = values
-                else:
-                    row[key] = value
-            cut_rows.append(row)
-        for key in cut_phase_keys:
-            get_op(measures[key].kind).apply_to_cut(cut_rows, measures[key], group_dims)
-        rows.extend(cut_rows)
-    return rows, trend_axes
+                continue
+            value = evaluate(
+                spec,
+                series,
+                kpi,
+                plan,
+                measures,
+                detail=cut_detail,
+                combo=combo,
+                group_dims=group_dims,
+                memo=memo,
+                cut=cut.name,
+            )
+            if plugin.emits_trend:
+                axis, values = value
+                trend_axes[key] = axis
+                row[key] = values
+            else:
+                row[key] = value
+        cut_rows.append(row)
+    return cut_rows
+
+
+def _apply_having(
+    cut_rows: list[dict[str, Any]],
+    kpi: KpiSpec,
+    cut: CutSpec,
+    group_dims: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from kpi_engine.core.predicates import eval_predicate_list
+
+    having = kpi.having
+    if having is None:
+        return cut_rows, []
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for row in cut_rows:
+        if eval_predicate_list(having.predicates, having.match, row):
+            kept.append(row)
+            continue
+        dropped.append(
+            {
+                "cut": cut.name,
+                "reason": "having",
+                "key": {dim: row.get(dim) for dim in group_dims},
+            }
+        )
+    return kept, dropped
+
+
+def _rollup_after_having(
+    cut_rows: list[dict[str, Any]],
+    cut: CutSpec,
+    group_dims: list[str],
+    cut_monthly: pd.DataFrame,
+    cut_detail: pd.DataFrame | None,
+    kpi: KpiSpec,
+    plan: TimePlan | None,
+    measures: dict[str, OutputSpec],
+    need: list[str],
+    dim_keys: list[str],
+    deferred_filters: tuple[BoundFilter, ...],
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Re-fold surviving facts to then_group_by, then re-run combo measures."""
+    from kpi_engine.core.fn_apply import collapse_pandas_detail, pandas_group_keys
+    from kpi_engine.dates import add_periods
+
+    having = kpi.having
+    if having is None or having.then_group_by is None:
+        return cut_rows, {}
+    target = list(having.then_group_by)
+    missing = [d for d in target if d not in group_dims]
+    if missing:
+        raise BindError(
+            f"having.then_group_by {missing} is not on cut {cut.name!r} "
+            f"(effective grain {group_dims})."
+        )
+    if not cut_rows:
+        return [], {}
+    keys_df = pd.DataFrame([{dim: row.get(dim) for dim in group_dims} for row in cut_rows])
+    keys_df = keys_df.drop_duplicates()
+    if cut_detail is not None and not cut_detail.empty:
+        present = [c for c in group_dims if c in cut_detail.columns]
+        survivors = (
+            cut_detail.merge(keys_df[present], on=present, how="inner")
+            if present and not keys_df.empty
+            else cut_detail.iloc[0:0]
+        )
+    else:
+        present = [c for c in group_dims if c in cut_monthly.columns]
+        survivors = (
+            cut_monthly.merge(keys_df[present], on=present, how="inner")
+            if present and not keys_df.empty
+            else cut_monthly.iloc[0:0]
+        )
+    grain = tuple(target)
+    collapsed = collapse_pandas_detail(survivors, kpi, grain, facts_applied=True)
+    if kpi.time is None or plan is None:
+        rolled = collapsed.copy()
+        if "_observed" not in rolled.columns:
+            rolled["_observed"] = True
+    else:
+        time_col = kpi.time.column
+        keys = pandas_group_keys(kpi, grain)
+        value_cols = [
+            m.name
+            for m in kpi.base_measures
+            if m.agg is not None and m.agg not in NON_ADDITIVE and m.agg != "avg"
+        ]
+        value_cols += [f"{m.name}__sum" for m in kpi.base_measures if m.agg == "avg"]
+        value_cols += [f"{m.name}__count" for m in kpi.base_measures if m.agg == "avg"]
+        fill_zero = [m.name for m in kpi.base_measures if m.agg in {"sum", "count"}]
+        densify_end = plan.anchor
+        if plan.lookback_forward:
+            densify_end = add_periods(plan.anchor, plan.lookback_forward, kpi.time)
+        kwargs = dict(
+            keys=keys,
+            time_col=time_col,
+            start=plan.span_start,
+            end=densify_end,
+            value_cols=value_cols,
+            fill_zero_cols=fill_zero,
+            time_spec=kpi.time,
+            kpi=kpi,
+            grain=grain,
+        )
+        if collapsed.empty:
+            rolled = densify(
+                pd.DataFrame(columns=[time_col, *keys, *value_cols]), **kwargs
+            )
+        else:
+            rolled = densify(collapsed, **kwargs)
+    combo_frame = (
+        rolled[target].drop_duplicates() if target and not rolled.empty
+        else (pd.DataFrame([{}]) if not target else rolled.iloc[0:0])
+    )
+    extra_axes: dict[str, list[str]] = {}
+    new_rows = _evaluate_combos(
+        combo_frame,
+        rolled,
+        survivors,
+        cut,
+        target,
+        kpi,
+        plan,
+        measures,
+        need,
+        dim_keys,
+        extra_axes,
+    )
+    return new_rows, extra_axes
 
 
 def evaluate(
@@ -336,7 +528,7 @@ def _cut_monthly(
     value_cols = [
         m.name
         for m in kpi.base_measures
-        if m.agg not in NON_ADDITIVE or m.row_op
+        if m.agg is not None and (m.agg not in NON_ADDITIVE or m.row_op)
     ]
     extra = [f"{m.name}__sum" for m in kpi.base_measures if m.agg == "avg"]
     extra += [f"{m.name}__count" for m in kpi.base_measures if m.agg == "avg"]

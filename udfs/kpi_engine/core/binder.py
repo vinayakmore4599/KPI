@@ -34,6 +34,7 @@ import yaml
 
 from kpi_engine.contracts import (
     GRAIN_NAMES,
+    OVER_FNS,
     AdaptedRequest,
     BaseMeasure,
     CutSpec,
@@ -41,14 +42,17 @@ from kpi_engine.contracts import (
     DimensionSpec,
     FilterApplySpec,
     GreenWhen,
+    HavingSpec,
     JoinSpec,
     KpiMeta,
     KpiSpec,
+    LookupSpec,
     MeasureWhere,
     ModelRelation,
     ModelSpec,
     Offset,
     OutputSpec,
+    OverSpec,
     ParameterSpec,
     PhysicalSource,
     TimeSpec,
@@ -391,11 +395,24 @@ def resolve_requested_graph(
     keys = list(requested)
     if requested and kpi.green_when is not None:
         keys.append(kpi.green_when.of)
+    if requested and kpi.having is not None:
+        from kpi_engine.core.predicates import predicate_names
+
+        keys.extend(predicate_names(kpi.having.predicates))
     emit = tuple(dict.fromkeys(fold_measure_keys(kpi, tuple(keys))))
     by_key = {m.key: m for m in kpi.measures}
     by_base = {b.name: b for b in kpi.base_measures}
     needed: set[str] = set()
     seen: set[str] = set()
+
+    def walk_base(name: str) -> None:
+        if name not in by_base or name in needed:
+            return
+        needed.add(name)
+        from kpi_engine.core.row_pipeline import base_dep_names
+
+        for dep in base_dep_names(by_base[name], by_base):
+            walk_base(dep)
 
     def walk(name: str) -> None:
         """Collect this key's bases and the measures it depends on."""
@@ -403,7 +420,7 @@ def resolve_requested_graph(
             return
         seen.add(name)
         if name in by_base:
-            needed.add(name)
+            walk_base(name)
         spec = by_key.get(name)
         if spec is None:
             return
@@ -449,6 +466,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     bases: list[BaseMeasure] = []
     for name, spec in (raw.get("base_measures") or {}).items():
         bases.append(_parse_base_measure(name, spec, param_names, param_types))
+    _assert_base_pipeline(tuple(bases), default_model=str(raw.get("model") or "") or None)
 
     cuts = tuple(_parse_cut(c, dimensions) for c in raw.get("cuts") or [])
     if not cuts:
@@ -489,6 +507,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     data_points = _parse_data_points(raw.get("data_points"), time)
     meta = _parse_meta(raw.get("meta"), tuple(m.key for m in measures))
     green_when = _parse_green_when(raw.get("green_when"), tuple(m.key for m in measures))
+    having = _parse_having(raw.get("having"), measures, tuple(d.name for d in dim_specs))
     relations = tuple(
         _parse_relation(r, time, dimensions) for r in raw.get("model_relations") or []
     )
@@ -520,6 +539,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         parameter_schema=parameter_schema,
         default_dimensions=default_dimensions,
         request_grain=default_dimensions,
+        having=having,
     )
     for spec in kpi.measures:
         if spec.trailing_from == "data_points" and data_points is None:
@@ -735,13 +755,28 @@ def _parse_base_measure(
     param_names: frozenset[str] = frozenset(),
     param_types: Mapping[str, str] | None = None,
 ) -> BaseMeasure:
-    """Parse sql:/columns:/op:/expr:/agg:/where for one base fact."""
+    """Parse sql:/columns:/op:/expr:/lookup:/over:/agg:/where for one base fact."""
     if not isinstance(spec, dict):
         raise BindError(f"base_measures.{name} must be an object.")
+    lookup = _parse_lookup(name, spec.get("lookup"))
+    over = _parse_over(name, spec.get("over"))
+    replace_col = bool(spec.get("replace"))
+    agg_ok = bool(spec.get("agg_ok"))
     columns, column_params = _parse_column_args(name, spec.get("columns"))
     row_op = spec.get("op") or spec.get("row_op")
     expr_raw = spec.get("expr")
     expr = str(expr_raw).strip() if expr_raw else None
+    formula_kinds = sum(
+        bool(x) for x in (expr, lookup, over, spec.get("sql"), row_op or columns)
+    )
+    if lookup and formula_kinds > 1:
+        raise BindError(
+            f"base_measures.{name} lookup: cannot combine with expr:/over:/sql:/columns:."
+        )
+    if over and (expr or spec.get("sql") or row_op or columns):
+        raise BindError(
+            f"base_measures.{name} over: cannot combine with expr:/sql:/columns:/op:."
+        )
     if expr:
         node = parse_expression(expr, what=f"base_measures.{name}.expr")
         assert_expr_calls(node, COLUMN_FNS, what=f"base_measures.{name}.expr")
@@ -774,32 +809,46 @@ def _parse_base_measure(
             f"base_measures.{name} names its columns but has no `op:` to bind them to."
         )
     sql_raw = str(spec.get("sql") or "").strip()
+    if lookup is not None:
+        sql_raw = lookup.column
+        columns = (lookup.column,)
+    if over is not None:
+        cols = list(over.partition_by) + list(over.order_by)
+        if over.of:
+            cols.append(over.of)
+        columns = tuple(dict.fromkeys(cols))
+        sql_raw = sql_raw or (columns[0] if columns else name)
     if not sql_raw and columns:
         sql_raw = columns[0]
     if not sql_raw and expr:
         sql_raw = columns[0] if columns else ""
     if not sql_raw:
-        raise BindError(f"base_measures.{name} needs sql:, columns:, or expr:.")
-    if sql_raw:
+        raise BindError(
+            f"base_measures.{name} needs sql:, columns:, expr:, lookup:, or over:."
+        )
+    if sql_raw and lookup is None and over is None:
         compile_sql_expr(sql_raw, what="measure sql")
     if row_op is not None:
         problem = column_op_error(row_op, len(columns) or 1, column_params)
         if problem:
             raise BindError(f"base_measures.{name} op {problem}")
-    if not expr and sql_raw and not is_simple_ident(sql_raw) and row_op is None:
+    if not expr and sql_raw and not is_simple_ident(sql_raw) and row_op is None and lookup is None and over is None:
         expr = sql_raw
         sql_node = parse_expression(expr, what="measure sql")
         assert_expr_calls(sql_node, COLUMN_FNS, what=f"base_measures.{name}.sql")
         assert_expr_param_usage(sql_node, param_types or {}, what=f"base_measures.{name}.sql")
         columns = tuple(col for col in expression_columns(sql_node) if col not in param_names)
-    default_agg = "sum" if row_op is None else spec.get("agg")
-    agg = spec.get("agg", default_agg)
-    if agg is None:
-        agg = "sum"
+    helper_shape = lookup is not None or over is not None or bool(expr)
+    if "agg" not in spec:
+        agg = None if helper_shape else "sum"
+        if row_op is not None and not helper_shape:
+            agg = spec.get("agg") or "sum"
+    else:
+        agg = spec.get("agg")
     allowed = {
         "sum", "avg", "count", "min", "max", "count_distinct", "median", "percentile", "first", "last"
     }
-    if agg not in allowed:
+    if agg is not None and agg not in allowed:
         raise BindError(f"Unknown agg {agg!r} on {name}.")
     percentile = spec.get("percentile")
     pvalue = None
@@ -813,7 +862,7 @@ def _parse_base_measure(
         raise BindError(f"base_measures.{name} agg=percentile requires percentile:.")
     where = _parse_where(name, spec.get("where"))
     model_id = spec.get("model")
-    return BaseMeasure(
+    measure = BaseMeasure(
         name=require_ident(str(name), what="base measure"),
         sql=sql_raw,
         agg=agg,
@@ -824,7 +873,159 @@ def _parse_base_measure(
         row_op=row_op,
         where=where,
         expr=expr,
+        lookup=lookup,
+        over=over,
+        replace=replace_col,
+        agg_ok=agg_ok,
     )
+    from kpi_engine.core.row_pipeline import assert_window_agg
+
+    assert_window_agg(measure)
+    return measure
+
+
+def _parse_lookup(name: str, raw: Any) -> LookupSpec | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BindError(f"base_measures.{name}.lookup must be an object.")
+    column = require_ident(str(raw.get("column") or ""), what="lookup.column")
+    mapping_raw = raw.get("map")
+    if not isinstance(mapping_raw, dict) or not mapping_raw:
+        raise BindError(f"base_measures.{name}.lookup needs a non-empty map:.")
+    mapping = {str(key).strip(): value for key, value in mapping_raw.items()}
+    strict = bool(raw.get("strict"))
+    default = raw.get("default")
+    if strict and default is not None:
+        raise BindError(
+            f"base_measures.{name}.lookup cannot set both strict: true and default:."
+        )
+    return LookupSpec(column=column, mapping=mapping, default=default, strict=strict)
+
+
+def _parse_over(name: str, raw: Any) -> OverSpec | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BindError(f"base_measures.{name}.over must be an object.")
+    fn = str(raw.get("fn") or "").strip().lower()
+    if fn not in OVER_FNS:
+        raise BindError(
+            f"base_measures.{name}.over.fn must be one of {sorted(OVER_FNS)} (got {fn!r})."
+        )
+    partition_by = _parse_name_list(raw.get("partition_by") or [], f"base_measures.{name}.over.partition_by")
+    order_by = _parse_name_list(raw.get("order_by"), f"base_measures.{name}.over.order_by")
+    if not order_by:
+        raise BindError(f"base_measures.{name}.over.order_by needs at least one column.")
+    of = raw.get("of")
+    of_name = str(of).strip() if of else None
+    needs_of = fn in {"lag", "lead", "running_sum", "running_avg", "last_n", "rank", "dense_rank"}
+    if needs_of and not of_name and fn not in {"rank", "dense_rank"}:
+        raise BindError(f"base_measures.{name}.over.fn={fn} requires of:.")
+    n_raw = raw.get("n")
+    n = None
+    if n_raw is not None:
+        try:
+            n = int(n_raw)
+        except (TypeError, ValueError) as exc:
+            raise BindError(f"base_measures.{name}.over.n must be an integer.") from exc
+        if n < 1:
+            raise BindError(f"base_measures.{name}.over.n must be >= 1.")
+    if fn in {"lag", "lead", "last_n"} and n is None:
+        n = 1
+    return OverSpec(
+        fn=fn,
+        partition_by=partition_by,
+        order_by=order_by,
+        of=of_name,
+        n=n,
+    )
+
+
+def _parse_name_list(raw: Any, what: str) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise BindError(f"{what} must be a list.")
+    return tuple(require_ident(str(item), what=what) for item in raw)
+
+
+def _assert_base_pipeline(
+    bases: tuple[BaseMeasure, ...], *, default_model: str | None
+) -> None:
+    """Topo-sort (cycle check) and reject over/lookup columns on another extract."""
+    from kpi_engine.core.row_pipeline import topo_bases
+
+    topo_bases(bases)
+    by_name = {measure.name: measure for measure in bases}
+    for measure in bases:
+        own = measure.model_id or default_model
+        if not own:
+            continue
+        names: list[str] = []
+        if measure.lookup is not None:
+            names.append(measure.lookup.column)
+        if measure.over is not None:
+            names.extend(measure.over.partition_by)
+            names.extend(measure.over.order_by)
+            if measure.over.of:
+                names.append(measure.over.of)
+        for name in names:
+            other = by_name.get(name)
+            if other is None:
+                continue
+            other_model = other.model_id or default_model
+            if other_model and not same_model_id(own, other_model):
+                kind = "over" if measure.over is not None else "lookup"
+                raise BindError(
+                    f"base_measures.{measure.name} {kind} column {name!r} is on "
+                    f"model {other_model!r}, not this extract {own!r}."
+                )
+
+
+def _parse_having(
+    raw: Any, measures: tuple[OutputSpec, ...], dimensions: tuple[str, ...]
+) -> HavingSpec | None:
+    if raw is None:
+        return None
+    from kpi_engine.core.predicates import (
+        assert_scalar_ofs,
+        parse_match,
+        parse_predicates,
+        predicate_names,
+    )
+
+    if isinstance(raw, (list, tuple)):
+        predicates = parse_predicates(raw, what="having")
+        match = "all"
+        then_group_by = None
+    elif isinstance(raw, dict):
+        predicates = parse_predicates(raw.get("predicates"), what="having")
+        match = parse_match(raw.get("match"), what="having")
+        if "then_group_by" in raw:
+            then_raw = raw.get("then_group_by")
+            if then_raw is None:
+                then_group_by = ()
+            else:
+                then_group_by = _parse_name_list(then_raw, "having.then_group_by")
+                unknown = [n for n in then_group_by if n not in dimensions]
+                if unknown:
+                    raise BindError(
+                        f"having.then_group_by {unknown} is not in dimensions: "
+                        f"{sorted(dimensions)}."
+                    )
+        else:
+            then_group_by = None
+    else:
+        raise BindError("having must be a list of predicates or an object.")
+    by_key = {m.key for m in measures}
+    for name in predicate_names(predicates):
+        if name not in by_key:
+            raise BindError(
+                f"having of={name!r} is not a measure key. Declared: {sorted(by_key)}."
+            )
+    assert_scalar_ofs(predicates, measures, what="having")
+    return HavingSpec(predicates=predicates, match=match, then_group_by=then_group_by)
 
 
 def _parse_column_args(name: str, raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:

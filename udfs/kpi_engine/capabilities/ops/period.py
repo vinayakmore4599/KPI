@@ -44,6 +44,11 @@ def _assert_shift_source(spec: OutputSpec, kpi: KpiSpec) -> None:
             f"or a point/window measure."
         )
     if of in known and of not in by_key:
+        helper = next(b for b in kpi.base_measures if b.name == of)
+        if helper.agg is None:
+            raise BindError(
+                f"measures.{spec.key} of={of!r} is a row helper (no agg:)."
+            )
         return
     child = by_key.get(of)
     if child is None:

@@ -54,6 +54,20 @@ WINDOW_RANGE_NAMES = frozenset(
     {"trailing", "leading", "cumulative", "ytd", "mtd", "qtd", "wtd", "full_month", "full_quarter", "full_year"}
 )
 NON_ADDITIVE_AGGS = frozenset({"count_distinct", "median", "percentile", "first", "last"})
+OVER_FNS = frozenset(
+    {
+        "lag",
+        "lead",
+        "row_number",
+        "rank",
+        "dense_rank",
+        "running_sum",
+        "running_avg",
+        "last_n",
+    }
+)
+WINDOW_AGGS_NEED_IDENTITY = frozenset({"sum", "avg", "count", "count_distinct"})
+HAVING_CMP = frozenset({"gt", "gte", "lt", "lte", "eq", "ne", "between"})
 
 
 @dataclass(frozen=True)
@@ -204,12 +218,54 @@ class DimensionSpec:
 
 
 @dataclass(frozen=True)
+class LookupSpec:
+    """Static map from one retrieved column onto a numeric/string value."""
+
+    column: str
+    mapping: Mapping[str, Any]
+    default: Any = None
+    strict: bool = False
+
+
+@dataclass(frozen=True)
+class OverSpec:
+    """Entity window on the pre-fold detail frame (not calendar op: lag)."""
+
+    fn: str
+    partition_by: tuple[str, ...]
+    order_by: tuple[str, ...]
+    of: str | None = None
+    n: int | None = None
+
+
+@dataclass(frozen=True)
+class HavingPredicate:
+    """One measure comparison used by having: or op: predicate."""
+
+    of: str
+    cmp: str
+    value: float | None = None
+    vs: str | None = None
+    low: float | None = None
+    high: float | None = None
+
+
+@dataclass(frozen=True)
+class HavingSpec:
+    """Drop (or flag) cut groups by measure predicates; optional coarser re-fold."""
+
+    predicates: tuple[HavingPredicate, ...]
+    match: Literal["all", "any"] = "all"
+    then_group_by: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True)
 class BaseMeasure:
     """Internal fact from the extract, optionally combined in Pandas."""
 
     name: str
     sql: str
-    agg: AggName
+    agg: AggName | None
     model_id: str | None = None
     percentile: float | None = None
     columns: tuple[str, ...] = ()
@@ -217,6 +273,10 @@ class BaseMeasure:
     row_op: RowOpName | None = None
     where: MeasureWhere | None = None
     expr: str | None = None
+    lookup: LookupSpec | None = None
+    over: OverSpec | None = None
+    replace: bool = False
+    agg_ok: bool = False
 
 
 @dataclass(frozen=True)
@@ -301,6 +361,7 @@ class KpiSpec:
     model_templated: bool = False
     default_dimensions: tuple[str, ...] = ()
     request_grain: tuple[str, ...] = ()
+    having: HavingSpec | None = None
 
 
 @dataclass(frozen=True)

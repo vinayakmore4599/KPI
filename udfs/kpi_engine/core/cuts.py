@@ -2,9 +2,9 @@
 
 What this file provides
     emitted_cuts / emitted_cuts_from — default_cut or named roots plus also_emit.
-    cut_group_dims — group_by minus the time column.
-    finest_grain — union of all KPI dimensions (tests / full-KPI view).
-    extract_grain — time + this pipeline's cuts only (what DuckDB retrieves).
+    effective_group_by — request grain minus exclude_from_grain plus cut extras.
+    cut_group_dims — effective keys minus the time column.
+    extract_grain / finest_grain — time + this pipeline's effective cut keys.
 
 Where it is used
     orchestrator (per-extract grain and cuts). calc_engine re-aggregates
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from kpi_engine.contracts import BaseMeasure, CutSpec, KpiSpec
 from kpi_engine.exceptions import BindError
+from kpi_engine.identifiers import norm_name
 from kpi_engine.runlog import traced
 
 
@@ -60,37 +61,45 @@ def emitted_cuts_from(kpi: KpiSpec, roots: tuple[str, ...]) -> tuple[CutSpec, ..
     return tuple(by_name[n] for n in names)
 
 
-def cut_group_dims(cut: CutSpec, time_column: str) -> tuple[str, ...]:
+def effective_group_by(cut: CutSpec, kpi: KpiSpec | None) -> tuple[str, ...]:
+    """Request grain minus this cut's exclude list, then YAML extras.
+
+    ``CutSpec.group_by`` is extras only. Without a KPI (unit tests of extras
+    themselves) the extras tuple is returned unchanged.
+    """
+    if kpi is None:
+        return cut.group_by
+    grain = kpi.request_grain
+    exclude = {norm_name(name) for name in cut.exclude_from_grain}
+    names: list[str] = []
+    seen: set[str] = set()
+    for name in grain:
+        key = norm_name(name)
+        if key in exclude or key in seen:
+            continue
+        names.append(name)
+        seen.add(key)
+    for name in cut.group_by:
+        key = norm_name(name)
+        if key in seen:
+            continue
+        names.append(name)
+        seen.add(key)
+    return tuple(names)
+
+
+def cut_group_dims(
+    cut: CutSpec, time_column: str, kpi: KpiSpec | None = None
+) -> tuple[str, ...]:
     """Non-time grouping columns for a cut (time is handled on the monthly frame)."""
-    return tuple(c for c in cut.group_by if c != time_column)
+    grouping = effective_group_by(cut, kpi)
+    return tuple(c for c in grouping if c != time_column)
 
 
 @traced
 def finest_grain(kpi: KpiSpec, emitted: tuple[CutSpec, ...]) -> tuple[str, ...]:
-    """Columns DuckDB must return: time, dimensions, cut keys, and join keys."""
-    dims: list[str] = []
-    seen: set[str] = set()
-    time_names = (kpi.time.column,) if kpi.time is not None else ()
-    dim_sources = tuple(spec.source or spec.name for spec in kpi.dimension_specs) or kpi.dimensions
-    rename_to_source = {spec.name: spec.source or spec.name for spec in kpi.dimension_specs}
-    extra = tuple(m.where.column for m in kpi.base_measures if m.where is not None)
-    for name in (*time_names, *dim_sources, *extra):
-        if name not in seen:
-            dims.append(name)
-            seen.add(name)
-    for cut in emitted:
-        for name in cut.group_by:
-            physical = rename_to_source.get(name, name)
-            if physical not in seen:
-                dims.append(physical)
-                seen.add(physical)
-            seen.add(name)
-    for rel in kpi.model_relations:
-        for name in rel.on:
-            if name not in seen:
-                dims.append(name)
-                seen.add(name)
-    return tuple(dims)
+    """Alias of extract_grain: time plus effective keys of these cuts."""
+    return extract_grain(kpi, emitted)
 
 
 def extract_grain(
@@ -99,25 +108,40 @@ def extract_grain(
     bases: tuple[BaseMeasure, ...] = (),
     extra: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
-    """Time + these cuts' group_by + where columns + extras. Not every KPI dimension."""
+    """Time + these cuts' effective group_by + where columns + extras."""
     names: list[str] = []
     seen: set[str] = set()
     rename = {spec.name: spec.source or spec.name for spec in kpi.dimension_specs}
+    by_fold = {
+        norm_name(spec.name): spec.source or spec.name
+        for spec in kpi.dimension_specs
+    }
+    by_fold.update(
+        {
+            norm_name(spec.source): spec.source or spec.name
+            for spec in kpi.dimension_specs
+            if spec.source
+        }
+    )
 
     def add(name: str | None) -> None:
-        if not name or name in seen:
+        if not name:
             return
-        names.append(name)
-        seen.add(name)
+        physical = rename.get(name, by_fold.get(norm_name(name), name))
+        key = norm_name(physical)
+        if key in seen:
+            return
+        names.append(physical)
+        seen.add(key)
 
     if kpi.time is not None:
         add(kpi.time.column)
     for cut in emitted:
-        for name in cut.group_by:
+        for name in effective_group_by(cut, kpi):
             add(rename.get(name, name))
     for base in bases:
         if base.where is not None:
             add(base.where.column)
     for name in extra:
-        add(name)
+        add(rename.get(name, name))
     return tuple(names)

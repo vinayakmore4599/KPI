@@ -161,6 +161,7 @@ class AdaptedRequest:
     raw: dict[str, Any]
     parameters: Mapping[str, Any] = field(default_factory=dict)
     measures_omitted: bool = False
+    selected_dimensions: tuple[str, ...] | Mapping[str, bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +200,7 @@ class DimensionSpec:
     mapping: dict[str, str] = field(default_factory=dict)
     default: str | None = None
     grain: GrainName | None = None
+    cardinality: str | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +227,7 @@ class CutSpec:
     group_by: tuple[str, ...]
     ignore_filters: tuple[str, ...]
     also_emit: tuple[str, ...]
+    exclude_from_grain: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -296,6 +299,8 @@ class KpiSpec:
     bound_parameters: Mapping[str, Any] = field(default_factory=dict)
     locked_cut: str | None = None
     model_templated: bool = False
+    default_dimensions: tuple[str, ...] = ()
+    request_grain: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

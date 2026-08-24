@@ -141,6 +141,7 @@ def test_kpi_yaml_cannot_name_a_module_path(extra_config):
             "model": "sotif",
             "time": {"column": "event_month", "grain": "month", "filter_code": "reporting_month"},
             "dimensions": ["region"],
+            "default_dimensions": [],
             "base_measures": {"v": {"sql": "amount", "agg": "sum"}},
             "cuts": [{"name": "G", "group_by": []}],
             "measures": {
@@ -160,6 +161,7 @@ def test_unknown_key_on_point_is_bind_error(extra_config):
             "model": "sotif",
             "time": {"column": "event_month", "grain": "month", "filter_code": "reporting_month"},
             "dimensions": ["region"],
+            "default_dimensions": [],
             "base_measures": {"v": {"sql": "amount", "agg": "sum"}},
             "cuts": [{"name": "G", "group_by": []}],
             "measures": {

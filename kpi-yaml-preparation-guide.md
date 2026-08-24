@@ -14,6 +14,22 @@ Related docs:
 
 ---
 
+## Ownership
+
+**YAML owns calculation.** Measure `op` / `agg` / `fn` / `expr` do not change with grain.
+
+**YAML owns the grouping allowlist and cut variants.** `dimensions:`, `default_dimensions`, extras-only `cuts[].group_by`, `exclude_from_grain`.
+
+**The request owns only which allowlisted dims are active** (`context.selected_dimensions`). That is GROUP BY keys, not math. Do not declare `parameters.selected_dimensions`.
+
+### Breaking changes
+
+- `default_dimensions` is required (`[]` = worldwide default). `cuts[].group_by` is extras only.
+- Rows include `grouped_dimensions`. Result filters on dims not in that cut grain skip (`not_in_grain`).
+- Payload adds `selected_dimensions`, `applied_cuts`, `dropped_cuts`, `grain_warnings`.
+
+---
+
 ## 1. Two files, two jobs
 
 | File | Job | Never put here |
@@ -34,7 +50,7 @@ Related docs:
 3. The engine walks dependencies (`of:`, `left`/`right`, `inputs:`, `expr:`, and `green_when.of`) and extracts only the base facts that graph needs.
 4. The time filter is the **anchor** (exactly one value). It is never `WHERE month IN (...)`. `parameters.time_grain` may pick an allowlisted interval when the KPI declares that parameter; lookback widens the scan from the requested graph (`previous_year_value` → 12 months).
 5. DuckDB returns physical columns. `filters:` with `apply: extract` (and undeclared `IN` lists) sit on that query. Pandas folds host spellings (`Amount` → `amount`), applies `apply: calc` masks, then `op:` / `expr:` / `agg:`.
-6. Each cut re-aggregates, then each requested measure is evaluated per dimension combination. `apply: result` drops output rows afterwards (measures already used the unfiltered cut).
+6. Each cut re-aggregates, then each requested measure is evaluated per dimension combination. `apply: result` drops output rows afterwards (measures already used the unfiltered cut). Result filters on dims not in that cut's grain skip (`not_in_grain`). Hosts send `context.selected_dimensions` to pick allowlisted GROUP BY keys; YAML measure math stays the same.
 
 Host names fold onto YAML names: `Previous Year Value`, `previous_year_value`, and `previousyearvalue` are the same key.
 
@@ -148,8 +164,10 @@ time:
 #   of: current_value
 
 dimensions:
-  - { name: reason_code, kind: dimension }
-  - { name: region, kind: dimension }
+  - { name: reason_code, from: reason_code }
+  - { name: region, from: region }
+
+default_dimensions: [reason_code]
 
 base_measures:
   sotif_value:
@@ -158,11 +176,12 @@ base_measures:
 
 cuts:
   - name: G
-    group_by: [reason_code]
+    group_by: []
+    exclude_from_grain: [region]
     ignore_filters: [region]
     also_emit: [R]
   - name: R
-    group_by: [reason_code, region]
+    group_by: [region]
     ignore_filters: []
 
 default_cut: G
@@ -177,10 +196,11 @@ measures:
 
 Required:
 
-- `kpi_id`, `model`, at least one `cut`, at least one `measure`
+- `kpi_id`, `model`, at least one `cut`, at least one `measure`, `default_dimensions`
 - Either `time:` (period KPIs) or omit it entirely (snapshot KPIs)
 - Every host `measure_key` declared under `measures:`
 - `ParentKPI` / `IsChild` / `KPI` are echo-only; do not point `ParentKPI` at another YAML file
+- `cuts[].group_by` lists extras only (not names already in `default_dimensions`)
 
 ---
 
@@ -649,16 +669,18 @@ green_when:
 
 ## 9. `cuts` and `row_set`
 
-A cut is a grouping grain, not a number.
+A cut is a grouping **variant**. `group_by` lists extras only. Effective grain = `selected_dimensions` (or `default_dimensions`) minus `exclude_from_grain`, then extras.
 
 ```yaml
+default_dimensions: [reason_code]
 cuts:
   - name: G
-    group_by: [reason_code]
-    ignore_filters: [region]   # G is worldwide even if the page selected a region
+    group_by: []
+    exclude_from_grain: [region]
+    ignore_filters: [region]
     also_emit: [R]
   - name: R
-    group_by: [reason_code, region]
+    group_by: [region]
     ignore_filters: []
 
 default_cut: G
@@ -667,10 +689,11 @@ row_set: span_union
 
 | Key | Meaning |
 |---|---|
-| `group_by` | Dimensions this cut groups by |
+| `group_by` | Extra dimensions this cut always adds (disjoint from `default_dimensions`) |
+| `exclude_from_grain` | Request dims this cut drops; couple to dim-named `ignore_filters` |
 | `ignore_filters` | Cuts that skip this **calc** filter (G worldwide / R filtered). Legal with default `apply: extract` (runtime defers). Not valid with `apply: result` |
 | `also_emit` | Extra cuts in the same response |
-| `row_set: span_union` | Row if the combo has data **anywhere in the scan** |
+| `row_set: span_union` | Row if the combo has data **anywhere in the scan** (until the densify cell cap) |
 | `row_set: anchor_only` | Row only if it has data **at the selected period** |
 
 Use `anchor_only` when the page should list only what is active now.
@@ -998,13 +1021,14 @@ time:
   grain: month
   filter_code: reporting_month
 dimensions:
-  - { name: reason_code, kind: dimension }
-  - { name: region, kind: dimension }
+  - { name: reason_code, from: reason_code }
+  - { name: region, from: region }
 base_measures:
   sotif_value: { sql: amount, agg: sum }
+default_dimensions: [reason_code]
 cuts:
-  - { name: G, group_by: [reason_code], ignore_filters: [region], also_emit: [R] }
-  - { name: R, group_by: [reason_code, region], ignore_filters: [] }
+  - { name: G, group_by: [], exclude_from_grain: [region], ignore_filters: [region], also_emit: [R] }
+  - { name: R, group_by: [region], ignore_filters: [] }
 default_cut: G
 measures:
   current_value:       { of: sotif_value, op: point,  offset: { months: 0 } }
@@ -1038,11 +1062,12 @@ green_when:
   above: 0.98
   of: current_value
 dimensions:
-  - { name: reason_code, kind: dimension }
+  - { name: reason_code, from: reason_code }
 base_measures:
   sotif_value: { sql: amount, agg: sum }
+default_dimensions: [reason_code]
 cuts:
-  - { name: G, group_by: [reason_code], ignore_filters: [] }
+  - { name: G, group_by: [], ignore_filters: [] }
 default_cut: G
 measures:
   current_value: { of: sotif_value, op: point, offset: { months: 0 } }
@@ -1100,9 +1125,10 @@ measures:
 ### Share of all groups on a cut (`percent_gt`)
 
 ```yaml
+default_dimensions: [reason_code]
 cuts:
   - name: R
-    group_by: [reason_code, site_category]
+    group_by: [site_category]
 default_cut: R
 measures:
   current_value: { of: numerator, op: point, offset: { months: 0 } }

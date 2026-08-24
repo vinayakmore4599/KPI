@@ -73,7 +73,7 @@ def _sparse_kpi(kpi_id: int) -> dict:
     return minimal_kpi(
         kpi_id,
         base_measures=_BASES,
-        cuts=[{"name": "G", "group_by": ["reason_code"], "ignore_filters": []}],
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
         default_cut="G",
         measures=measures,
     )
@@ -151,7 +151,7 @@ def test_window_over_an_empty_span_is_zero_for_sums_and_null_otherwise(
             "sum_value": {"sql": "amount", "agg": "sum"},
             "min_value": {"sql": "amount", "agg": "min"},
         },
-        cuts=[{"name": "G", "group_by": ["reason_code"], "ignore_filters": []}],
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
         default_cut="G",
         measures={
             "prior_sum": {
@@ -382,7 +382,7 @@ def test_nullable_fact_column_yields_null_averages_not_zero(tmp_path, extra_conf
                 "amount_value": {"sql": "amount", "agg": "sum"},
                 "bonus_avg": {"sql": "bonus", "agg": "avg"},
             },
-            cuts=[{"name": "G", "group_by": ["reason_code"], "ignore_filters": []}],
+            cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
             default_cut="G",
             measures={
                 "amount_prev": {"of": "amount_value", "op": "point", "offset": {"months": 1}},
@@ -446,7 +446,7 @@ def test_trend_of_a_non_additive_agg_recomputes_each_period(tmp_path, extra_conf
         minimal_kpi(
             9617,
             base_measures={"distinct_suppliers": {"sql": "supplier_name", "agg": "count_distinct"}},
-            cuts=[{"name": "G", "group_by": ["reason_code"], "ignore_filters": []}],
+            cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
             default_cut="G",
             measures={
                 "suppliers_trend": {
@@ -503,7 +503,8 @@ def test_numeric_and_null_dimensions_serialize_as_plain_json(tmp_path, extra_con
         minimal_kpi(
             9615,
             dimensions=[{"name": "plant_id", "kind": "dimension"}],
-            cuts=[{"name": "P", "group_by": ["plant_id"], "ignore_filters": []}],
+            default_dimensions=["plant_id"],
+            cuts=[{"name": "P", "group_by": [], "ignore_filters": []}],
             default_cut="P",
             measures={"current_value": {"of": "sotif_value", "op": "point", "offset": {"months": 0}}},
         ),
@@ -525,7 +526,7 @@ def test_non_additive_measure_on_an_empty_period_is_null(parquet_path, extra_con
         minimal_kpi(
             9616,
             base_measures={"distinct_suppliers": {"sql": "supplier_name", "agg": "count_distinct"}},
-            cuts=[{"name": "G", "group_by": ["reason_code"], "ignore_filters": []}],
+            cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
             default_cut="G",
             measures={
                 "suppliers_now": {
@@ -558,7 +559,7 @@ def _arithmetic_kpi(kpi_id: int, fn: str, left_offset: int = 0) -> dict:
     return minimal_kpi(
         kpi_id,
         base_measures={"sum_value": {"sql": "amount", "agg": "sum"}},
-        cuts=[{"name": "G", "group_by": ["reason_code"], "ignore_filters": []}],
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
         default_cut="G",
         measures={
             "left_value": {

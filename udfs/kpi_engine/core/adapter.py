@@ -78,6 +78,7 @@ def adapt(context: dict[str, Any]) -> AdaptedRequest:
         raw=context,
         parameters=_parameters(context.get("parameters")),
         measures_omitted=measures_omitted,
+        selected_dimensions=_selected_dimensions(context),
     )
 
 
@@ -266,6 +267,55 @@ def _pagination(raw: Any) -> Pagination:
         page=_optional_int(raw.get("page")),
         page_size=_optional_int(raw.get("page_size")),
         limit=_optional_int(raw.get("limit")),
+    )
+
+
+def _selected_dimensions(
+    context: dict[str, Any],
+) -> tuple[str, ...] | dict[str, bool] | None:
+    """Parse top-level selected_dimensions: omit/null, array, names-object, or bool-object."""
+    found, field = _lookup_present(context, "selected_dimensions")
+    if field is None:
+        return None
+    if found is None:
+        return None
+    if isinstance(found, list):
+        names: list[str] = []
+        for item in found:
+            if item is None or isinstance(item, bool) or not isinstance(item, (str, int, float)):
+                raise ContextError(
+                    "selected_dimensions array items must be strings. "
+                    'Send ["supplier"], {"names": ["supplier"]}, or {"supplier": true}.'
+                )
+            names.append(str(item))
+        return tuple(names)
+    if isinstance(found, dict):
+        if "names" in found and isinstance(found.get("names"), list):
+            extra = [key for key in found if key != "names"]
+            if extra:
+                raise ContextError(
+                    "selected_dimensions {names: [...]} cannot mix in other keys."
+                )
+            names = []
+            for item in found["names"]:
+                if item is None or isinstance(item, bool) or not isinstance(item, (str, int, float)):
+                    raise ContextError(
+                        "selected_dimensions.names items must be strings."
+                    )
+                names.append(str(item))
+            return tuple(names)
+        flags: dict[str, bool] = {}
+        for key, value in found.items():
+            if not isinstance(value, bool):
+                raise ContextError(
+                    "selected_dimensions object values must be bool, or use "
+                    '{"names": ["supplier"]} / ["supplier"].'
+                )
+            flags[str(key)] = value
+        return flags
+    raise ContextError(
+        "selected_dimensions must be an array of names, "
+        '{"names": [...]} , or an object of bools.'
     )
 
 

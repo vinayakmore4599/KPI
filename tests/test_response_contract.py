@@ -43,6 +43,10 @@ def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
         "sql",
         "sqls",
         "rows",
+        "selected_dimensions",
+        "applied_cuts",
+        "dropped_cuts",
+        "grain_warnings",
     }
     assert result["kpi_id"] == 3004
     assert result["request_id"] == "REQ-page-001"
@@ -88,12 +92,22 @@ def test_rows_carry_every_dimension_with_null_for_ungrouped_ones(parquet_path, c
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
     rows = compute(ctx, config_dir=config_dir)["rows"]
     for row in rows:
-        assert set(row) == {"output_cut", "reason_code", "region", "current_value", "model"}
+        assert set(row) == {
+            "output_cut",
+            "grouped_dimensions",
+            "reason_code",
+            "region",
+            "supplier",
+            "current_value",
+            "model",
+        }
         assert row["model"] == "sotif"
     g_rows = [r for r in rows if r["output_cut"] == "G"]
     assert all(r["region"] is None for r in g_rows)
+    assert all(r["grouped_dimensions"] == ["reason_code"] for r in g_rows)
     r_rows = [r for r in rows if r["output_cut"] == "R"]
     assert all(r["region"] is not None for r in r_rows)
+    assert all(r["grouped_dimensions"] == ["reason_code", "region"] for r in r_rows)
 
 
 def test_rows_are_sorted_by_cut_then_dimension_order(parquet_path, config_dir):

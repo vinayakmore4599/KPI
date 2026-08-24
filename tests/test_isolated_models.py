@@ -177,6 +177,7 @@ def _dual_kpi() -> dict:
             {"name": "reason_code", "kind": "dimension"},
             {"name": "factor", "kind": "dimension"},
         ],
+        "default_dimensions": [],
         "base_measures": {
             "shipped": {"sql": "amount", "agg": "sum"},
             "reason_1": {"sql": "qty", "agg": "sum", "model": "reasons"},
@@ -185,6 +186,7 @@ def _dual_kpi() -> dict:
             {
                 "name": "G156",
                 "group_by": ["region"],
+                "exclude_from_grain": ["reason_code"],
                 "ignore_filters": ["reason_code"],
                 "also_emit": ["R156"],
             },

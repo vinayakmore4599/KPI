@@ -32,7 +32,10 @@ from kpi_engine.runlog import log_step, traced
 
 RESERVED_TIME_GRAIN = "time_grain"
 RESERVED_OUTPUT_CUT = "output_cut"
-RESERVED_PARAMETER_NAMES = frozenset({RESERVED_TIME_GRAIN, RESERVED_OUTPUT_CUT})
+RESERVED_SELECTED_DIMENSIONS = "selected_dimensions"
+RESERVED_PARAMETER_NAMES = frozenset(
+    {RESERVED_TIME_GRAIN, RESERVED_OUTPUT_CUT, RESERVED_SELECTED_DIMENSIONS}
+)
 RESERVED_CASE_LABELS = frozenset({"param", "cases", "else"})
 
 SCALAR_TYPES = frozenset({"string", "int", "float", "bool"})

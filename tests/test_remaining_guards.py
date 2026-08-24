@@ -20,7 +20,7 @@ from kpi_engine import compute, validate
 from kpi_engine.core.binder import load_kpi
 from kpi_engine.exceptions import BindError, FilterError, KPIEngineError
 from kpi_engine.identifiers import require_ident
-from tests.conftest import find_row, make_context, write_yaml
+from tests.conftest import find_row, make_context, sotif_cuts, write_yaml
 
 
 def test_physical_inner_join_drops_unmatched_regions(parquet_path, extra_config, tmp_path):
@@ -127,7 +127,7 @@ def test_trend_cell_cap_rejects_oversized_payload(parquet_path, config_dir, monk
     """Trend length × cut rows cannot exceed TREND_CELL_CAP."""
     monkeypatch.setattr("kpi_engine.core.calc_engine.TREND_CELL_CAP", 10)
     ctx = make_context(parquet_path, measures=["trend_12m"], supplier=["ABC"])
-    with pytest.raises(KPIEngineError, match="Trend 'trend_12m'"):
+    with pytest.raises(KPIEngineError, match="exceeds 10"):
         compute(ctx, config_dir=config_dir)
 
 
@@ -159,6 +159,7 @@ def test_kpi_filter_map_binds_code_missing_from_context_mappings(parquet_path, e
         validate(ctx, config_dir=extra_config)
 
     spec["filter_map"] = {"plant_code": "region"}
+    spec["cuts"][0]["ignore_filters"] = ["region", "plant_code"]
     write_yaml(extra_config / "kpis" / "9046.yaml", spec)
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
@@ -218,16 +219,6 @@ def _kpi(
     row_set: str = "span_union",
     also_emit: bool = True,
 ) -> dict:
-    """Minimal Sotif-shaped KPI YAML for guard tests."""
-    g_cut: dict = {
-        "name": "G",
-        "group_by": ["reason_code"],
-        "ignore_filters": ["region"],
-    }
-    cuts = [g_cut]
-    if also_emit:
-        g_cut["also_emit"] = ["R"]
-        cuts.append({"name": "R", "group_by": ["reason_code", "region"], "ignore_filters": []})
     return {
         "kpi_id": kpi_id,
         "version": 1,
@@ -242,8 +233,9 @@ def _kpi(
             {"name": "reason_code", "kind": "dimension"},
             {"name": "region", "kind": "dimension"},
         ],
+        "default_dimensions": ["reason_code"],
         "base_measures": {"sotif_value": {"sql": "amount", "agg": "sum"}},
-        "cuts": cuts,
+        "cuts": sotif_cuts(also_emit=also_emit),
         "default_cut": "G",
         "row_set": row_set,
         "measures": {

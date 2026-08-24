@@ -35,13 +35,14 @@ from kpi_engine.contracts import (
     OutputSpec,
     TimePlan,
 )
-from kpi_engine.core.cuts import cut_group_dims
+from kpi_engine.core.cuts import cut_group_dims, effective_group_by
 from kpi_engine.core.filters import apply_cut_filters
 from kpi_engine.core.model_sql import NON_ADDITIVE
 from kpi_engine.core.op_protocol import EvalCtx
 from kpi_engine.core.op_registry import get_op
 from kpi_engine.dates import period_range_inclusive
 from kpi_engine.exceptions import CatalogError, KPIEngineError
+from kpi_engine.identifiers import match_name
 from kpi_engine.runlog import traced
 
 TREND_CELL_CAP = 50_000
@@ -58,18 +59,42 @@ def densify(
     value_cols: list[str],
     fill_zero_cols: list[str],
     time_spec: Any | None = None,
+    kpi: KpiSpec | None = None,
+    grain: tuple[str, ...] | None = None,
 ) -> pd.DataFrame:
     """Fill every partition with every period in [start, end] so shifts move by calendar."""
     from kpi_engine.dates import month_range_inclusive, parse_month
 
     work = frame.copy()
     work[time_col] = pd.to_datetime(work[time_col]).dt.normalize()
+    resolved: list[str] = []
+    seen_keys: set[str] = set()
+    for key in keys:
+        actual = key if key in work.columns else match_name(key, work.columns)
+        if actual is None or actual in seen_keys:
+            continue
+        resolved.append(actual)
+        seen_keys.add(actual)
+    keys = resolved
     if time_spec is None:
         months = pd.to_datetime(month_range_inclusive(parse_month(start), parse_month(end)))
     else:
         months = pd.to_datetime(period_range_inclusive(start, end, time_spec))
     if keys:
         groups = work[keys].drop_duplicates()
+        n_combos = len(groups)
+    else:
+        groups = None
+        n_combos = 1
+    n_periods = len(months)
+    if n_combos * n_periods > TREND_CELL_CAP:
+        selected = list(kpi.request_grain) if kpi is not None else list(keys)
+        extract = list(grain) if grain is not None else list(keys)
+        raise CatalogError(
+            f"Densify grid {n_combos} combos × {n_periods} periods exceeds "
+            f"{TREND_CELL_CAP}. selected_dimensions={selected} extract grain={extract}."
+        )
+    if keys:
         grid = groups.merge(pd.DataFrame({time_col: months}), how="cross")
     else:
         grid = pd.DataFrame({time_col: months})
@@ -113,7 +138,7 @@ def compute_cuts(
     for cut in emitted:
         cut_monthly = _cut_monthly(monthly, cut, deferred_filters, kpi)
         cut_detail = apply_cut_filters(detail, cut, deferred_filters) if detail is not None else None
-        group_dims = list(cut_group_dims(cut, kpi.time.column if kpi.time else ""))
+        group_dims = list(cut_group_dims(cut, kpi.time.column if kpi.time else "", kpi))
         if cut_monthly.empty and not group_dims:
             combo_frame = pd.DataFrame([{}])
         elif cut_monthly.empty and cut_detail is not None and not cut_detail.empty:
@@ -148,7 +173,7 @@ def compute_cuts(
                 or cut_limited_applies(measures[k], cut, kpi)
             )
         ]
-        _guard_trend_payload(len(combo_frame), trend_keys, measures, cut)
+        _guard_trend_payload(len(combo_frame), trend_keys, measures, cut, kpi)
 
         cut_rows: list[dict[str, Any]] = []
         for _, combo in combo_frame.iterrows():
@@ -156,7 +181,10 @@ def compute_cuts(
                 cut_monthly, group_dims, combo, kpi.time.column if kpi.time else ""
             )
             memo: dict[str, Any] = {}
-            row: dict[str, Any] = {"output_cut": cut.name}
+            row: dict[str, Any] = {
+                "output_cut": cut.name,
+                "grouped_dimensions": list(group_dims),
+            }
             for dim in kpi.dimensions:
                 if dim in group_dims:
                     row[dim] = _json_value(combo[dim]) if dim in combo.index else None
@@ -304,7 +332,7 @@ def _cut_monthly(
     """Filter then re-aggregate the monthly frame to this cut's group_by."""
     work = apply_cut_filters(monthly, cut, deferred)
     time_col = kpi.time.column if kpi.time is not None else None
-    dims = list(cut_group_dims(cut, time_col or ""))
+    dims = list(cut_group_dims(cut, time_col or "", kpi))
     value_cols = [
         m.name
         for m in kpi.base_measures
@@ -365,16 +393,22 @@ def _combo_series(
 
 
 def _guard_trend_payload(
-    row_count: int, trend_keys: list[str], catalog: dict[str, OutputSpec], cut: CutSpec
+    row_count: int,
+    trend_keys: list[str],
+    catalog: dict[str, OutputSpec],
+    cut: CutSpec,
+    kpi: KpiSpec,
 ) -> None:
     """Fail if row_count × trend length would exceed TREND_CELL_CAP."""
+    grain = list(effective_group_by(cut, kpi))
     for key in trend_keys:
         length = catalog[key].trailing_months or 1
         cells = row_count * length
         if cells > TREND_CELL_CAP:
             raise KPIEngineError(
                 f"Trend {key!r} on cut {cut.name!r} would emit {cells} cells "
-                f"(cap {TREND_CELL_CAP}). Narrow the cut in measures.{key}.cuts."
+                f"(cap {TREND_CELL_CAP}). Narrow selected_dimensions={list(kpi.request_grain)} "
+                f"or measures.{key}.cuts. effective group_by={grain}."
             )
 
 

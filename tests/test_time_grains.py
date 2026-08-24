@@ -158,6 +158,7 @@ def _grain_kpi(
         "model": "sotif",
         "time": time,
         "dimensions": [{"name": "reason_code", "kind": "dimension"}],
+        "default_dimensions": [],
         "base_measures": {"sotif_value": {"sql": "amount", "agg": "sum"}},
         "cuts": [{"name": "G", "group_by": [], "ignore_filters": []}],
         "default_cut": "G",

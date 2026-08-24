@@ -8,9 +8,10 @@
 #   binder.load_kpi(3004). The engine does not hard-code Sotif math.
 #
 # Capabilities
-#   dimensions     — row splits (reason_code, region)
+#   dimensions     — catalog allowlist (reason_code, region, supplier)
+#   default_dimensions — GROUP BY when the request omits selected_dimensions
 #   base_measures  — internal amount fact as sotif_value (Pandas sum)
-#   cuts           — G (global, ignore region) also emits R (by region)
+#   cuts           — extras-only group_by; G excludes region, R adds it
 #   measures       — current, previous year, 3/6/12m windows, yoy, 12m trend
 #
 # When to use
@@ -28,10 +29,13 @@ time:
   filter_code: reporting_month
   calendar: gregorian
 
-# How rows are split. Not numbers.
+# How rows are split. Not numbers. YAML owns the allowlist; the request picks names.
 dimensions:
-  - { name: reason_code, kind: dimension }
-  - { name: region, kind: dimension }
+  - { name: reason_code, from: reason_code }
+  - { name: region, from: region }
+  - { name: supplier, from: supplier_name }
+
+default_dimensions: [reason_code]
 
 # Internal fact from the table. UI does not request this name.
 base_measures:
@@ -39,14 +43,16 @@ base_measures:
     sql: amount
     agg: sum
 
-# Grouping grains. G = global (no region); R = by region. also_emit packs both in one response.
+# group_by lists extras only. Effective grain = request_grain − exclude + extras.
 cuts:
   - name: G
-    group_by: [reason_code]
+    group_by: []
+    exclude_from_grain: [region]
     ignore_filters: [region]
     also_emit: [R]
   - name: R
-    group_by: [reason_code, region]
+    group_by: [region]
+    exclude_from_grain: []
     ignore_filters: []
 
 default_cut: G

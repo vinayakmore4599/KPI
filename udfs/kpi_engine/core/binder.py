@@ -95,12 +95,14 @@ def load_kpi(
     config_dir: Path | None = None,
     parameters: dict[str, Any] | None = None,
     *,
+    selected_dimensions: tuple[str, ...] | Mapping[str, bool] | None = None,
     _validate_cases: bool = True,
 ) -> KpiSpec:
     """Bind request parameters, resolve when:/from_param:, then parse.
 
     ``parameters=None`` means ``{}`` (defaults fill). There is no template path
-    vs 3004 path — 3004 is identity resolve.
+    vs 3004 path — 3004 is identity resolve. ``selected_dimensions=None`` means
+    the key was omitted (use YAML default_dimensions).
     """
     from dataclasses import replace as _replace
 
@@ -126,8 +128,10 @@ def load_kpi(
     kpi = _parse_kpi(materialized, expected_id=kpi_id)
     bound = _replace(bound, model_templated=model_templated)
     kpi = apply_bound_to_spec(kpi, bound)
+    kpi = apply_request_grain(kpi, selected_dimensions)
+    models = _load_kpi_models(kpi, root)
+    assert_default_grain_on_schema(kpi, models)
     if model_templated or yaml_has_overlays(raw):
-        models = _load_kpi_models(kpi, root)
         assert_pack_columns(kpi, models)
     if _validate_cases:
         validate_when_cases(
@@ -138,6 +142,69 @@ def load_kpi(
             check_columns=assert_pack_columns,
         )
     return kpi
+
+
+def apply_request_grain(
+    kpi: KpiSpec,
+    selected: tuple[str, ...] | Mapping[str, bool] | None,
+) -> KpiSpec:
+    """Set request_grain from omitted/empty/names/bool-map selected_dimensions."""
+    catalog = {norm_name(spec.name): spec.name for spec in kpi.dimension_specs}
+    time_col = kpi.time.column if kpi.time is not None else None
+
+    def canonical(name: str) -> str:
+        raw = str(name).strip()
+        if not raw:
+            raise BindError("selected_dimensions names cannot be empty.")
+        key = norm_name(raw)
+        if time_col is not None and key == norm_name(time_col):
+            raise BindError(
+                f"selected_dimensions cannot include the time column {time_col!r}."
+            )
+        mapped = catalog.get(key)
+        if mapped is None:
+            raise BindError(
+                f"Unknown selected_dimensions name {name!r}. "
+                f"Catalog: {list(kpi.dimensions)}."
+            )
+        return mapped
+
+    if selected is None:
+        grain = kpi.default_dimensions
+    elif isinstance(selected, Mapping):
+        seen: set[str] = set()
+        grain_list: list[str] = []
+        for spec in kpi.dimension_specs:
+            flag = None
+            for key, value in selected.items():
+                if norm_name(str(key)) == norm_name(spec.name):
+                    flag = value
+                    break
+            if flag is True and spec.name not in seen:
+                grain_list.append(spec.name)
+                seen.add(spec.name)
+        extra = [
+            str(key)
+            for key in selected
+            if norm_name(str(key)) not in catalog
+        ]
+        if extra:
+            raise BindError(
+                f"Unknown selected_dimensions name {extra[0]!r}. "
+                f"Catalog: {list(kpi.dimensions)}."
+            )
+        grain = tuple(grain_list)
+    else:
+        names: list[str] = []
+        seen_names: set[str] = set()
+        for item in selected:
+            mapped = canonical(item)
+            if mapped in seen_names:
+                continue
+            names.append(mapped)
+            seen_names.add(mapped)
+        grain = tuple(names)
+    return replace(kpi, request_grain=grain)
 
 
 def _cut_names(raw: Mapping[str, Any]) -> tuple[str, ...]:
@@ -169,6 +236,28 @@ def _load_kpi_models(kpi: KpiSpec, root: Path) -> dict[str, ModelSpec]:
         models[norm_name(mid)] = model
         models[mid] = model
     return models
+
+
+def assert_default_grain_on_schema(
+    kpi: KpiSpec, models: Mapping[str, ModelSpec]
+) -> None:
+    """If the primary model lists output_schema, defaults and default-cut extras must resolve."""
+    model = models.get(norm_name(kpi.model_id)) or models.get(kpi.model_id)
+    if model is None or not model.output_schema:
+        return
+    rename = {spec.name: spec.source or spec.name for spec in kpi.dimension_specs}
+    default_cut = next((c for c in kpi.cuts if c.name == kpi.default_cut), None)
+    extras = default_cut.group_by if default_cut is not None else ()
+    for name in (*kpi.default_dimensions, *extras):
+        physical = rename.get(name, name)
+        if (
+            match_name(physical, model.output_schema) is None
+            and match_name(name, model.output_schema) is None
+        ):
+            raise BindError(
+                f"default_dimensions/cut extra {name!r} (column {physical!r}) "
+                f"is not on model {model.model_id!r} output_schema."
+            )
 
 
 def assert_pack_columns(kpi: KpiSpec, models: Mapping[str, ModelSpec]) -> None:
@@ -355,17 +444,27 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
 
     dim_specs = tuple(_parse_dimension(d) for d in raw.get("dimensions") or [])
     dimensions = tuple(d.name for d in dim_specs)
+    _assert_dimension_catalog(dim_specs, time)
 
     bases: list[BaseMeasure] = []
     for name, spec in (raw.get("base_measures") or {}).items():
         bases.append(_parse_base_measure(name, spec, param_names, param_types))
 
-    cuts = tuple(_parse_cut(c) for c in raw.get("cuts") or [])
+    cuts = tuple(_parse_cut(c, dimensions) for c in raw.get("cuts") or [])
     if not cuts:
         raise BindError("At least one cut is required.")
     default_cut = str(raw.get("default_cut") or cuts[0].name)
     if default_cut not in {c.name for c in cuts}:
         raise BindError(f"default_cut {default_cut!r} is not a declared cut.")
+
+    default_dimensions = _parse_default_dimensions(raw, dim_specs)
+    _assert_cut_grain_rules(cuts, default_dimensions, dim_specs)
+    filter_map = {
+        str(k): require_ident(str(v), what="filter_map column")
+        for k, v in (raw.get("filter_map") or {}).items()
+    }
+    filter_specs = _parse_filters(raw.get("filters"))
+    _assert_ignore_exclude_coupling(cuts, dim_specs, filter_specs, filter_map)
 
     measures = tuple(
         _parse_measure(k, v, param_names, param_types) for k, v in (raw.get("measures") or {}).items()
@@ -382,11 +481,6 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     if time is None:
         _assert_snapshot_measures(measures)
 
-    filter_map = {
-        str(k): require_ident(str(v), what="filter_map column")
-        for k, v in (raw.get("filter_map") or {}).items()
-    }
-    filter_specs = _parse_filters(raw.get("filters"))
     _assert_filter_specs(filter_specs, cuts, dimensions)
     row_set = raw.get("row_set", "span_union")
     if row_set not in {"span_union", "anchor_only"}:
@@ -395,7 +489,9 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     data_points = _parse_data_points(raw.get("data_points"), time)
     meta = _parse_meta(raw.get("meta"), tuple(m.key for m in measures))
     green_when = _parse_green_when(raw.get("green_when"), tuple(m.key for m in measures))
-    relations = tuple(_parse_relation(r) for r in raw.get("model_relations") or [])
+    relations = tuple(
+        _parse_relation(r, time, dimensions) for r in raw.get("model_relations") or []
+    )
     base_names = {b.name for b in bases}
     for rel in relations:
         if rel.left not in base_names or rel.right not in base_names:
@@ -422,6 +518,8 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         meta=meta,
         green_when=green_when,
         parameter_schema=parameter_schema,
+        default_dimensions=default_dimensions,
+        request_grain=default_dimensions,
     )
     for spec in kpi.measures:
         if spec.trailing_from == "data_points" and data_points is None:
@@ -455,13 +553,180 @@ def _parse_dimension(raw: Any) -> DimensionSpec:
             f"dimensions.{name}.grain must be day, week, month, quarter, or year."
         )
     default = raw.get("default")
+    cardinality = raw.get("cardinality")
+    if cardinality is not None and str(cardinality) != "high":
+        raise BindError(
+            f"dimensions.{name}.cardinality must be high when set."
+        )
     return DimensionSpec(
         name=name,
         source=source,
         mapping=mapping,
         default=None if default is None else str(default),
         grain=grain,
+        cardinality=str(cardinality) if cardinality is not None else None,
     )
+
+
+def _assert_dimension_catalog(
+    specs: tuple[DimensionSpec, ...], time: TimeSpec | None
+) -> None:
+    """Unique names/from:, and no clash with the time column."""
+    seen_names: set[str] = set()
+    seen_from: set[str] = set()
+    time_key = norm_name(time.column) if time is not None else None
+    for spec in specs:
+        name_key = norm_name(spec.name)
+        from_key = norm_name(spec.source)
+        if name_key in seen_names:
+            raise BindError(f"Duplicate dimension name {spec.name!r}.")
+        seen_names.add(name_key)
+        if from_key in seen_from:
+            raise BindError(
+                f"dimensions.{spec.name}.from {spec.source!r} collides with another "
+                "dimension physical column."
+            )
+        seen_from.add(from_key)
+        if time_key is not None and (name_key == time_key or from_key == time_key):
+            raise BindError(
+                f"dimensions.{spec.name} cannot use the time column {time.column!r}."
+            )
+
+
+def _parse_default_dimensions(
+    raw: dict[str, Any], specs: tuple[DimensionSpec, ...]
+) -> tuple[str, ...]:
+    """Require default_dimensions: as a list of catalog names (empty is legal)."""
+    if "default_dimensions" not in raw:
+        raise BindError("default_dimensions is required.")
+    value = raw.get("default_dimensions")
+    if not isinstance(value, list):
+        raise BindError("default_dimensions must be a list.")
+    catalog = {norm_name(spec.name): spec.name for spec in specs}
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        ident = require_ident(str(item), what="default_dimensions")
+        mapped = catalog.get(norm_name(ident))
+        if mapped is None:
+            raise BindError(
+                f"default_dimensions {ident!r} is not a catalog dimension "
+                f"(have {list(catalog.values())})."
+            )
+        if mapped in seen:
+            continue
+        names.append(mapped)
+        seen.add(mapped)
+    return tuple(names)
+
+
+def _assert_cut_grain_rules(
+    cuts: tuple[CutSpec, ...],
+    default_dimensions: tuple[str, ...],
+    specs: tuple[DimensionSpec, ...],
+) -> None:
+    """group_by is extras only: disjoint from defaults and from exclude_from_grain."""
+    defaults = {norm_name(name) for name in default_dimensions}
+    catalog = {norm_name(spec.name): spec.name for spec in specs}
+    for cut in cuts:
+        overlap = [name for name in cut.group_by if norm_name(name) in defaults]
+        if overlap:
+            raise BindError(
+                f"cuts.{cut.name}.group_by {overlap[0]!r} is already in "
+                "default_dimensions. group_by lists extras only; move the name "
+                "to default_dimensions."
+            )
+        exclude = {norm_name(name) for name in cut.exclude_from_grain}
+        both = [name for name in cut.group_by if norm_name(name) in exclude]
+        if both:
+            raise BindError(
+                f"cuts.{cut.name} cannot list {both[0]!r} in both group_by and "
+                "exclude_from_grain."
+            )
+        for name in (*cut.group_by, *cut.exclude_from_grain):
+            if catalog and norm_name(name) not in catalog:
+                raise BindError(
+                    f"cuts.{cut.name} names {name!r} which is not a catalog dimension."
+                )
+
+
+def _assert_ignore_exclude_coupling(
+    cuts: tuple[CutSpec, ...],
+    specs: tuple[DimensionSpec, ...],
+    filter_specs: tuple[FilterApplySpec, ...],
+    filter_map: dict[str, str],
+) -> None:
+    """Dim-named ignore_filters must match exclude_from_grain both ways."""
+    for cut in cuts:
+        exclude = {norm_name(name) for name in cut.exclude_from_grain}
+        ignore = {norm_name(name) for name in cut.ignore_filters}
+        for token in cut.ignore_filters:
+            dim = _dim_matched_by_ignore(token, specs, filter_specs, filter_map)
+            if dim is None:
+                continue
+            if norm_name(dim.name) not in exclude:
+                raise BindError(
+                    f"cuts.{cut.name}.ignore_filters {token!r} matches dimension "
+                    f"{dim.name!r}; add it to exclude_from_grain."
+                )
+        for name in cut.exclude_from_grain:
+            dim = next(
+                (spec for spec in specs if norm_name(spec.name) == norm_name(name)),
+                None,
+            )
+            if dim is None:
+                continue
+            if norm_name(dim.name) not in ignore:
+                raise BindError(
+                    f"cuts.{cut.name}.exclude_from_grain {name!r} requires "
+                    f"ignore_filters to list {dim.name!r}."
+                )
+            for spec in filter_specs:
+                if not _filter_targets_dim(spec.code, spec.column, dim):
+                    continue
+                if norm_name(spec.code) not in ignore:
+                    raise BindError(
+                        f"cuts.{cut.name}.exclude_from_grain {name!r} requires "
+                        f"ignore_filters to list YAML filter {spec.code!r}."
+                    )
+            for code, column in filter_map.items():
+                if not _filter_targets_dim(code, column, dim):
+                    continue
+                if norm_name(code) not in ignore:
+                    raise BindError(
+                        f"cuts.{cut.name}.exclude_from_grain {name!r} requires "
+                        f"ignore_filters to list {code!r}."
+                    )
+
+
+def _dim_matched_by_ignore(
+    token: str,
+    specs: tuple[DimensionSpec, ...],
+    filter_specs: tuple[FilterApplySpec, ...],
+    filter_map: dict[str, str],
+) -> DimensionSpec | None:
+    """Catalog dim D if this ignore token folds to D's name, from, filter, or map."""
+    key = norm_name(token)
+    for spec in specs:
+        if key in {norm_name(spec.name), norm_name(spec.source)}:
+            return spec
+    for filt in filter_specs:
+        if key in {norm_name(filt.code), norm_name(filt.column)}:
+            for spec in specs:
+                if _filter_targets_dim(filt.code, filt.column, spec):
+                    return spec
+    for code, column in filter_map.items():
+        if key in {norm_name(code), norm_name(column)}:
+            for spec in specs:
+                if norm_name(column) in {norm_name(spec.name), norm_name(spec.source)}:
+                    return spec
+    return None
+
+
+def _filter_targets_dim(code: str, column: str, dim: DimensionSpec) -> bool:
+    """True when a filter code/column folds onto this dimension."""
+    keys = {norm_name(code), norm_name(column)}
+    return bool(keys & {norm_name(dim.name), norm_name(dim.source)})
 
 
 def _parse_base_measure(
@@ -619,6 +884,11 @@ def _parse_parameters(raw: Any) -> tuple[ParameterSpec, ...]:
         if ident in seen:
             raise BindError(f"Duplicate parameter {ident!r}.")
         seen.add(ident)
+        if ident == "selected_dimensions":
+            raise BindError(
+                "parameters.selected_dimensions is not allowed. Send "
+                "context.selected_dimensions (the request grain overlay)."
+            )
         if not isinstance(spec, dict):
             raise BindError(f"parameters.{ident} must be an object.")
         type_name = spec.get("type")
@@ -883,8 +1153,8 @@ def _assert_filter_specs(
             )
 
 
-def _parse_cut(raw: Any) -> CutSpec:
-    """Parse one cut: name, group_by dimensions, ignore_filters, also_emit."""
+def _parse_cut(raw: Any, dimensions: tuple[str, ...] = ()) -> CutSpec:
+    """Parse one cut: name, extra group_by, exclude_from_grain, ignore_filters, also_emit."""
     if not isinstance(raw, dict):
         raise BindError("Each cut must be an object.")
     if raw.get("model") is not None:
@@ -892,15 +1162,45 @@ def _parse_cut(raw: Any) -> CutSpec:
     name = str(raw.get("name") or "")
     if not name:
         raise BindError("Cut name is required.")
-    group_by = tuple(
-        require_ident(str(c), what="cut group_by") for c in raw.get("group_by") or []
-    )
+    catalog = {norm_name(item): item for item in dimensions}
+
+    def _dim_list(field: str, what: str) -> tuple[str, ...]:
+        values = []
+        seen: set[str] = set()
+        for item in raw.get(field) or []:
+            ident = require_ident(str(item), what=what)
+            key = norm_name(ident)
+            mapped = catalog.get(key)
+            if dimensions and mapped is None:
+                raise BindError(
+                    f"cuts.{name}.{field} {ident!r} is not a catalog dimension "
+                    f"(have {list(dimensions)})."
+                )
+            canonical = mapped or ident
+            if canonical in seen:
+                continue
+            values.append(canonical)
+            seen.add(canonical)
+        return tuple(values)
+
+    group_by = _dim_list("group_by", "cut group_by")
+    exclude = _dim_list("exclude_from_grain", "cut exclude_from_grain")
     ignore = tuple(str(x) for x in raw.get("ignore_filters") or [])
     also = tuple(str(x) for x in raw.get("also_emit") or [])
-    return CutSpec(name=name, group_by=group_by, ignore_filters=ignore, also_emit=also)
+    return CutSpec(
+        name=name,
+        group_by=group_by,
+        ignore_filters=ignore,
+        also_emit=also,
+        exclude_from_grain=exclude,
+    )
 
 
-def _parse_relation(raw: Any) -> ModelRelation:
+def _parse_relation(
+    raw: Any,
+    time: TimeSpec | None = None,
+    dimensions: tuple[str, ...] = (),
+) -> ModelRelation:
     """Parse one post-aggregation join between two base measures' models."""
     if not isinstance(raw, dict):
         raise BindError("Each model_relations entry must be an object.")
@@ -912,6 +1212,16 @@ def _parse_relation(raw: Any) -> ModelRelation:
     on = tuple(require_ident(str(c), what="model_relations.on") for c in raw.get("on") or [])
     if not on:
         raise BindError("model_relations.on must list join keys (time and dimensions).")
+    allowed = {norm_name(name): name for name in dimensions}
+    if time is not None:
+        allowed[norm_name(time.column)] = time.column
+    if allowed:
+        for name in on:
+            if norm_name(name) not in allowed:
+                raise BindError(
+                    f"model_relations.on {name!r} must be the time column or a "
+                    f"catalog dimension (have {sorted(allowed.values())})."
+                )
     return ModelRelation(
         left=str(raw.get("left") or ""),
         right=str(raw.get("right") or ""),

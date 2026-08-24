@@ -47,7 +47,7 @@ from kpi_engine.core.fn_apply import (
     pandas_group_keys,
 )
 from kpi_engine.core.calc_engine import compute_cuts, densify
-from kpi_engine.core.cuts import extract_grain
+from kpi_engine.core.cuts import extract_grain, effective_group_by
 from kpi_engine.core.filters import (
     apply_frame_filters,
     apply_result_filters,
@@ -125,7 +125,12 @@ def _compute(
     log_step("adapt")
     request = adapt(context)
     log_step("bind")
-    kpi = load_kpi(request.kpi_id, root, parameters=request.parameters)
+    kpi = load_kpi(
+        request.kpi_id,
+        root,
+        parameters=request.parameters,
+        selected_dimensions=request.selected_dimensions,
+    )
     request, kpi = _apply_host_defaults(request, kpi)
     requested = request.measure_keys
     pipelines = partition_request(kpi, requested)
@@ -134,6 +139,10 @@ def _compute(
     time_plan, remaining_filters = plan_time(request, kpi)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
     bound, skipped_filters = bind_filters(remaining_filters, kpi, datasets, extract_columns)
+    skipped_filters = list(skipped_filters)
+    dropped_cuts: list[dict[str, str]] = []
+    applied_emitted: list = []
+    seen_applied: set[str] = set()
     log_step("extract")
     con, owned = acquire_connection(connection)
     rows: list[dict[str, Any]] = []
@@ -170,7 +179,15 @@ def _compute(
                 requested=pipe.measure_keys,
                 detail=detail,
             )
-            pipe_rows = apply_result_filters(pipe_rows, prepared["result_filters"])
+            pipe_rows, result_skipped = apply_result_filters(
+                pipe_rows, prepared["result_filters"], kpi, prepared["cuts"]
+            )
+            skipped_filters.extend(result_skipped)
+            dropped_cuts.extend(prepared["dropped_cuts"])
+            for cut in prepared["cuts"]:
+                if cut.name not in seen_applied:
+                    applied_emitted.append(cut)
+                    seen_applied.add(cut.name)
             stamp = "+".join(pipe.model_ids) if pipe.joined else pipe.model_ids[0]
             other = tuple(k for k in requested if k not in pipe.measure_keys)
             pipe_rows = pad_result_rows(pipe_rows, kpi, other, stamp)
@@ -197,6 +214,10 @@ def _compute(
         "applied_filters": _dedupe_applied(_applied(applied_src, applied_def, applied_res)),
         "ignored_filters": _dedupe_ignored(ignored),
         "skipped_filters": list(skipped_filters),
+        "selected_dimensions": list(kpi.request_grain),
+        "applied_cuts": _applied_cuts(kpi, tuple(applied_emitted)),
+        "dropped_cuts": _dedupe_dropped(dropped_cuts),
+        "grain_warnings": _grain_warnings(kpi),
         "trend_axes": trend_axes,
         "trend_labels": _trend_labels(trend_axes, kpi),
         "meta": _response_meta(kpi),
@@ -245,17 +266,31 @@ def _validate(
     log_context(context)
     root = Path(config_dir) if config_dir else default_config_dir()
     request = adapt(context)
-    kpi = load_kpi(request.kpi_id, root, parameters=request.parameters)
+    kpi = load_kpi(
+        request.kpi_id,
+        root,
+        parameters=request.parameters,
+        selected_dimensions=request.selected_dimensions,
+    )
     request, kpi = _apply_host_defaults(request, kpi)
     pipelines = partition_request(kpi, request.measure_keys)
     models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
     time_plan, remaining = plan_time(request, kpi)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
     bound, skipped_filters = bind_filters(remaining, kpi, datasets, extract_columns)
+    skipped_filters = list(skipped_filters)
+    dropped_cuts: list[dict[str, str]] = []
+    applied_emitted: list = []
+    seen_applied: set[str] = set()
     sqls: list[str] = []
     param_count = 0
     for pipe in pipelines:
         prepared = _prepare_pipeline(pipe, kpi, request, models_by_id, bound, time_plan)
+        dropped_cuts.extend(prepared["dropped_cuts"])
+        for cut in prepared["cuts"]:
+            if cut.name not in seen_applied:
+                applied_emitted.append(cut)
+                seen_applied.add(cut.name)
         scoped = replace(kpi, base_measures=pipe.bases)
         for model in prepared["models"]:
             bound_ds = bind_datasets(model, request)
@@ -283,6 +318,10 @@ def _validate(
         "sqls": sqls,
         "param_count": param_count,
         "skipped_filters": list(skipped_filters),
+        "selected_dimensions": list(kpi.request_grain),
+        "applied_cuts": _applied_cuts(kpi, tuple(applied_emitted)),
+        "dropped_cuts": _dedupe_dropped(dropped_cuts),
+        "grain_warnings": _grain_warnings(kpi),
     }
     log_step("END validate", kpi_id=kpi.kpi_id, sql_count=len(sqls), param_count=param_count)
     return result
@@ -364,10 +403,12 @@ def _prepare_pipeline(
     pipe_ds = {}
     available: set[str] | None = set()
     unknown = False
+    per_model: list[set[str] | None] = []
     for model in models:
         bound_ds = bind_datasets(model, request)
         pipe_ds.update(bound_ds)
         known = available_extract_columns(model, bound_ds, kpi)
+        per_model.append(known)
         if known is None:
             unknown = True
         else:
@@ -376,10 +417,27 @@ def _prepare_pipeline(
         available = None
     candidates = cuts_for_keys(kpi, pipe.measure_keys)
     time_col = kpi.time.column if kpi.time is not None else None
+    _assert_request_grain_on_models(kpi, models, available, joined=pipe.joined, per_model=per_model)
     emitted = compatible_cuts(candidates, available, time_col, kpi)
+    dropped = [
+        {"name": cut.name, "reason": "incompatible_extract"}
+        for cut in candidates
+        if cut.name not in {c.name for c in emitted}
+    ]
     assert_named_cuts_compatible(kpi, pipe.measure_keys, emitted)
-    extra = join_keys_for(kpi, pipe.model_ids) if pipe.joined else ()
-    grain = extract_grain(kpi, emitted, pipe.bases, extra=extra)
+    _assert_emitted_includes_default(kpi, emitted, pipe.measure_keys)
+    grouping = tuple(
+        dict.fromkeys(
+            name
+            for cut in emitted
+            for name in effective_group_by(cut, kpi)
+        )
+    )
+    extra = (
+        join_keys_for(kpi, pipe.model_ids, grouping=grouping, both_columns=available)
+        if pipe.joined
+        else ()
+    )
     pipe_bound = tuple(
         item
         for item in bound
@@ -388,6 +446,8 @@ def _prepare_pipeline(
         or (time_col is not None and norm_name(item.column) == norm_name(time_col))
     )
     source_filters, deferred, result_filters = split_filters(pipe_bound, emitted)
+    extra = tuple(dict.fromkeys([*extra, *(item.column for item in deferred)]))
+    grain = extract_grain(kpi, emitted, pipe.bases, extra=extra)
     return {
         "models": models,
         "datasets": pipe_ds,
@@ -398,6 +458,7 @@ def _prepare_pipeline(
         "deferred": deferred,
         "result_filters": result_filters,
         "global_calc": filters_on_all_cuts(deferred, emitted),
+        "dropped_cuts": dropped,
     }
 
 
@@ -549,6 +610,8 @@ def _to_monthly(
         value_cols=value_cols,
         fill_zero_cols=fill_zero,
         time_spec=kpi.time,
+        kpi=kpi,
+        grain=grain,
     )
     if frame.empty:
         return densify(pd.DataFrame(columns=[*([time_col] if time_col else []), *keys, *value_cols]), **kwargs)
@@ -578,6 +641,9 @@ def _apply_host_defaults(
     assert_measure_keys(kpi, request.measure_keys)
     kpi = apply_request_time(kpi, declared_time_grain(kpi))
     requested, _needed = resolve_requested_graph(kpi, request.measure_keys)
+    from kpi_engine.capabilities.ops.support import assert_partition_keys_for_request
+
+    assert_partition_keys_for_request(kpi, requested)
     return replace(request, measure_keys=requested), kpi
 
 
@@ -651,14 +717,109 @@ def _parameters(kpi: KpiSpec, time_plan: TimePlan | None) -> dict[str, Any]:
 
 
 def _sort_rows(rows: list[dict[str, Any]], kpi: KpiSpec) -> list[dict[str, Any]]:
-    """Stable sort: output_cut, then each dimension in YAML order."""
-    dim_order = list(kpi.dimensions)
+    """Stable sort: output_cut, then request_grain, then remaining catalog names."""
+    dim_order = list(kpi.request_grain) + [
+        name for name in kpi.dimensions if name not in kpi.request_grain
+    ]
 
     def key(row: dict[str, Any]) -> tuple:
         """Sort key for one result row."""
         return (str(row.get("output_cut") or ""), *[str(row.get(d) or "") for d in dim_order])
 
     return sorted(rows, key=key)
+
+
+def _applied_cuts(kpi: KpiSpec, emitted: tuple) -> list[dict[str, Any]]:
+    """Per-cut effective grain for the response."""
+    return [
+        {
+            "name": cut.name,
+            "group_by": list(effective_group_by(cut, kpi)),
+            "exclude_from_grain": list(cut.exclude_from_grain),
+        }
+        for cut in emitted
+    ]
+
+
+def _grain_warnings(kpi: KpiSpec) -> list[dict[str, str]]:
+    """Author-declared high-cardinality dims that are in this request grain."""
+    high = {
+        spec.name: spec
+        for spec in kpi.dimension_specs
+        if spec.cardinality == "high"
+    }
+    out: list[dict[str, str]] = []
+    for name in kpi.request_grain:
+        if name in high:
+            out.append({"dimension": name, "reason": "high_cardinality"})
+    return out
+
+
+def _dedupe_dropped(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Keep the first drop reason per cut name."""
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for row in rows:
+        name = row.get("name") or ""
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(row)
+    return out
+
+
+def _assert_emitted_includes_default(
+    kpi: KpiSpec, emitted: tuple, measure_keys: tuple[str, ...]
+) -> None:
+    """Default / locked cut must stay when this pipeline emits it; extras may drop."""
+    names = {cut.name for cut in emitted}
+    required: str | None = kpi.locked_cut
+    if required is None:
+        candidates = {cut.name for cut in cuts_for_keys(kpi, measure_keys)}
+        if kpi.default_cut in candidates:
+            required = kpi.default_cut
+    if required is not None and required not in names:
+        raise BindError(
+            f"Cut {required!r} is not on this extract for the requested grain "
+            f"{list(kpi.request_grain)}."
+        )
+    if not emitted:
+        raise BindError(
+            "No compatible cut for this extract. Check selected_dimensions "
+            "against the model columns."
+        )
+
+
+def _assert_request_grain_on_models(
+    kpi: KpiSpec,
+    models: list[ModelSpec],
+    available: set[str] | None,
+    *,
+    joined: bool = False,
+    per_model: list[set[str] | None] | None = None,
+) -> None:
+    """Selected/default dims must exist on this extract (every model when joined)."""
+    rename = {spec.name: spec.source or spec.name for spec in kpi.dimension_specs}
+
+    def missing_from(cols: set[str] | None, name: str) -> bool:
+        if cols is None:
+            return False
+        physical = rename.get(name, name)
+        return match_name(name, cols) is None and match_name(physical, cols) is None
+
+    for name in kpi.request_grain:
+        if joined and per_model:
+            for model, cols in zip(models, per_model):
+                if missing_from(cols, name):
+                    raise BindError(
+                        f"selected_dimensions {name!r} is not on model {model.model_id!r}."
+                    )
+            continue
+        if missing_from(available, name):
+            model_ids = [m.model_id for m in models]
+            raise BindError(
+                f"selected_dimensions {name!r} is not on model(s) {model_ids}."
+            )
 
 
 @traced

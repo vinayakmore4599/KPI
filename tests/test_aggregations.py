@@ -83,6 +83,7 @@ def _agg_kpi(kpi_id: int) -> dict:
             {"name": "reason_code", "kind": "dimension"},
             {"name": "region", "kind": "dimension"},
         ],
+        "default_dimensions": [],
         "base_measures": {
             "amount_avg": {"sql": "amount", "agg": "avg"},
             "amount_min": {"sql": "amount", "agg": "min"},

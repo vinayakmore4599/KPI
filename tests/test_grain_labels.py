@@ -358,7 +358,7 @@ def test_green_when_above_and_below(tmp_path, extra_config):
     above = minimal_kpi(
         9613,
         dimensions=[{"name": "reason_code", "kind": "dimension"}],
-        cuts=[{"name": "G", "group_by": ["reason_code"], "ignore_filters": []}],
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
         default_cut="G",
         green_when={"above": 10, "of": "current_value"},
         measures={

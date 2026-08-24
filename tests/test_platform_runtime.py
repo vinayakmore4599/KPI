@@ -181,7 +181,15 @@ def test_unbound_alias_scan_fails_at_compile(parquet_path, extra_config):
             "sql": "SELECT event_month FROM $missing_scan",
         },
     )
-    write_yaml(extra_config / "kpis" / "9602.yaml", minimal_kpi(9602, model="bad_scan"))
+    write_yaml(
+        extra_config / "kpis" / "9602.yaml",
+        minimal_kpi(
+            9602,
+            model="bad_scan",
+            default_dimensions=[],
+            cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
+        ),
+    )
     ctx = make_context(parquet_path, measures=["current_value"], kpi_id=9602)
     try:
         validate(ctx, config_dir=extra_config)

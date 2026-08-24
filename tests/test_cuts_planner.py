@@ -89,8 +89,8 @@ def test_cut_group_dims_drops_the_time_column():
     assert cut_group_dims(cut, "other_column") == ("event_month", "reason_code")
 
 
-def test_finest_grain_is_time_plus_dimensions_then_cut_extras():
-    """One extract serves every cut, so GROUP BY is the union of their keys."""
+def test_finest_grain_is_time_plus_emitted_cut_keys():
+    """One extract serves every emitted cut; catalog dims that no cut uses stay out."""
     cuts = (
         CutSpec(name="G", group_by=("reason_code",), ignore_filters=(), also_emit=("S",)),
         CutSpec(
@@ -102,11 +102,12 @@ def test_finest_grain_is_time_plus_dimensions_then_cut_extras():
     )
     kpi = _kpi(cuts, "G")
     grain = finest_grain(kpi, emitted_cuts(kpi))
-    assert grain == ("event_month", "reason_code", "region", "supplier_name")
+    assert grain == ("event_month", "reason_code", "supplier_name")
+    assert "region" not in grain
 
 
-def test_finest_grain_includes_relation_join_keys():
-    """Post-aggregation joins need their keys in the extract, even if no cut groups by them."""
+def test_finest_grain_does_not_auto_include_join_keys():
+    """Join keys are extract extras from the orchestrator, not a catalog union."""
     cuts = (CutSpec(name="G", group_by=("reason_code",), ignore_filters=(), also_emit=()),)
     kpi = _kpi(
         cuts,
@@ -119,10 +120,10 @@ def test_finest_grain_includes_relation_join_keys():
             ModelRelation(left="num", right="den", on=("event_month", "plant_code")),
         ),
     )
-    assert finest_grain(kpi, emitted_cuts(kpi)) == (
+    assert finest_grain(kpi, emitted_cuts(kpi)) == ("event_month", "reason_code")
+    assert extract_grain(kpi, emitted_cuts(kpi), extra=("plant_code",)) == (
         "event_month",
         "reason_code",
-        "region",
         "plant_code",
     )
 
@@ -147,7 +148,7 @@ def test_finest_grain_does_not_repeat_columns():
         model_relations=(ModelRelation(left="num", right="den", on=("region",)),),
     )
     grain = finest_grain(kpi, emitted_cuts(kpi))
-    assert grain == ("event_month", "reason_code", "region")
+    assert grain == ("event_month", "region", "reason_code")
     assert len(grain) == len(set(grain))
 
 

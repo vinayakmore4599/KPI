@@ -628,24 +628,38 @@ def _series_div(left: pd.Series, right: pd.Series) -> pd.Series:
 
 
 def fold_extract_columns(
-    frame: pd.DataFrame, kpi: KpiSpec, grain: tuple[str, ...] = ()
+    frame: pd.DataFrame, kpi: KpiSpec, grain: tuple[str, ...] | None = None
 ) -> pd.DataFrame:
     """Rename retrieved columns to the KPI YAML spellings they fold onto.
 
     DuckDB / host context may return Amount or Event_Month. Pandas facts,
     groupby, and densify require the YAML names (amount, event_month).
+    When ``grain`` is passed, only projected grouping columns are folded.
     """
     if frame is None or frame.empty:
         return frame
     wanted: list[str] = []
     if kpi.time is not None:
         wanted.append(kpi.time.column)
-    wanted.extend(grain)
-    wanted.extend(kpi.dimensions)
-    for spec in kpi.dimension_specs:
-        wanted.append(spec.name)
-        if spec.source:
-            wanted.append(spec.source)
+    if grain is None:
+        wanted.extend(kpi.dimensions)
+        for spec in kpi.dimension_specs:
+            wanted.append(spec.name)
+            if spec.source:
+                wanted.append(spec.source)
+    else:
+        wanted.extend(grain)
+        grain_fold = {norm_name(name) for name in grain}
+        for spec in kpi.dimension_specs:
+            physical = spec.source or spec.name
+            if (
+                norm_name(spec.name) not in grain_fold
+                and norm_name(physical) not in grain_fold
+            ):
+                continue
+            wanted.append(spec.name)
+            if spec.source:
+                wanted.append(spec.source)
     for measure in kpi.base_measures:
         wanted.extend(input_columns(measure))
         if measure.where is not None:

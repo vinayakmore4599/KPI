@@ -149,6 +149,7 @@ def _ratio_kpi(how: str) -> dict:
             "filter_code": "reporting_month",
         },
         "dimensions": [{"name": "region", "kind": "dimension"}],
+        "default_dimensions": ["region"],
         "base_measures": {
             "sotif_value": {"sql": "amount", "agg": "sum", "model": "sotif"},
             "marketing_spend": {"sql": "spend", "agg": "sum", "model": "marketing"},
@@ -161,7 +162,7 @@ def _ratio_kpi(how: str) -> dict:
                 "how": how,
             }
         ],
-        "cuts": [{"name": "R", "group_by": ["region"], "ignore_filters": []}],
+        "cuts": [{"name": "R", "group_by": [], "ignore_filters": []}],
         "default_cut": "R",
         "measures": {
             "current_sotif": {"of": "sotif_value", "op": "point", "offset": {"months": 0}},

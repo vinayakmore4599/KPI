@@ -70,6 +70,39 @@ def test_median_and_percentile_from_rows(tmp_path, extra_config):
     assert row["p90_now"] == 28.0
 
 
+def test_median_g_is_not_median_of_r_medians(tmp_path, extra_config):
+    """G median uses fact rows, not the median of regional medians."""
+    path = tmp_path / "med_gr.parquet"
+    pd.DataFrame(
+        [
+            _row("2026-03-01", "NA", 10),
+            _row("2026-03-01", "NA", 20),
+            _row("2026-03-01", "NA", 30),
+            _row("2026-03-01", "EU", 100),
+            _row("2026-03-01", "EU", 200),
+        ]
+    ).to_parquet(path, index=False)
+    spec = _stat_kpi(9036)
+    spec["cuts"] = [
+        {
+            "name": "G",
+            "group_by": [],
+            "exclude_from_grain": ["region"],
+            "ignore_filters": ["region"],
+            "also_emit": ["R"],
+        },
+        {"name": "R", "group_by": ["region"], "ignore_filters": []},
+    ]
+    write_yaml(extra_config / "kpis" / "9036.yaml", spec)
+    ctx = make_context(path, measures=["median_now"], supplier=["ABC"], kpi_id=9036)
+    result = compute(ctx, config_dir=extra_config)
+    g = next(r for r in result["rows"] if r["output_cut"] == "G")
+    r_medians = [r["median_now"] for r in result["rows"] if r["output_cut"] == "R"]
+    assert g["median_now"] == 30.0
+    assert sorted(r_medians) == [20.0, 150.0]
+    assert g["median_now"] != sum(r_medians) / len(r_medians)
+
+
 def _facts(tmp_path):
     """NA has ABC+XYZ in March; DEF only in January; EU has ABC in March."""
     rows = [
@@ -108,6 +141,7 @@ def _distinct_kpi(kpi_id: int) -> dict:
             "filter_code": "reporting_month",
         },
         "dimensions": [{"name": "region", "kind": "dimension"}],
+        "default_dimensions": [],
         "base_measures": {
             "n_suppliers": {"sql": "supplier_name", "agg": "count_distinct"}
         },
@@ -115,6 +149,7 @@ def _distinct_kpi(kpi_id: int) -> dict:
             {
                 "name": "G",
                 "group_by": [],
+                "exclude_from_grain": ["region"],
                 "ignore_filters": ["region"],
                 "also_emit": ["R"],
             },
@@ -149,6 +184,7 @@ def _stat_kpi(kpi_id: int) -> dict:
             "filter_code": "reporting_month",
         },
         "dimensions": [{"name": "region", "kind": "dimension"}],
+        "default_dimensions": [],
         "base_measures": {
             "amount_median": {"sql": "amount", "agg": "median"},
             "amount_p90": {"sql": "amount", "agg": "percentile", "percentile": 90},

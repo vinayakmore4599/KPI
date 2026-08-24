@@ -287,10 +287,11 @@ def test_dimension_map_rewrites_extract_codes(tmp_path, extra_config):
             "default": "Other",
         },
     ]
+    spec["default_dimensions"] = ["reason_code", "region", "order_status"]
     spec["cuts"] = [
         {
             "name": "S",
-            "group_by": ["reason_code", "region", "order_status"],
+            "group_by": [],
             "ignore_filters": [],
         }
     ]

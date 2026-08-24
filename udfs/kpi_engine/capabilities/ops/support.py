@@ -662,16 +662,35 @@ def require_measure_or_base_of(spec: OutputSpec, kpi: KpiSpec) -> None:
 
 
 def assert_partition_keys(spec: OutputSpec, kpi: KpiSpec) -> None:
-    """partition_by names must be cut group_by or dimension names."""
+    """partition_by names must be catalog dimension names."""
     allowed = {norm_name(name): name for name in kpi.dimensions}
-    for cut in kpi.cuts:
-        for name in cut.group_by:
-            allowed.setdefault(norm_name(name), name)
     valid = sorted(allowed.values())
     for name in spec.rank_group_by:
         if norm_name(name) in allowed:
             continue
         raise BindError(
-            f"measures.{spec.key} partition_by {name!r} is not a cut group_by "
-            f"or dimension. Valid: {valid}."
+            f"measures.{spec.key} partition_by {name!r} is not a dimension. "
+            f"Valid: {valid}."
         )
+
+
+def assert_partition_keys_for_request(kpi: KpiSpec, measure_keys: tuple[str, ...]) -> None:
+    """Requested rank/share partition_by must sit on each cut the measure emits."""
+    from kpi_engine.core.cuts import effective_group_by
+    from kpi_engine.core.pipelines import cuts_for_keys
+
+    by_key = {m.key: m for m in kpi.measures}
+    for key in measure_keys:
+        spec = by_key.get(key)
+        if spec is None or not spec.rank_group_by:
+            continue
+        for cut in cuts_for_keys(kpi, (key,)):
+            grain = effective_group_by(cut, kpi)
+            allowed = {norm_name(name) for name in grain}
+            for name in spec.rank_group_by:
+                if norm_name(name) in allowed:
+                    continue
+                raise BindError(
+                    f"measures.{spec.key} partition_by {name!r} is not in cut "
+                    f"{cut.name!r} effective group_by {list(grain)}."
+                )

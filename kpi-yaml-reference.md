@@ -14,6 +14,30 @@ Related docs:
 
 ---
 
+## Ownership
+
+**YAML owns calculation.** `base_measures`, `measures` (`op`, `agg`, `fn`, `expr`, offsets, windows, trends), `green_when`, `row_set`, `data_points`, and filter *ops* do not change with grain. Adding a catalog dimension does not require new measure keys or DuckDB formulas.
+
+**YAML owns the grouping allowlist and cut variants.** `dimensions:` (name + `from:`), `default_dimensions`, `cuts[].group_by` (extras only), `cuts[].exclude_from_grain`, `ignore_filters`, `also_emit`, `measures.*.cuts`.
+
+**The request owns only which allowlisted dims are active this call** (`context.selected_dimensions`, or YAML `default_dimensions` if omitted). That is GROUP BY keys, not math. Do not declare `parameters.selected_dimensions`.
+
+Uniform means the same formula at every grain, not one grain per request. A G+R response still runs `current_value` twice (two YAML cuts). Selecting `region` still leaves G without region if YAML `exclude_from_grain` says so.
+
+---
+
+## Breaking changes (request-time dimensions)
+
+Hosts and YAML authors must treat these as breaks, not silent extras:
+
+- **YAML:** `default_dimensions` is required (`[]` is a legal worldwide default). `cuts[].group_by` lists extras only. New `exclude_from_grain`. `group_by ∩ default_dimensions` and `exclude_from_grain ∩ group_by` are bind errors. Dim-named `ignore_filters` must match `exclude_from_grain` both ways.
+- **Rows:** required `grouped_dimensions` (effective grain for that `output_cut`, may be `[]`). Dimensions not in that grain stay on the row as `null`.
+- **Result filters:** `apply: result` on a dim not in that cut’s effective grain is skipped (`not_in_grain`). Region IN no longer hides G by matching stamped null.
+- **Hosts that drop rows when all catalog dim columns are null** must use `grouped_dimensions` / `applied_cuts`. Worldwide G is valid.
+- **Payload:** `selected_dimensions`, `applied_cuts`, `dropped_cuts`, `grain_warnings`.
+
+---
+
 ## 1. Cheat sheet
 
 ```yaml
@@ -34,9 +58,11 @@ parameters:                  # optional; omit when the KPI has none
   Level: { type: string, allowed: [G, Y, R], map: { Green: G } }
 
 dimensions:
-  - { name: reason_code, kind: dimension }
-  - { name: region, kind: dimension }
-  # optional after extract: from + map + default (see §3)
+  - { name: reason_code, from: reason_code }
+  - { name: region, from: region }
+  - { name: supplier, from: supplier_name }
+
+default_dimensions: [reason_code]   # required; [] is worldwide
 
 base_measures:               # internal facts; the UI does not request these
   sotif_value:
@@ -44,13 +70,14 @@ base_measures:               # internal facts; the UI does not request these
     agg: sum                 # Pandas folds the retrieved rows
                              # or: columns: [ontime, fullqty] + op: multiply
 
-cuts:
+cuts:                        # group_by is extras only (not the full grain)
   - name: G
-    group_by: [reason_code]
+    group_by: []
+    exclude_from_grain: [region]
     ignore_filters: [region]
     also_emit: [R]
   - name: R
-    group_by: [reason_code, region]
+    group_by: [region]
     ignore_filters: []
 
 default_cut: G
@@ -95,7 +122,7 @@ Understanding this makes the YAML obvious.
 2. The engine reads the **requested** `measure_key`s, works out the deepest lookback among them, and scans `[anchor − lookback, anchor]` as a **date range**. Measures nobody asked for cost nothing.
 3. DuckDB retrieves **model columns only** (time bucket, dimensions, and physical columns named by KPI YAML). `filters:` with `apply: extract` become the extract `WHERE` (plus undeclared context `IN` lists). It does not run `agg:`, `op:`, or `expr:`.
 4. Pandas computes every base measure on those rows, applies `apply: calc` masks, folds with `agg:`, then puts the result on a **dense period spine** so shifts move by the calendar, not by row position.
-5. Each cut re-aggregates that spine to its own `group_by` (skipping `ignore_filters` on `apply: calc` filters), then every requested measure is evaluated per dimension combination. `apply: result` then drops output rows without changing the math.
+5. Each cut re-aggregates that spine to its **effective group_by** (request grain minus `exclude_from_grain`, then YAML extras), skipping `ignore_filters` on `apply: calc` filters. Every requested measure is evaluated per dimension combination. `apply: result` then drops output rows without changing the math. Result filters on dims not in that cut’s grain skip (`not_in_grain`).
 
 The practical consequences:
 
@@ -172,12 +199,22 @@ dimensions:
 
 Calculation controls are **not** filters and **not** `execution.*`. Send them as a top-level `parameters` object, sibling of `filters`. Declare them on the KPI.
 
-There are **four** overlays (not one grammar). Do not add a fifth (`select:`, `use:`, `{ from: param }`).
+There are **four** overlays (not one grammar). Do not add a fifth (`select:`, `use:`, `{ from: param }`). **`selected_dimensions` is not a parameter.** Send it as top-level `context.selected_dimensions`. Declaring `parameters.selected_dimensions` is a bind error.
 
 1. Reserved `parameters.time_grain` — pick from `time.grains` (feeds `apply_request_time`).
 2. Reserved `parameters.output_cut` — emit that cut only; drop `also_emit`. 3004 does **not** declare this (so G still `also_emit`s R). Hosts that want one grain filter JSON `output_cut`. A KPI that declares the parameter accepts the lock.
 3. `when:` on `model`, `measures.<key>`, or `base_measures.<name>` only.
 4. `from_param:` on an allowlist (see below). Never the YAML key `from` (that stays `trailing.from: data_points` / `dimension.from`).
+
+### Request grain (`context.selected_dimensions`)
+
+Omitted / `null` → YAML `default_dimensions`. `[]` / `{}` → empty grain (grand total, then cut extras). Array or `{ "names": [...] }` keeps host order. Object of bools uses catalog YAML order. Unknown names (including `false` keys) and empty strings are bind errors.
+
+```json
+"selected_dimensions": ["supplier", "region"]
+"selected_dimensions": { "names": ["supplier", "region"] }
+"selected_dimensions": { "supplier": true, "region": true }
+```
 
 ```yaml
 parameters:
@@ -614,16 +651,18 @@ Cut-phase (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_shar
 
 ## 6. `cuts` — grouping grains in one response
 
-A cut is a grouping level, not a number. One request can return several.
+A cut is a grouping **variant**, not a number and not a formula. `group_by` lists **extras** only. Effective grain = request grain minus `exclude_from_grain`, then extras. One request can return several cuts.
 
 ```yaml
+default_dimensions: [reason_code]
 cuts:
-  - name: G                    # global: no region
-    group_by: [reason_code]
-    ignore_filters: [region]   # keep region OUT of the scan
-    also_emit: [R]             # return R in the same response
+  - name: G
+    group_by: []
+    exclude_from_grain: [region]
+    ignore_filters: [region]
+    also_emit: [R]
   - name: R
-    group_by: [reason_code, region]
+    group_by: [region]
     ignore_filters: []
 
 default_cut: G
@@ -632,14 +671,16 @@ default_cut: G
 | Key | Meaning |
 |---|---|
 | `name` | Appears as `output_cut` on every row |
-| `group_by` | Dimensions this cut groups by |
+| `group_by` | Extra dimensions this cut always adds (must not overlap `default_dimensions`) |
+| `exclude_from_grain` | Request dims this cut drops. Dim-named `ignore_filters` must match this list both ways |
 | `ignore_filters` | Filter codes or column names this cut ignores |
 | `also_emit` | Other cuts to return in the same response (chains are followed, cycles are safe) |
 | `default_cut` | The cut the walk starts from; defaults to the first declared cut |
+| `default_dimensions` | Grain when `selected_dimensions` is omitted. Required. `[]` is worldwide |
 
-**How `ignore_filters` works.** A filter ignored by *any* **emitted** cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Default `apply: extract` is legal with `ignore_filters`; at request time `split_filters` promotes it to calc when that cut is emitted. If only R is emitted (`parameters.output_cut: R` on a KPI that declares it), region can stay extract. Do not combine `ignore_filters` with `apply: result`. The response reports where each filter ran under `applied_filters`, cut-level skips under `ignored_filters`, and present-but-blank keys under `skipped_filters`.
+**How `ignore_filters` works.** A filter ignored by *any* **emitted** cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Default `apply: extract` is legal with `ignore_filters`; at request time `split_filters` promotes it to calc when that cut is emitted. If only R is emitted (`parameters.output_cut: R` on a KPI that declares it), region can stay extract. Do not combine `ignore_filters` with `apply: result`. The response reports where each filter ran under `applied_filters`, cut-level skips under `ignored_filters`, and present-but-blank keys under `skipped_filters`. A dim-named ignore token must also appear in `exclude_from_grain`, and the reverse.
 
-Every cut re-aggregates the spine from scratch, so a global average is a true weighted average, not a mean of regional averages.
+Every cut re-aggregates the spine from scratch, so a global average is a true weighted average, not a mean of regional averages. Non-additive ops (median, percentile, first, last, count_distinct) evaluate on fact rows at the cut keys, not on rolled sums.
 
 ### `row_set` — which combinations get a row
 
@@ -695,7 +736,7 @@ Undeclared context codes stay `IN` at extract, unless an emitted cut lists them 
 
 **All row filters are non-binding (breaking vs empty `IN` = FALSE).** Omit the key, send `[]`, or send all-null comparison values → skip; the key appears on `skipped_filters` when it was present but blank. `[""]`, `["ALL"]`, `["*"]` are real predicates. `optional: true` is accepted and ignored. `optional: false` is a bind error. `is_null` / `is_not_null` apply when the key is **present** (omit the key to skip). Row-filter `compose` with a missing or blank part skips; time `compose` still errors. The selected period (`time.filter_code`) is not a row filter — empty or missing month is still a TimePlanError.
 
-`apply: result` may name **dimension** columns on the output row only, not measure keys. Dimensions not in a cut's `group_by` are `null` on that cut; a result `IN` on those fields hides the cut. G worldwide is `group_by: [reason_code]` plus `ignore_filters: [region]`, not `group_by: []`.
+`apply: result` may name **dimension** columns on the output row only, not measure keys. Dimensions not in a cut's effective grain are `null` on that cut. A result `IN` on those fields is skipped (`not_in_grain`) rather than hiding the cut by matching stamped null. G worldwide is `default_dimensions: [reason_code]` plus `exclude_from_grain: [region]` / `ignore_filters: [region]`; `selected_dimensions: []` makes G's grain empty.
 
 ### Operators (all three `apply` stages)
 
@@ -1037,13 +1078,14 @@ time:
   grain: month
   filter_code: reporting_month
 dimensions:
-  - { name: reason_code, kind: dimension }
-  - { name: region, kind: dimension }
+  - { name: reason_code, from: reason_code }
+  - { name: region, from: region }
 base_measures:
   sotif_value: { sql: amount, agg: sum }
+default_dimensions: [reason_code]
 cuts:
-  - { name: G, group_by: [reason_code], ignore_filters: [region], also_emit: [R] }
-  - { name: R, group_by: [reason_code, region], ignore_filters: [] }
+  - { name: G, group_by: [], exclude_from_grain: [region], ignore_filters: [region], also_emit: [R] }
+  - { name: R, group_by: [region], ignore_filters: [] }
 default_cut: G
 measures:
   current_value:       { of: sotif_value, op: point,  offset: { months: 0 } }

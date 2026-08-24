@@ -149,7 +149,7 @@ def compatible_cuts(
         rename = {spec.name: spec.source or spec.name for spec in kpi.dimension_specs}
     kept: list[CutSpec] = []
     for cut in cuts:
-        dims = cut_group_dims(cut, time_column or "")
+        dims = cut_group_dims(cut, time_column or "", kpi)
         ok = True
         for dim in dims:
             physical = rename.get(dim, dim)
@@ -193,18 +193,34 @@ def pad_result_rows(
         row["model"] = model_id
         for dim in kpi.dimensions:
             row.setdefault(dim, None)
+        row.setdefault("grouped_dimensions", [])
         for key in requested:
             if key not in row:
                 row[key] = None
     return rows
 
 
-def join_keys_for(kpi: KpiSpec, model_ids: tuple[str, ...]) -> tuple[str, ...]:
-    """model_relations.on keys for a joined pipeline."""
+def join_keys_for(
+    kpi: KpiSpec,
+    model_ids: tuple[str, ...],
+    grouping: tuple[str, ...] = (),
+    both_columns: set[str] | None = None,
+) -> tuple[str, ...]:
+    """Join keys for this request: on ∩ (time ∪ grouping) plus request_grain on both extracts."""
     folded = {norm_name(mid) for mid in model_ids}
     names: list[str] = []
     seen: set[str] = set()
     by_base = {b.name: extract_model_id(b, kpi) for b in kpi.base_measures}
+    time_col = kpi.time.column if kpi.time is not None else None
+    grouping_fold = {norm_name(name) for name in grouping}
+    if time_col:
+        grouping_fold.add(norm_name(time_col))
+
+    def add(name: str) -> None:
+        if name not in seen:
+            names.append(name)
+            seen.add(name)
+
     for rel in kpi.model_relations:
         left = by_base.get(rel.left)
         right = by_base.get(rel.right)
@@ -213,9 +229,21 @@ def join_keys_for(kpi: KpiSpec, model_ids: tuple[str, ...]) -> tuple[str, ...]:
         if norm_name(left) not in folded or norm_name(right) not in folded:
             continue
         for name in rel.on:
-            if name not in seen:
-                names.append(name)
-                seen.add(name)
+            if norm_name(name) in grouping_fold:
+                add(name)
+        for name in kpi.request_grain:
+            if both_columns is None:
+                add(name)
+                continue
+            if (
+                match_name(name, both_columns) is not None
+                or any(
+                    match_name(spec.source, both_columns) is not None
+                    for spec in kpi.dimension_specs
+                    if norm_name(spec.name) == norm_name(name)
+                )
+            ):
+                add(name)
     return tuple(names)
 
 

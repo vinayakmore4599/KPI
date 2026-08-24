@@ -28,6 +28,7 @@ import pandas as pd
 import pytest
 import yaml
 
+from kpi_engine.contracts import CutSpec
 from kpi_engine.dates import month_range_inclusive
 
 
@@ -94,6 +95,39 @@ def write_yaml(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(yaml.dump(payload, sort_keys=False), encoding="utf-8")
 
 
+def sotif_cuts(*, also_emit: bool = True, ignore_region: bool = True) -> list[dict[str, Any]]:
+    """Extras-only G/R cuts used with default_dimensions: [reason_code]."""
+    g: dict[str, Any] = {"name": "G", "group_by": []}
+    if ignore_region:
+        g["exclude_from_grain"] = ["region"]
+        g["ignore_filters"] = ["region"]
+    else:
+        g["ignore_filters"] = []
+    cuts = [g]
+    if also_emit:
+        g["also_emit"] = ["R"]
+        cuts.append({"name": "R", "group_by": ["region"], "ignore_filters": []})
+    return cuts
+
+
+def cut_spec(
+    name: str,
+    *,
+    extras: tuple[str, ...] = (),
+    exclude: tuple[str, ...] = (),
+    ignore: tuple[str, ...] = (),
+    also_emit: tuple[str, ...] = (),
+) -> CutSpec:
+    """CutSpec with extras-only group_by (pair with KpiSpec.request_grain)."""
+    return CutSpec(
+        name=name,
+        group_by=extras,
+        ignore_filters=ignore,
+        also_emit=also_emit,
+        exclude_from_grain=exclude,
+    )
+
+
 def minimal_kpi(kpi_id: int, **overrides: Any) -> dict:
     """Sotif-shaped KPI YAML dict for test-only KPIs. Any top-level key can be overridden."""
     spec: dict[str, Any] = {
@@ -107,19 +141,13 @@ def minimal_kpi(kpi_id: int, **overrides: Any) -> dict:
             "calendar": "gregorian",
         },
         "dimensions": [
-            {"name": "reason_code", "kind": "dimension"},
-            {"name": "region", "kind": "dimension"},
+            {"name": "reason_code", "from": "reason_code"},
+            {"name": "region", "from": "region"},
+            {"name": "supplier", "from": "supplier_name"},
         ],
+        "default_dimensions": ["reason_code"],
         "base_measures": {"sotif_value": {"sql": "amount", "agg": "sum"}},
-        "cuts": [
-            {
-                "name": "G",
-                "group_by": ["reason_code"],
-                "ignore_filters": ["region"],
-                "also_emit": ["R"],
-            },
-            {"name": "R", "group_by": ["reason_code", "region"], "ignore_filters": []},
-        ],
+        "cuts": sotif_cuts(),
         "default_cut": "G",
         "row_set": "span_union",
         "measures": {
@@ -174,6 +202,7 @@ def make_context(
     extra_datasets: dict | None = None,
     time_grain: str | None = None,
     parameters: dict | None = None,
+    selected_dimensions: Any = None,
 ) -> dict:
     """Build a metadata-shaped context pointing at a local parquet path."""
     filters = {
@@ -260,4 +289,6 @@ def make_context(
         params["time_grain"] = time_grain
     if params:
         ctx["parameters"] = params
+    if selected_dimensions is not None:
+        ctx["selected_dimensions"] = selected_dimensions
     return ctx

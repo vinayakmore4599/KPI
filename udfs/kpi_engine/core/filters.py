@@ -201,18 +201,48 @@ def apply_bound_filter(frame, item: BoundFilter):
     return frame[mask]
 
 
-def apply_result_filters(rows: list[dict], items: tuple[BoundFilter, ...]) -> list[dict]:
-    """Drop JSON rows after measures. Missing dimension keys are a no-op."""
+def apply_result_filters(
+    rows: list[dict],
+    items: tuple[BoundFilter, ...],
+    kpi: KpiSpec | None = None,
+    cuts: tuple[CutSpec, ...] = (),
+) -> tuple[list[dict], list[dict[str, str]]]:
+    """Drop JSON rows after measures. Filters on dims not in the cut grain skip."""
+    skipped: list[dict[str, str]] = []
     if not items or not rows:
-        return rows
-    frame = pd.DataFrame(rows)
-    keep = pd.Series(True, index=frame.index)
-    for item in items:
-        col = match_name(item.column, frame.columns)
-        if col is None:
-            continue
-        keep = keep & pandas_mask(frame[col], item.op, item.values)
-    return [row for row, ok in zip(rows, keep.tolist()) if bool(ok)]
+        return rows, skipped
+    from kpi_engine.core.cuts import effective_group_by
+
+    by_cut = {cut.name: cut for cut in cuts}
+    kept: list[dict] = []
+    seen_skip: set[tuple[str, str]] = set()
+    for row in rows:
+        cut = by_cut.get(str(row.get("output_cut") or ""))
+        grain = (
+            {norm_name(name) for name in effective_group_by(cut, kpi)}
+            if cut is not None and kpi is not None
+            else None
+        )
+        ok = True
+        for item in items:
+            col_key = norm_name(item.column)
+            if grain is not None and col_key not in grain:
+                mark = (item.code, "not_in_grain")
+                if mark not in seen_skip:
+                    skipped.append({"filter_code": item.code, "reason": "not_in_grain"})
+                    seen_skip.add(mark)
+                continue
+            col = match_name(item.column, row.keys())
+            if col is None:
+                continue
+            frame = pd.DataFrame([row])
+            mask = pandas_mask(frame[col], item.op, item.values)
+            if not bool(mask.iloc[0]):
+                ok = False
+                break
+        if ok:
+            kept.append(row)
+    return kept, skipped
 
 
 def _is_blank(values: tuple) -> bool:

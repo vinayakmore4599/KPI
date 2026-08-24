@@ -11,6 +11,7 @@ When to use
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 from collections.abc import Callable, Mapping
 from typing import Any, NamedTuple
@@ -63,6 +64,9 @@ class FnMeta(NamedTuple):
 
 _COLUMN_META: dict[str, FnMeta] = {}
 _MEASURE_META: dict[str, FnMeta] = {}
+_EXPR_ENV: contextvars.ContextVar[Mapping[str, Any]] = contextvars.ContextVar(
+    "kpi_expr_env", default={}
+)
 
 
 def _read_signature(fn: Callable[..., Any], floor: int | None) -> FnMeta:
@@ -268,6 +272,10 @@ def _ident_series(node: Ident, frame: pd.DataFrame, *, raw: bool) -> pd.Series:
 def eval_expr_series(node: Expr, frame: pd.DataFrame, *, raw: bool = False) -> pd.Series:
     """Evaluate an expression on one row of the extract at a time."""
     if isinstance(node, Ident):
+        env = _EXPR_ENV.get()
+        actual = match_name(node.name, env) if env else None
+        if actual is not None:
+            return pd.Series(env[actual], index=frame.index)
         return _ident_series(node, frame, raw=raw)
     if isinstance(node, Number):
         return pd.Series(node.value, index=frame.index, dtype="float64")
@@ -636,12 +644,16 @@ def apply_pandas_facts(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
     """Compute every base measure from retrieved physical columns."""
     if frame.empty:
         return frame
-    work = fold_extract_columns(frame, kpi)
-    if work is frame:
-        work = frame.copy()
-    for measure in kpi.base_measures:
-        work[measure.name] = _base_measure_series(work, measure)
-    return work
+    token = _EXPR_ENV.set(dict(kpi.bound_parameters))
+    try:
+        work = fold_extract_columns(frame, kpi)
+        if work is frame:
+            work = frame.copy()
+        for measure in kpi.base_measures:
+            work[measure.name] = _base_measure_series(work, measure)
+        return work
+    finally:
+        _EXPR_ENV.reset(token)
 
 
 def _base_measure_series(work: pd.DataFrame, measure: BaseMeasure) -> pd.Series:

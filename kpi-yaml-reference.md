@@ -28,6 +28,11 @@ time:
   calendar: gregorian        # gregorian | fiscal
   fiscal_start_month: 4      # only read when calendar: fiscal
 
+parameters:                  # optional; omit when the KPI has none
+  time_grain: { type: string }   # reserved: pick from time.grains
+  output_cut: { type: string, default: G, allowed: [G, R] }
+  Level: { type: string, allowed: [G, Y, R], map: { Green: G } }
+
 dimensions:
   - { name: reason_code, kind: dimension }
   - { name: region, kind: dimension }
@@ -105,7 +110,7 @@ The practical consequences:
 | `column` | column name | required if `time:` is present | Date or timestamp on the extract |
 | `grain` | `day`, `week`, `month`, `quarter`, `year` | `month` | Default period every measure counts in. `week` is ISO Monday. |
 | `source_grain` | same set as `grain` | `time.grain` | Stored grain of the time column. A request pick **finer** than this is rejected (day < week < month < quarter < year). Monthly facts cannot become daily or weekly. |
-| `grains` | list of grains | omitted = `{grain}` only | Allowlist for `execution.time_grain`. `time.grain` must appear in the list. |
+| `grains` | list of grains | omitted = `{grain}` only | Allowlist for `parameters.time_grain`. `time.grain` must appear in the list. |
 | `filter_code` | context filter key | required if `time:` is present | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month` — each KPI names its own filter. When `compose:` is set, this is the **synthetic** name after concat (need not exist on the context). |
 | `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal affects `quarter` and `year` only |
 | `fiscal_start_month` | 1–12 | `4` | First month of the fiscal year |
@@ -118,7 +123,7 @@ Rules the engine enforces:
 
 - When `time:` is declared, that filter must carry **exactly one** value. Two values or zero values is an error, not a range.
 - A missing time filter on a time-based KPI is an error. The engine never defaults to "latest data" or to `business_date`.
-- `execution.time_grain` (adapter, not a filter) picks one allowlisted grain. Missing → `time.grain`. Not in `time.grains` (or not equal to `grain` when `grains` is omitted) → bind error. After bind, plan / DuckDB bucket / densify / `trailing.periods` use the pick.
+- `parameters.time_grain` (context.parameters, not a filter, not `execution`) picks one allowlisted grain. The KPI must declare `parameters.time_grain`. Missing on the context → YAML `default` or `time.grain`. Not in `time.grains` (or not equal to `grain` when `grains` is omitted) → bind error. After bind, plan / DuckDB bucket / densify / `trailing.periods` use the pick. Response `parameters.time_grain` is the effective grain; bound request values are `request_parameters`.
 - A day pick requires a full `YYYY-MM-DD` unless `time.format` says otherwise. Week / month / quarter / year may accept `YYYY-MM` and truncate to the pick.
 - Truncation happens in SQL (ISO Monday for `week`; otherwise `date_trunc` after the column is parsed with `time.format`), so a mid-period date anchors on the period start.
 - Top-level `data_points` is a positive int when `grains` is omitted or a single grain. More than one allowed grain requires a map with a positive int for **every** listed grain. `trailing: { from: data_points }` reads the pick's length.
@@ -159,6 +164,44 @@ dimensions:
     from: o_orderstatus
     map: { O: Open, P: Processing, F: Fulfilled }
     default: Other
+```
+
+### Request parameters (`context.parameters`)
+
+Calculation controls are **not** filters and **not** `execution.*`. Send them as a top-level `parameters` object, sibling of `filters`. Declare them on the KPI:
+
+```yaml
+parameters:
+  time_grain:                 # reserved: apply_request_time pick
+    type: string              # string | int | float | bool
+    # default omitted → time.grain
+    # allowed omitted → time.grains
+  output_cut:                 # reserved: emit this cut only (no also_emit)
+    type: string
+    default: G
+    allowed: [G, Y, R]
+  Level:                      # ordinary: injected into measure expr / fn kwargs
+    type: string
+    allowed: [G, Y, R]
+    map: { Green: G, Yellow: Y, Red: R }
+```
+
+Rules:
+
+- `execution` is identity only (`kpi_id`, `view_details`, `request_id`). Leftover `execution.time_grain` is a bind error.
+- Filters stay source columns. `Interval` / `Level` left in `filters` fail as unmapped columns.
+- A KPI with no `parameters:` block rejects a non-empty `context.parameters` (3004). Omit the object or send `{}`.
+- Unknown keys, missing keys (no default), and values not in `allowed` are bind errors.
+- Parameter names must not equal measure keys.
+- Response `parameters` remains the time plan (`anchor`, `time_grain`, `span_start`, `lookback_months`). Bound request values are `request_parameters`.
+- v1 does not switch model YAML files from parameters.
+
+```json
+{
+  "execution": { "kpi_id": "3004", "view_details": ["..."], "request_id": "..." },
+  "parameters": { "time_grain": "week", "output_cut": "G", "Level": "Green" },
+  "filters": { "time": ["2024"], "region": ["EMEA"] }
+}
 ```
 
 ---
@@ -1038,7 +1081,10 @@ pytest -q
 | `Filter '…' op 'between' expects 2 value(s)` | Wrong arity | `between` needs `[low, high]`; `eq` needs one value; `is_null` needs none |
 | `filters.x apply: extract cannot be listed in ignore_filters` | DuckDB cannot skip the mask on cut G | Use `apply: calc` |
 | `Required filter '…' is missing from context` | `optional: false` (default) and the host omitted it | Send the filter, or set `optional: true` |
-| `Filter '<x>' does not bind to a source column` | Mapped to a column the extract does not expose — typically a CTE-internal one | Add it to `output_schema` |
+| `Filter '<x>' does not bind to a source column` | Mapped to a column the extract does not expose, or a control sent as a filter | Add it to `output_schema`, or declare YAML `parameters:` and send `context.parameters` |
+| `execution.time_grain is not supported` | Grain pick was on `execution` | Send `parameters.time_grain` |
+| `This KPI declares no parameters` | `context.parameters` was non-empty on a KPI with no schema | Omit it, or add YAML `parameters:` |
+| `Unknown parameter(s)` / `Missing required parameter` / `not allowed` | Schema mismatch | Match YAML `parameters:` names, defaults, and `allowed` |
 | `Illegal measure sql: '…'` | Comments, `;`, double quotes, or incomplete CASE | Use `+ - * /`, CASE, or an allowlisted call; put `SUM` in `agg:` |
 | `names unknown function` | Call is not in that layer's registry | Use a name from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) |
 | `Unknown agg '<x>'` | Aggregation not in §4 | Pick a built-in or add one to the engine |
@@ -1061,7 +1107,7 @@ Known boundaries, so you do not design around something that is not there:
 
 - Timestamps are bucketed as stored; there is no timezone conversion, and `time.timezone` is rejected at bind rather than silently ignored. Convert the column in a `kind: sql` model if you need it.
 - `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months.
-- `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) do not change meaning when `execution.time_grain` changes. `periods` and `from: data_points` follow the pick (§5.2).
+- `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) do not change meaning when `parameters.time_grain` changes. `periods` and `from: data_points` follow the pick (§5.2).
 - A day pick plus a large `data_points` widens the extract spine; the 50,000 trend-cell cap still applies.
 - `measures.*.cuts` restricts **trend**, **rank**, **percent_of_total**, and other cut-phase kinds (`ntile`, `top_n`, …).
 - `percent_of_total` windows **this cut's** rows only. Share of a different cut's total is a different problem (`ignore_filters` / `also_emit`, or a later op).

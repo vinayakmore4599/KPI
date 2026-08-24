@@ -36,6 +36,7 @@ def _switch_kpi(kpi_id: int, **overrides):
             "calendar": "gregorian",
         },
         data_points={"day": 30, "week": 12, "month": 12},
+        parameters={"time_grain": {"type": "string"}},
         measures={
             "current_value": {
                 "of": "sotif_value",
@@ -91,7 +92,7 @@ def test_week_pick_is_allowed_year_is_not(parquet_path, extra_config):
     planned = validate(ctx, config_dir=extra_config)
     assert planned["time_grain"] == "week"
 
-    ctx["execution"]["time_grain"] = "year"
+    ctx["parameters"]["time_grain"] = "year"
     with pytest.raises(BindError, match="not allowed"):
         validate(ctx, config_dir=extra_config)
 

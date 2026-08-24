@@ -48,6 +48,7 @@ from kpi_engine.contracts import (
     ModelSpec,
     Offset,
     OutputSpec,
+    ParameterSpec,
     PhysicalSource,
     TimeSpec,
 )
@@ -253,13 +254,15 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     """Turn a KPI YAML dict into KpiSpec."""
     kpi_id = raw.get("kpi_id", expected_id)
     time = _parse_time(raw.get("time"))
+    parameter_schema = _parse_parameters(raw.get("parameters"))
+    param_names = frozenset(spec.name for spec in parameter_schema)
 
     dim_specs = tuple(_parse_dimension(d) for d in raw.get("dimensions") or [])
     dimensions = tuple(d.name for d in dim_specs)
 
     bases: list[BaseMeasure] = []
     for name, spec in (raw.get("base_measures") or {}).items():
-        bases.append(_parse_base_measure(name, spec))
+        bases.append(_parse_base_measure(name, spec, param_names))
 
     cuts = tuple(_parse_cut(c) for c in raw.get("cuts") or [])
     if not cuts:
@@ -268,9 +271,17 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     if default_cut not in {c.name for c in cuts}:
         raise BindError(f"default_cut {default_cut!r} is not a declared cut.")
 
-    measures = tuple(_parse_measure(k, v) for k, v in (raw.get("measures") or {}).items())
+    measures = tuple(
+        _parse_measure(k, v, param_names) for k, v in (raw.get("measures") or {}).items()
+    )
     if not measures:
         raise BindError("measures cannot be empty.")
+    clash = sorted(param_names & {m.key for m in measures})
+    if clash:
+        raise BindError(
+            f"Parameter name(s) {clash} collide with measure keys. "
+            "Rename the parameter."
+        )
     _assert_measure_graph(measures, tuple(b.name for b in bases), dimensions)
     if time is None:
         _assert_snapshot_measures(measures)
@@ -314,6 +325,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         data_points=data_points,
         meta=meta,
         green_when=green_when,
+        parameter_schema=parameter_schema,
     )
     for spec in kpi.measures:
         if spec.trailing_from == "data_points" and data_points is None:
@@ -356,7 +368,9 @@ def _parse_dimension(raw: Any) -> DimensionSpec:
     )
 
 
-def _parse_base_measure(name: str, spec: Any) -> BaseMeasure:
+def _parse_base_measure(
+    name: str, spec: Any, param_names: frozenset[str] = frozenset()
+) -> BaseMeasure:
     """Parse sql:/columns:/op:/expr:/agg:/where for one base fact."""
     if not isinstance(spec, dict):
         raise BindError(f"base_measures.{name} must be an object.")
@@ -375,7 +389,13 @@ def _parse_base_measure(name: str, spec: Any) -> BaseMeasure:
             raise BindError(
                 f"base_measures.{name} uses `expr:` and cannot also set `sql:`."
             )
-        columns = expression_columns(parse_expression(expr, what=f"base_measures.{name}.expr"))
+        columns = tuple(
+            col
+            for col in expression_columns(
+                parse_expression(expr, what=f"base_measures.{name}.expr")
+            )
+            if col not in param_names
+        )
     if row_op is not None:
         row_op = str(row_op)
         if row_op not in COLUMN_FNS:
@@ -405,7 +425,7 @@ def _parse_base_measure(name: str, spec: Any) -> BaseMeasure:
         expr = sql_raw
         sql_node = parse_expression(expr, what="measure sql")
         assert_expr_calls(sql_node, COLUMN_FNS, what=f"base_measures.{name}.sql")
-        columns = expression_columns(sql_node)
+        columns = tuple(col for col in expression_columns(sql_node) if col not in param_names)
     default_agg = "sum" if row_op is None else spec.get("agg")
     agg = spec.get("agg", default_agg)
     if agg is None:
@@ -481,6 +501,52 @@ def _parse_where(name: str, raw: Any) -> MeasureWhere | None:
     if not isinstance(values_raw, (list, tuple)):
         values_raw = [values_raw]
     return MeasureWhere(column=column, op=op, values=tuple(values_raw))
+
+
+def _parse_parameters(raw: Any) -> tuple[ParameterSpec, ...]:
+    """Parse optional YAML parameters: (scalar schema only). Missing means none."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise BindError("parameters must be an object.")
+    from kpi_engine.core.parameters import SCALAR_TYPES
+
+    out: list[ParameterSpec] = []
+    seen: set[str] = set()
+    for name, spec in raw.items():
+        ident = require_ident(str(name), what="parameter")
+        if ident in seen:
+            raise BindError(f"Duplicate parameter {ident!r}.")
+        seen.add(ident)
+        if not isinstance(spec, dict):
+            raise BindError(f"parameters.{ident} must be an object.")
+        type_name = spec.get("type")
+        if type_name not in SCALAR_TYPES:
+            raise BindError(
+                f"parameters.{ident}.type must be string, int, float, or bool."
+            )
+        allowed_raw = spec.get("allowed")
+        allowed: tuple[Any, ...] | None = None
+        if allowed_raw is not None:
+            if not isinstance(allowed_raw, (list, tuple)) or not allowed_raw:
+                raise BindError(
+                    f"parameters.{ident}.allowed must be a non-empty list."
+                )
+            allowed = tuple(allowed_raw)
+        value_map = spec.get("map") or {}
+        if not isinstance(value_map, dict):
+            raise BindError(f"parameters.{ident}.map must be an object.")
+        out.append(
+            ParameterSpec(
+                name=ident,
+                type_name=str(type_name),
+                default=spec.get("default"),
+                has_default="default" in spec,
+                allowed=allowed,
+                value_map=dict(value_map),
+            )
+        )
+    return tuple(out)
 
 
 def _parse_time(raw: Any) -> TimeSpec | None:
@@ -733,7 +799,9 @@ def _parse_relation(raw: Any) -> ModelRelation:
     )
 
 
-def _parse_measure(key: str, raw: Any) -> OutputSpec:
+def _parse_measure(
+    key: str, raw: Any, param_names: frozenset[str] = frozenset()
+) -> OutputSpec:
     """Parse one requestable measure via the registered OpPlugin."""
     if not isinstance(raw, dict):
         raise BindError(f"measures.{key} must be an object.")
@@ -815,6 +883,7 @@ def _parse_measure(key: str, raw: Any) -> OutputSpec:
             cuts=cuts,
             window_range=window_range,
             raw=raw,
+            parameter_names=param_names,
         ),
     )
 

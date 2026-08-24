@@ -32,6 +32,7 @@ def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
         "kpi_id",
         "request_id",
         "parameters",
+        "request_parameters",
         "applied_filters",
         "ignored_filters",
         "trend_axes",
@@ -50,6 +51,7 @@ def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
         "span_start": "2025-04-01",
         "lookback_months": 11,
     }
+    assert result["request_parameters"] == {}
     assert set(result["pagination"]) == {"page", "page_size", "total_count", "has_more"}
 
 

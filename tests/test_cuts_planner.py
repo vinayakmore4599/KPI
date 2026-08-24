@@ -35,7 +35,14 @@ def _kpi(cuts: tuple[CutSpec, ...], default: str, **overrides) -> KpiSpec:
     return KpiSpec(**spec)
 
 
-def test_only_the_default_cut_is_emitted_without_also_emit():
+def test_locked_cut_skips_also_emit():
+    """parameters.output_cut emits that cut only, even when also_emit is set."""
+    cuts = (
+        CutSpec(name="G", group_by=("reason_code",), ignore_filters=(), also_emit=("R",)),
+        CutSpec(name="R", group_by=("reason_code", "region"), ignore_filters=(), also_emit=()),
+    )
+    assert [c.name for c in emitted_cuts(_kpi(cuts, "G", locked_cut="G"))] == ["G"]
+    assert [c.name for c in emitted_cuts(_kpi(cuts, "G", locked_cut="R"))] == ["R"]
     """A KPI that declares extra cuts still emits just the default unless asked."""
     cuts = (
         CutSpec(name="G", group_by=("reason_code",), ignore_filters=(), also_emit=()),

@@ -51,6 +51,7 @@ class CommonMeasureFields:
     trailing_from: str | None = None
     trailing_unit: str | None = None
     raw: Mapping[str, Any] = field(default_factory=dict)
+    parameter_names: frozenset[str] = field(default_factory=frozenset)
 
 
 def offset_is_nonzero(offset: Offset | None) -> bool:

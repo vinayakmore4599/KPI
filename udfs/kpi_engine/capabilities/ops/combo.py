@@ -280,18 +280,23 @@ class Expr(OpPlugin):
 
         assert_expr_calls(node, MEASURE_FNS, what=f"measures.{key}.expr")
         names = expression_columns(node)
+        param_names = common.parameter_names
+        measure_names = tuple(n for n in names if n not in param_names)
         if not names:
+            raise BindError(f"measures.{key} expr must name at least one other measure.")
+        if not measure_names and not any(n in param_names for n in names):
             raise BindError(f"measures.{key} expr must name at least one other measure.")
         if raw.get("inputs"):
             inputs, input_params = support.parse_fn_inputs(key, raw.get("inputs"))
             bindable = input_params or inputs
-            unknown = [n for n in names if n not in bindable]
+            unknown = [n for n in measure_names if n not in bindable]
             if unknown:
                 raise BindError(
                     f"measures.{key} expr names {unknown[0]!r}, which is not in inputs: {list(bindable)}."
                 )
+            inputs = tuple(n for n in inputs if n not in param_names)
         else:
-            inputs, input_params = names, ()
+            inputs, input_params = measure_names, ()
         return OutputSpec(
             **{
                 **spec.__dict__,
@@ -491,11 +496,12 @@ def _compose(ctx: EvalCtx, *, kind: str) -> Any:
         raise CatalogError(f"{spec.key} references measures that do not exist: {missing}.")
     values = [ctx.evaluate(ctx.catalog[n]) for n in names]
     combo = _combo(ctx)
+    bound = dict(ctx.kpi.bound_parameters)
     if kind == "expr":
         keys = list(spec.input_params) if spec.input_params else names
         result = eval_expr_scalar(
             parse_expression(spec.expr or "", what=f"measures.{spec.key}.expr"),
-            dict(zip(keys, values)),
+            {**bound, **dict(zip(keys, values))},
         )
         log_measure_calc(
             cut=ctx.cut,
@@ -511,7 +517,7 @@ def _compose(ctx: EvalCtx, *, kind: str) -> Any:
         spec.fn or ("divide" if kind == "arithmetic" else ""),
         values,
         spec.input_params if kind == "fn" else (),
-        extras=spec.params if kind == "fn" else None,
+        extras={**bound, **dict(spec.params)} if kind == "fn" else None,
     )
     keys = list(spec.input_params) if kind == "fn" and spec.input_params else names
     log_measure_calc(

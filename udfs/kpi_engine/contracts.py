@@ -126,6 +126,18 @@ class Pagination:
 
 
 @dataclass(frozen=True)
+class ParameterSpec:
+    """One KPI YAML `parameters:` entry: scalar type, default, aliases, allowlist."""
+
+    name: str
+    type_name: str
+    default: Any = None
+    has_default: bool = False
+    allowed: tuple[Any, ...] | None = None
+    value_map: Mapping[Any, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class AdaptedRequest:
     """Normalized request after parsing context; still independent of KPI YAML."""
 
@@ -136,7 +148,7 @@ class AdaptedRequest:
     datasets: tuple[DatasetBinding, ...]
     pagination: Pagination
     raw: dict[str, Any]
-    time_grain: GrainName | None = None
+    parameters: Mapping[str, Any] = field(default_factory=dict)
     measures_omitted: bool = False
 
 
@@ -269,6 +281,9 @@ class KpiSpec:
     data_points: int | Mapping[str, int] | None = None
     meta: "KpiMeta | None" = None
     green_when: "GreenWhen | None" = None
+    parameter_schema: tuple[ParameterSpec, ...] = ()
+    bound_parameters: Mapping[str, Any] = field(default_factory=dict)
+    locked_cut: str | None = None
 
 
 @dataclass(frozen=True)

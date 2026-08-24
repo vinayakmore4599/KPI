@@ -226,6 +226,7 @@ def test_wtd_fails_on_month_pick_when_day_is_allowed(parquet_path, extra_config)
             "grains": ["day", "week", "month"],
             "filter_code": "reporting_month",
         },
+        parameters={"time_grain": {"type": "string"}},
         measures={"w": {"of": "sotif_value", "op": "window", "range": "wtd"}},
     )
     write_yaml(extra_config / "kpis" / "9711.yaml", spec)

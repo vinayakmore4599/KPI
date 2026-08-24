@@ -108,21 +108,21 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, t
     )
 
 
-def apply_request_time(kpi: KpiSpec, request: AdaptedRequest) -> KpiSpec:
+def apply_request_time(kpi: KpiSpec, time_grain: str | None = None) -> KpiSpec:
     """Pick the request grain, reject finer-than-source, resolve data_points trailing."""
     if kpi.time is None:
         return kpi
     allowed = kpi.time.grains or (kpi.time.grain,)
-    pick = request.time_grain or kpi.time.grain
+    pick = time_grain or kpi.time.grain
     if pick not in allowed:
         raise BindError(
-            f"execution.time_grain {pick!r} is not allowed "
+            f"parameters.time_grain {pick!r} is not allowed "
             f"(time.grains {list(allowed)})."
         )
     source = kpi.time.source_grain or kpi.time.grain
     if GRAIN_RANK[pick] < GRAIN_RANK[source]:
         raise BindError(
-            f"execution.time_grain {pick!r} is finer than time.source_grain {source!r}."
+            f"parameters.time_grain {pick!r} is finer than time.source_grain {source!r}."
         )
     time = replace(kpi.time, grain=pick)
     measures = []

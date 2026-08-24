@@ -13,6 +13,8 @@ Capabilities
     - Rejects input_text=heir (hierarchy must be expanded upstream).
     - Ignores business_date (never used in calculations).
     - Dataset path may be omitted; binder fills model default_path when present.
+    - Reads top-level context.parameters as JSON scalars (not filters).
+    - Rejects leftover execution.time_grain (grain belongs on parameters).
     - Does not claim the month filter; time_planner does that later.
 
 When to use
@@ -25,14 +27,13 @@ from __future__ import annotations
 from typing import Any
 
 from kpi_engine.contracts import (
-    GRAIN_NAMES,
     AdaptedRequest,
     DatasetBinding,
     FilterMapping,
     IncomingFilter,
     Pagination,
 )
-from kpi_engine.exceptions import ContextError, FilterError
+from kpi_engine.exceptions import BindError, ContextError, FilterError
 from kpi_engine.identifiers import norm_name
 from kpi_engine.runlog import traced
 
@@ -64,6 +65,7 @@ def adapt(context: dict[str, Any]) -> AdaptedRequest:
     filters = _filters(context.get("filters") or {})
     datasets = _datasets(context.get("datasets") or {})
     pagination = _pagination(context.get("output") or {})
+    _reject_execution_time_grain(execution)
 
     return AdaptedRequest(
         kpi_id=kpi_id,
@@ -73,7 +75,7 @@ def adapt(context: dict[str, Any]) -> AdaptedRequest:
         datasets=datasets,
         pagination=pagination,
         raw=context,
-        time_grain=_time_grain(execution),
+        parameters=_parameters(context.get("parameters")),
         measures_omitted=measures_omitted,
     )
 
@@ -105,18 +107,32 @@ def _lookup(obj: dict[str, Any], *names: str) -> tuple[Any, str | None]:
     return None, None
 
 
-def _time_grain(execution: dict[str, Any]) -> str | None:
-    """Optional execution.time_grain pick; missing means YAML time.grain."""
-    raw = execution.get("time_grain")
-    if raw is None or raw == "":
-        return None
-    grain = str(raw)
-    if grain not in GRAIN_NAMES:
-        raise ContextError(
-            "execution.time_grain must be day, week, month, quarter, or year "
-            f"(got {grain!r})."
+def _reject_execution_time_grain(execution: dict[str, Any]) -> None:
+    """execution is identity only; grain picks belong on context.parameters."""
+    if "time_grain" in execution:
+        raise BindError(
+            "execution.time_grain is not supported. Send parameters.time_grain "
+            "and declare it in the KPI YAML parameters: block."
         )
-    return grain
+
+
+def _parameters(raw: Any) -> dict[str, Any]:
+    """Read context.parameters as JSON scalars. Missing or {} is empty."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ContextError("parameters must be an object.")
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        name = str(key)
+        if isinstance(value, bool) or isinstance(value, (str, int, float)):
+            out[name] = value
+            continue
+        kind = "null" if value is None else type(value).__name__
+        raise ContextError(
+            f"parameters.{name} must be a string, int, float, or bool (got {kind})."
+        )
+    return out
 
 
 def _measure_keys(raw: Any) -> tuple[str, ...]:

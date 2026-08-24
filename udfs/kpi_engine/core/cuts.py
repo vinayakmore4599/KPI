@@ -35,6 +35,13 @@ def emitted_cuts(kpi: KpiSpec) -> tuple[CutSpec, ...]:
 def emitted_cuts_from(kpi: KpiSpec, roots: tuple[str, ...]) -> tuple[CutSpec, ...]:
     """Walk these cut names and also_emit. Used per extract pipeline."""
     by_name = {c.name: c for c in kpi.cuts}
+    if kpi.locked_cut is not None:
+        cut = by_name.get(kpi.locked_cut)
+        if cut is None:
+            raise BindError(
+                f"Unknown cut {kpi.locked_cut!r}. Declared: {sorted(by_name)}."
+            )
+        return (cut,)
     names: list[str] = []
 
     def walk(name: str) -> None:

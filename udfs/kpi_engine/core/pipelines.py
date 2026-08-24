@@ -165,6 +165,8 @@ def assert_named_cuts_compatible(
     kpi: KpiSpec, keys: tuple[str, ...], compatible: tuple[CutSpec, ...]
 ) -> None:
     """Fail if a measure named a cut that this extract cannot group by."""
+    if kpi.locked_cut is not None:
+        return
     allowed = {c.name for c in compatible}
     by_key = {m.key: m for m in kpi.measures}
     for key in keys:

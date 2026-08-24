@@ -94,7 +94,9 @@ def bind_filters(
         if match_name(canonical, extract_columns) is None:
             raise FilterError(
                 f"Filter {item.raw_key!r} does not bind to a source column. "
-                "Unmapped filters are a hard error."
+                "Unmapped filters are a hard error. If this is a calculation "
+                "control (Level, Interval, time_grain), declare it under YAML "
+                "parameters: and send it in context.parameters, not filters."
             )
         op = spec.op if spec is not None else "in"
         values = () if op in {"is_null", "is_not_null"} else item.values
@@ -345,7 +347,9 @@ def _resolve_column(
     if hit:
         return hit
     raise FilterError(
-        f"Filter {item.raw_key!r} has no column mapping and is not a source column."
+        f"Filter {item.raw_key!r} has no column mapping and is not a source column. "
+        "If this is a calculation control (Level, Interval, time_grain), declare it "
+        "under YAML parameters: and send it in context.parameters, not filters."
     )
 
 

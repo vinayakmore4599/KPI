@@ -10,7 +10,7 @@ When to use
     Add a case here when the context envelope changes.
 """
 from kpi_engine.core.adapter import adapt
-from kpi_engine.exceptions import ContextError, FilterError
+from kpi_engine.exceptions import BindError, ContextError, FilterError
 from tests.conftest import make_context
 
 
@@ -89,16 +89,29 @@ def test_omitted_measures_required_is_flagged(parquet_path):
     assert request.measures_omitted is True
 
 
-def test_execution_time_grain_is_adapted(parquet_path):
-    request = adapt(make_context(parquet_path, measures=["current_value"], time_grain="week"))
-    assert request.time_grain == "week"
+def test_context_parameters_are_adapted(parquet_path):
+    request = adapt(
+        make_context(parquet_path, measures=["current_value"], time_grain="week")
+    )
+    assert request.parameters == {"time_grain": "week"}
 
 
-def test_unknown_time_grain_is_rejected(parquet_path):
-    ctx = make_context(parquet_path, measures=["current_value"], time_grain="fortnight")
+def test_execution_time_grain_is_rejected(parquet_path):
+    ctx = make_context(parquet_path, measures=["current_value"])
+    ctx["execution"]["time_grain"] = "week"
+    try:
+        adapt(ctx)
+    except BindError as exc:
+        assert "parameters.time_grain" in str(exc)
+    else:
+        raise AssertionError("expected BindError")
+
+
+def test_non_scalar_parameter_is_rejected(parquet_path):
+    ctx = make_context(parquet_path, measures=["current_value"], parameters={"Level": ["G"]})
     try:
         adapt(ctx)
     except ContextError as exc:
-        assert "time_grain" in str(exc)
+        assert "parameters.Level" in str(exc)
     else:
         raise AssertionError("expected ContextError")

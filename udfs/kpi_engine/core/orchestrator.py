@@ -68,6 +68,7 @@ from kpi_engine.core.pipelines import (
     partition_request,
 )
 from kpi_engine.core.relations import join_monthly
+from kpi_engine.core.parameters import bind_parameters, declared_time_grain
 from kpi_engine.core.time_planner import apply_request_time, plan_time, span_for_keys
 from kpi_engine.dates import add_periods, iso_period, parse_date, period_label
 from kpi_engine.exceptions import BindError, KPIEngineError
@@ -125,6 +126,7 @@ def _compute(
     request = adapt(context)
     log_step("bind")
     kpi = load_kpi(request.kpi_id, root)
+    kpi = bind_parameters(request, kpi)
     request, kpi = _apply_host_defaults(request, kpi)
     requested = request.measure_keys
     pipelines = partition_request(kpi, requested)
@@ -192,6 +194,7 @@ def _compute(
         "kpi_id": kpi.kpi_id,
         "request_id": request.request_id,
         "parameters": parameters,
+        "request_parameters": dict(kpi.bound_parameters),
         "applied_filters": _dedupe_applied(_applied(applied_src, applied_def, applied_res)),
         "ignored_filters": _dedupe_ignored(ignored),
         "trend_axes": trend_axes,
@@ -243,6 +246,7 @@ def _validate(
     root = Path(config_dir) if config_dir else default_config_dir()
     request = adapt(context)
     kpi = load_kpi(request.kpi_id, root)
+    kpi = bind_parameters(request, kpi)
     request, kpi = _apply_host_defaults(request, kpi)
     pipelines = partition_request(kpi, request.measure_keys)
     models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
@@ -275,6 +279,7 @@ def _validate(
         "ok": True,
         "kpi_id": kpi.kpi_id,
         **_parameters(kpi, time_plan),
+        "request_parameters": dict(kpi.bound_parameters),
         "sql": sqls[0] if sqls else "",
         "sqls": sqls,
         "param_count": param_count,
@@ -564,7 +569,7 @@ def _apply_host_defaults(
         request = replace(request, measure_keys=kpi.meta.selected_metrics)
     request = replace(request, measure_keys=fold_measure_keys(kpi, request.measure_keys))
     assert_measure_keys(kpi, request.measure_keys)
-    kpi = apply_request_time(kpi, request)
+    kpi = apply_request_time(kpi, declared_time_grain(kpi))
     requested, _needed = resolve_requested_graph(kpi, request.measure_keys)
     return replace(request, measure_keys=requested), kpi
 

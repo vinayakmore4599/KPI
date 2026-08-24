@@ -141,6 +141,18 @@ def cover(wb: Workbook) -> None:
             "N/A — conceptual",
         ],
         [
+            "Naming conventions",
+            "File names, kpi_id / model_id, identifiers, aliases, reserved words",
+            "Name every YAML file and key before writing formulas",
+            "N/A — engine-enforced; do not invent a second spelling",
+        ],
+        [
+            "YAML preparation",
+            "AI authoring contract: intake, calculation→YAML map, completeness checklist",
+            "Attach this sheet + catalogs + filled intake; AI must emit entire KPI YAML",
+            "kpi-yaml-preparation-guide.md §0 — do not invent ops; ask if intake is incomplete",
+        ],
+        [
             "Decision guide",
             "If you need X, use Y — stop at the first matching row",
             "Walk top to bottom while authoring",
@@ -237,7 +249,10 @@ def cover(wb: Workbook) -> None:
     ws.freeze_panes = "A5"
 
     last = 4 + len(rows)
-    ws["A" + str(last + 2)] = "Start here: Framework components → Decision guide → Sample dataset → Worked examples."
+    ws["A" + str(last + 2)] = (
+        "Start here: Framework components → Naming conventions → YAML preparation "
+        "→ Decision guide → Sample dataset → Worked examples."
+    )
     ws["A" + str(last + 2)].font = Font(bold=True, size=12, color=NAVY)
     ws.merge_cells(f"A{last + 2}:D{last + 2}")
 
@@ -256,9 +271,315 @@ def cover(wb: Workbook) -> None:
     ws.merge_cells(f"A{last + 4}:D{last + 6}")
     ws.row_dimensions[last + 4].height = 80
 
-    ws["A" + str(last + 8)] = "Host entry: udfs.kpi_engine.main   |   Routing: execution.kpi_id → config/kpis/<id>.yaml"
+    ws["A" + str(last + 8)] = (
+        "Host entry: udfs.kpi_engine.main   |   Routing: execution.kpi_id → config/kpis/<id>.yaml   |   "
+        "AI brief: attach YAML preparation + catalogs + calculation intake (kpi-yaml-preparation-guide.md §0)."
+    )
     ws["A" + str(last + 8)].font = Font(italic=True, size=10, color="44546A")
     ws.merge_cells(f"A{last + 8}:D{last + 8}")
+
+
+def convention_rows() -> list[list]:
+    """File names, identifiers, and other author rules the engine actually enforces."""
+    return [
+        [
+            "KPI YAML file",
+            "Path is exact: udfs/config/kpis/<kpi_id>.yaml. The stem must equal context.execution.kpi_id with no name-fold.",
+            "3004.yaml when execution.kpi_id is 3004 or \"3004\". Copy 3004.yaml to <new_id>.yaml.",
+            "sotif.yaml for kpi_id 3004. 3004.yml. kpis/Sotif.yaml when the host sends 3004. Spaces or extra folders.",
+            "load_kpi opens only f\"{kpi_id}.yaml\". A missing file is a bind error. Case on the filename is OS-dependent; treat it as exact.",
+        ],
+        [
+            "KPI yaml kpi_id:",
+            "Set kpi_id: to the same value as the filename stem (and the host execution.kpi_id).",
+            "File 3004.yaml → kpi_id: 3004. File freight_fill.yaml → kpi_id: freight_fill.",
+            "File 3004.yaml with kpi_id: sotif. Reusing one YAML for several ids.",
+            "The engine loads by filename. Inner kpi_id: is the spec id; keep it identical so logs and errors match the request.",
+        ],
+        [
+            "Model YAML file",
+            "Path: udfs/config/models/<model_id>.yaml. Prefer lowercase snake_case. Extension must be .yaml.",
+            "sotif.yaml, orders_sql.yaml, freight_lane.yaml.",
+            "sotif.yml. models/Sotif Model.yaml. Putting the file under kpis/.",
+            "load_model first tries <model_id>.yaml exactly. If missing, it accepts exactly one *.yaml whose stem folds to model_id (Sotif.yaml ↔ sotif). Two fold-matches is an error.",
+        ],
+        [
+            "Model yaml model_id:",
+            "model_id: must equal the filename stem you intend KPIs to point at. Prefer the same spelling everywhere.",
+            "File sotif.yaml → model_id: sotif. File orders_sql.yaml → model_id: orders_sql.",
+            "File sotif.yaml with model_id: sotif_sql. Two files that fold to the same id.",
+            "KPI model: is matched to this field after folding case / spaces / underscores. Extra tokens do not fold away: sotif ≠ sotif_sql.",
+        ],
+        [
+            "KPI model: pointer",
+            "KPI YAML model: must name a model_id that exists. Same fold as model_id (case, spaces, underscores only).",
+            "model: sotif  with models/sotif.yaml. Per-base override base_measures.x.model: orders_sql when two extracts are needed.",
+            "model: sotif pointing at sotif_sql.yaml. Embedding an ADLS path instead of a model id. Inventing a model that has no file.",
+            "same_model_id folds Region/region and my_model/my model. It does not treat sotif as sotif_sql. Physical vs sql is kind: on the model file, not a suffix rule — but keep suffixes honest (orders_sql.yaml for kind: sql).",
+        ],
+        [
+            "Identifier alphabet",
+            "YAML names that become SQL/Pandas identifiers must match ^[A-Za-z_][A-Za-z0-9_]*$. Prefer snake_case.",
+            "reason_code, current_value, event_month, sotif_value, shipped_now.",
+            "reason-code, reason.code, \"Reason Code\", 12m_trend, current value.",
+            "require_ident rejects hyphens, dots, spaces, quotes, and leading digits. Used for dimensions, base_measures, parameters, aliases, sources, join keys, time.column, filter_map values, output_schema, columns: lists.",
+        ],
+        [
+            "Reserved words in formulas",
+            "Do not use these as column or measure names inside expr: / CASE: case, when, then, else, and, or, not, is, null, in.",
+            "date_diff(start, end, 'day') — end is legal. Names like region, amount, shipped_now.",
+            "expr: case / qty. A column named when or in.",
+            "Parser treats those as CASE/boolean keywords. end is a CASE terminator but is allowed as an identifier (date_diff(start, end, 'day')).",
+        ],
+        [
+            "Name folding (host ↔ YAML)",
+            "Host keys fold onto YAML keys: lowercase, trim, spaces → underscore. Measure keys also try a compact fold (drop remaining underscores).",
+            "YAML current_value matches host Current_Value or current value. YAML previous_year_value matches PreviousYearValue.",
+            "Relying on fold for file names (KPI files do not fold). Expecting sotif to match sotif_sql. Two YAML keys that fold to the same spelling.",
+            "norm_name is case/space/underscore only. Use one canonical snake_case in YAML; the host may send UI Title Case. Do not create two keys that collide after fold.",
+        ],
+        [
+            "Measure keys",
+            "Keys under measures: are what context.measures_required[].measure_key must match (after fold). snake_case. Must not collide with parameters.",
+            "current_value, previous_year_value, trailing_3m, yoy_pct, fill_rate.",
+            "Current Value as the YAML key. Reusing a parameter name. A key that is not in the host contract.",
+            "Unknown measure_key is a bind error listing valid YAML keys. An empty measures_required list computes nothing (it does not expand to every key).",
+        ],
+        [
+            "Base measure names",
+            "Keys under base_measures: are internal facts. UI does not request these names. snake_case identifiers.",
+            "sotif_value, shipped_qty, ordered_qty, line_rev.",
+            "Naming a base the same as a requestable measure unless you intend identity. Hyphenated names.",
+            "Measures reference bases via of:. A base with no agg: is a row helper, not a requestable point.",
+        ],
+        [
+            "Dimensions",
+            "Catalog names under dimensions[].name (and from: if the physical column differs). Request selected_dimensions must pick from this allowlist.",
+            "- { name: supplier, from: supplier_name }. default_dimensions: [reason_code].",
+            "Inventing a request dimension not in YAML. Using the host display label as the YAML name when the column is supplier_name (map it with from:).",
+            "YAML owns the allowlist. from: is the physical/model column; name: is the grain token the request uses.",
+        ],
+        [
+            "Cut names",
+            "Short stable tokens. G and R in 3004 are examples, not engine-hardcoded. default_cut must be one of the declared names.",
+            "cuts: [{ name: G, … }, { name: R, group_by: [region] }]. default_cut: G.",
+            "Renaming G/R in YAML without updating the host cut list. Two cuts with the same name.",
+            "Cut name is a string the host sends; group_by entries must be catalog dimensions (identifiers). Also_emit / ignore_filters name other cuts or filter codes.",
+        ],
+        [
+            "Dataset aliases",
+            "model.required_aliases and sources.*.alias must be identifiers. They bind to context.datasets by alias or key, case-insensitive.",
+            "required_aliases: [sotif]. Host dataset alias or key: sotif (or SOTIF).",
+            "required_aliases: [my-table]. Putting an ADLS URI in the alias. A KPI-level path instead of an alias.",
+            "Context path wins; model default_path / default_paths fills gaps. Do not put dataset URIs in KPI YAML.",
+        ],
+        [
+            "SQL model placeholders",
+            "kind: sql models reference bound datasets as $alias_path or $alias_scan (alias = required_aliases entry).",
+            "sql: |\n  SELECT … FROM $sotif_scan WHERE …",
+            "Hard-coding /mnt/… or abfss:// in the SQL. Using an alias that is not in required_aliases.",
+            "$alias_scan becomes delta_scan(?) or read_parquet(?) from table_type. $alias_path is the path parameter. Order of placeholders must match bind order.",
+        ],
+        [
+            "Time grains",
+            "Only: day, week, month, quarter, year (lowercase). Default grain is month.",
+            "time: { column: event_month, grain: month, filter_code: reporting_month }.",
+            "time.grain: monthly. MTD as a grain name. execution.time_grain on the host payload.",
+            "Send parameters.time_grain when the KPI declares that parameter. execution.time_grain is rejected. calendar: gregorian or fiscal.",
+        ],
+        [
+            "time.filter_code and filter_map keys",
+            "These are host filter codes, not SQL identifiers. They may contain spaces. filter_map values (columns) must still be identifiers.",
+            "filter_code: reporting_month. filter_map: { \"Supplier Name\": supplier_name }.",
+            "filter_map values with spaces or hyphens. Omitting filter_code when time: is present.",
+            "time.filter_code is required when time: is declared. It names the context filter that carries the selected period (the anchor), not a month IN list.",
+        ],
+        [
+            "Parameters",
+            "Parameter names are identifiers. Must not equal a measure key. Do not declare selected_dimensions as a parameter. when: case labels cannot be param, cases, or else.",
+            "parameters: { time_grain: { type: string, allowed: [month, quarter] } }.",
+            "parameters.selected_dimensions. A case label named else. A parameter named current_value when that is also a measure key.",
+            "time_grain is the reserved overlay formerly on execution. Case labels param / cases / else are when: metadata keys.",
+        ],
+        [
+            "Host UDF / module_path",
+            "One generic entry: udfs.kpi_engine.main. Routing is execution.kpi_id → config/kpis/<id>.yaml. Do not add a per-KPI Python module.",
+            "Host module_path: udfs.kpi_engine.main. New KPI = new YAML (+ model YAML if the extract is new).",
+            "udfs/<kpi_id>/main.py. Cloning the engine per metric. A second module_path per kpi_id.",
+            "The UDF is stateless compute(context). KPI math lives in YAML; DuckDB shape lives in model YAML.",
+        ],
+        [
+            "What must not live in KPI YAML",
+            "No dataset URIs, no Python, no invented op:/hook:/fn: names, no per-cut model:.",
+            "model: sotif. op: point / window / rank / hook / expr — names from this workbook's catalogs.",
+            "abfss://… in the KPI file. op: my_custom_yoy. cuts: [{ model: other }]. A sibling .py next to the YAML.",
+            "Paths belong on context.datasets or model default_paths. Catalog names are the Measure ops / Functions / Hooks sheets. cuts cannot set model:.",
+        ],
+        [
+            "File header comments (recommended)",
+            "Match existing config files: what the file provides, where it is used, capabilities, when to copy it.",
+            "See udfs/config/kpis/3004.yaml and udfs/config/models/sotif.yaml headers.",
+            "Leaving a copied file with the old kpi_id / Sotif description. Putting secrets in comments.",
+            "Comments are documentation only; the engine ignores them. Keep kpi_id / model_id in the body in sync with the filename.",
+        ],
+    ]
+
+
+def preparation_rows() -> list[list]:
+    """How to brief an AI so it emits a complete, bind-ready KPI YAML."""
+    ops = ", ".join(r["name"] for r in load_registry("ops.yaml"))
+    col_fns = ", ".join(r["name"] for r in load_registry("functions/column.yaml"))
+    meas_fns = ", ".join(r["name"] for r in load_registry("functions/measure.yaml"))
+    hooks = ", ".join(r["name"] for r in load_registry("hooks.yaml"))
+    return [
+        [
+            "How to brief an AI",
+            "Attach this workbook (Naming conventions, this sheet, Measure ops, Column/Measure functions, Hooks, YAML patterns) plus kpi-yaml-preparation-guide.md §0 plus a filled intake.",
+            "One message: catalogs + intake + 'emit complete YAML, no TODOs'.",
+            "A one-line 'write YAML for fill rate' with no kpi_id, columns, or measure_keys.",
+            "The AI may only use names on the catalog sheets. If intake is incomplete it must ask, not guess.",
+        ],
+        [
+            "AI output contract",
+            "Every generating response is: (1) entire kpis/<kpi_id>.yaml (2) entire models/<model_id>.yaml if extract is new, else 'reuses existing model' (3) Assumptions (4) Gaps.",
+            "Full files with header comments updated for this kpi_id. Then a short assumptions/gaps list.",
+            "A snippet, skeleton with blanks, # TODO, CHANGE_ME, or '...'. Partial measures: block.",
+            "High confidence = completeness checklist all true. If any required key is unknown, ask numbered questions and emit no YAML.",
+        ],
+        [
+            "Intake — identity",
+            "kpi_id (filename stem = execution.kpi_id exactly). model_id. reuse_existing_model yes/no. dataset_aliases.",
+            "kpi_id: 4120. model_id: sotif (reuse) or freight_lane (new). aliases: [sotif].",
+            "Omitting kpi_id. Reusing sotif when the tables are different. Inventing a model_id that folds onto another file.",
+            "See Naming conventions. .yaml only. Host module_path stays udfs.kpi_engine.main.",
+        ],
+        [
+            "Intake — time or snapshot",
+            "Either time.column + grain (day|week|month|quarter|year) + filter_code, or snapshot: true (omit time:).",
+            "time: { column: event_month, grain: month, filter_code: reporting_month, calendar: gregorian }.",
+            "Guessing reporting_month. execution.time_grain. Two values as a range. Defaulting to 'latest' when the filter is missing.",
+            "The time filter is the anchor (exactly one value), never WHERE month IN (one month). Snapshot forbids window/trend/nonzero offset.",
+        ],
+        [
+            "Intake — grain and cuts",
+            "dimensions (name + from physical column). default_dimensions (required, [] = worldwide). At least one cut. default_cut.",
+            "dimensions: [{ name: region, from: region }]. cuts G extras-only group_by; exclude_from_grain / ignore_filters as needed.",
+            "Inventing a host dimension not in YAML. Putting default_dimensions names again in cuts.group_by. Treating G/R as engine-hardcoded.",
+            "YAML owns the allowlist. Request selected_dimensions only picks from it. Do not declare parameters.selected_dimensions.",
+        ],
+        [
+            "Intake — calculations",
+            "Every host measure_key plus English/math. Physical columns DuckDB must retrieve. Optional filters: declarations.",
+            "measure_keys: [current_value, yoy_pct]. calculations.current_value: SUM(amount) at selected month.",
+            "A calculation with no measure_key. A measure_key with no formula. Guessing column amount vs billed.",
+            "Unknown measure_key is a bind error. Empty measures_required computes nothing. Helpers the UI does not request go under base_measures only.",
+        ],
+        [
+            "Map — current period total",
+            "SUM/COUNT/MIN/MAX of a column at the selected period.",
+            "base_measures.fact: { sql: amount, agg: sum }\nmeasures.current_value: { of: fact, op: point, offset: { months: 0 } }",
+            "A measure op for the raw column. Free SQL SUM() in the KPI file.",
+            "agg: sum | avg | count | count_distinct | min | max | median | percentile | first | last.",
+        ],
+        [
+            "Map — previous period / YoY",
+            "Same metric last year/month/quarter; growth % vs that period.",
+            "previous_year_value: { of: fact, op: point, offset: { years: 1 } }\nyoy_pct: { op: fn, fn: growth_pct, inputs: [current_value, previous_year_value] }",
+            "A window of length 1. Hand-coded (current-previous)/previous in SQL. fn: divide when the spec asked for %.",
+            "growth_pct nulls when the base is null or zero. offset units: days weeks months quarters years.",
+        ],
+        [
+            "Map — trailing N / YTD / QTD",
+            "Trailing N periods as one number; or named period-to-date.",
+            "value_3m: { of: fact, op: window, trailing: { months: 3 }, inclusive: true }\nvalue_qtd: { of: fact, op: window, range: qtd }",
+            "Summing three point keys. range: qtd to mean trailing 3. wtd at month grain.",
+            "range: trailing | leading | cumulative | ytd | mtd | qtd | wtd | full_month | full_quarter | full_year. wtd needs day grain.",
+        ],
+        [
+            "Map — graph / trend",
+            "Last N periods as an array for a chart.",
+            "trend_12m: { of: fact, op: trend, trailing: { months: 12 }, cuts: [G] }",
+            "Returning N point keys. Unrestricted trend on a high-cardinality cut (50k cell cap).",
+            "Trend defaults to default_cut if cuts: omitted. Axis lands in response trend_axes / trend_labels.",
+        ],
+        [
+            "Map — ratio of totals vs sum of ratios",
+            "Fill rate / rate KPIs: decide per-row then SUM vs SUM/SUM.",
+            "Two summed bases → two points → measures.fill_rate: { op: expr, expr: shipped_now / ordered_now }",
+            "base expr shipped/ordered + agg: sum when the spec wanted ratio of totals.",
+            "base expr identifiers are physical columns. measure expr identifiers are other measure keys. Do not mix expr: with columns:/op:/sql: on one base.",
+        ],
+        [
+            "Map — share / rank / SLA",
+            "Share of all groups on this cut; rank; hit-rate over a series.",
+            "op: percent_of_total (not fn: percent). op: rank. op: hook + hook: hit_rate + trailing: + value:.",
+            "fn: percent for cut share. Sorting in the host to fake rank. A window SUM for 'how often'.",
+            "Cut ops see the full cut. Hooks need the densified spine — declare trailing so required_span is wide enough.",
+        ],
+        [
+            "Map — snapshot / entity window / lookup",
+            "No period column; per-entity sequence; static code map.",
+            "Omit time:. over: on a pre-fold base (not calendar op: lag). lookup: { column, map, default }.",
+            "window/trend on a snapshot. Calendar op: lag for per-customer previous order. Giant CASE for a fee table.",
+            "Snapshot leftover reporting_month skips as no_time. identity_grain required to point at a helper with no agg:.",
+        ],
+        [
+            "Map — cannot express",
+            "Iterative allocation, custom solver, anything with no catalog row.",
+            "Stop. Report: cannot bind with current catalog. Name the missing op/fn/hook.",
+            "Inventing op: my_yoy. eval() in YAML. A new udfs/<kpi>.py. Editing core/.",
+            "New reusable names go in capabilities/ + registries/ (How to extend sheet). Do not fake them in this KPI file.",
+        ],
+        [
+            "Mandatory KPI keys",
+            "kpi_id, model, default_dimensions, ≥1 cut, ≥1 measure. time: (period) or omit entirely (snapshot). row_set span_union|anchor_only.",
+            "See gold file udfs/config/kpis/3004.yaml — copy structure, not Sotif names, unless this KPI is Sotif.",
+            "Missing default_dimensions. Empty measures:. cuts[].model:. parameters.selected_dimensions.",
+            "cuts.group_by is extras only. Header comments must name this kpi_id, not leftover 3004 text.",
+        ],
+        [
+            "Mandatory model keys (new extract only)",
+            "model_id, kind physical|sql, required_aliases, sources (physical) or sql:+output_schema (sql).",
+            "model_id matches filename and KPI model:. SQL uses $alias_scan / $alias_path, not hardcoded URIs.",
+            "KPI-level sql: as the extract. A second model whose stem folds onto an existing file.",
+            "Context path wins over default_paths. Prefer $alias_scan so Delta vs Parquet follows table_type.",
+        ],
+        [
+            "Completeness checklist",
+            "Emit YAML only when every box is true (same list as kpi-yaml-preparation-guide.md §0.7).",
+            "Filename=kpi_id=execution.kpi_id; model matches; every host measure_key declared; every of:/expr ident exists; identifiers legal; time xor snapshot rules; no URIs; no invented names.",
+            "Shipping 'best effort' YAML with guessed columns. Leaving one measure_key unimplemented.",
+            "If any box is false: numbered questions, no files. Closed-world names below (catalog sheets win if they disagree).",
+        ],
+        [
+            "Closed-world — measure ops",
+            "measures.op may only be one of these names (live from registries/ops.yaml).",
+            ops,
+            "Any other op: string, including aliases you invent.",
+            "See Measure ops sheet for YAML shape. Aliases listed there (if any) are the only extra spellings.",
+        ],
+        [
+            "Closed-world — column functions",
+            "base_measures columns:+op: / expr call names (live from registries/functions/column.yaml).",
+            col_fns,
+            "SQL functions that are not on this list.",
+            "See Column functions sheet.",
+        ],
+        [
+            "Closed-world — measure functions",
+            "op: fn / arithmetic fn: names (live from registries/functions/measure.yaml).",
+            meas_fns,
+            "fn: yoy as a new name — use growth_pct (alias yoy/mom if listed on that sheet).",
+            "See Measure functions sheet.",
+        ],
+        [
+            "Closed-world — hooks",
+            "op: hook + hook: names (live from registries/hooks.yaml). Always declare trailing/offset so the scan is wide enough.",
+            hooks,
+            "A hook name that is not listed. Using a window SUM as a substitute for hit_rate.",
+            "See Hooks sheet. Hooks that list requires_value need value:.",
+        ],
+    ]
 
 
 def component_rows() -> list[list]:
@@ -896,6 +1217,20 @@ def main() -> None:
         ["Component", "One-line meaning", "What it is", "YAML / where", "What it is not", "When to use"],
         component_rows(),
         [28, 42, 62, 48, 42, 48],
+    )
+    write_sheet(
+        wb,
+        "Naming conventions",
+        ["Topic", "Convention", "Do this", "Do not", "Engine rule"],
+        convention_rows(),
+        [28, 58, 52, 48, 58],
+    )
+    write_sheet(
+        wb,
+        "YAML preparation",
+        ["Topic", "What to provide / emit", "Do this", "Do not", "Engine / AI rule"],
+        preparation_rows(),
+        [28, 58, 62, 48, 58],
     )
     write_sheet(
         wb,

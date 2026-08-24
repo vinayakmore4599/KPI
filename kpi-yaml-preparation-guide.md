@@ -2,7 +2,9 @@
 
 How to write `udfs/config/kpis/<kpi_id>.yaml` (and the model it points at) so the host can request measures and the engine can compute them.
 
-This is the **write-it** document: what to declare, which function to pick, how columns and expressions work, and what the engine will not do.
+**Give this file to any AI together with the calculation spec** (intake block in §0.2, plus every `measure_key` formula). The AI must return **complete, bind-ready YAML files** — not snippets, not TODOs, not a skeleton with blanks. The same contract is on the **YAML preparation** sheet of `docs/KPI-Engine-Capabilities.xlsx`.
+
+This is the **write-it** document: what to declare, which function to pick, how columns and expressions work, and what the engine will not do. Sections after §0 are the human deep-dive.
 
 Related docs:
 
@@ -11,6 +13,252 @@ Related docs:
 - [kpi-yaml-reference.md](kpi-yaml-reference.md) — full key-by-key reference
 - [README.md](README.md) — folders and request path
 - [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions
+- `docs/KPI-Engine-Capabilities.xlsx` — catalogs, naming conventions, YAML preparation, worked examples
+
+---
+
+## 0. AI authoring contract
+
+Paste **this entire file** (or at least this §0 plus the catalogs) into the model, then paste the filled intake from §0.2.
+
+### 0.1 Role and output
+
+You are a KPI Engine YAML author for this repository. You emit configuration the engine can bind. You do not write Python, DuckDB measure SQL, or host JSON.
+
+**Every response that generates YAML must contain, in this order:**
+
+1. `udfs/config/kpis/<kpi_id>.yaml` — the **entire** file (header comments + every required block).
+2. `udfs/config/models/<model_id>.yaml` — the **entire** file **only if** the extract is new. If an existing model is reused, write one sentence: `Reuses existing model <model_id>. No new model file.` Do not invent a second model.
+3. **Assumptions** — only facts you had to infer (and how a reviewer can confirm them).
+4. **Gaps** — anything that would fail bind. If a required field is missing, **do not emit YAML**. Ask numbered questions instead.
+
+**Never:**
+
+- Emit a partial file, `...`, `# TODO`, or `CHANGE_ME` for a required key.
+- Invent `op:`, `fn:`, `hook:`, `agg:`, `range:`, or grain names that are not in this guide / the Excel catalogs.
+- Put ADLS / `abfss://` / `/mnt/` paths in KPI YAML. Paths stay on `context.datasets` or model `default_paths`.
+- Add `udfs/<kpi_id>.py` or a per-KPI `module_path`. Host entry is always `udfs.kpi_engine.main`.
+- Guess physical column names, filter codes, or `measure_key` spellings. Ask.
+
+**High confidence** means every row of the completeness checklist in §0.7 is true. If any row is false, stop and ask. Do not ship a “best effort” YAML.
+
+### 0.2 Intake the human must provide
+
+Copy this block, fill it, and attach it with this guide. Square brackets are placeholders.
+
+```text
+kpi_id:                  # becomes udfs/config/kpis/<kpi_id>.yaml  (exact match to execution.kpi_id)
+version: 1
+
+model_id:                # existing model to reuse, or new id (lowercase snake_case)
+reuse_existing_model:    # yes | no
+dataset_aliases:         # context.datasets alias or key, e.g. [sotif]
+kind:                    # physical | sql   (only if reuse_existing_model: no)
+
+time:                    # omit this whole block and set snapshot: true if no period column
+  column:                # date/timestamp on the extract (identifier)
+  grain:                 # day | week | month | quarter | year
+  filter_code:           # context filter that carries the selected period (exactly one value)
+  calendar: gregorian    # gregorian | fiscal
+  # format:              # only if the column is not ISO (yyyymm, yyyymmdd, …)
+snapshot: false
+
+dimensions:              # YAML allowlist; request only picks from this
+  - name:                # grain token the host sends (identifier)
+    from:                # physical column on the extract (identifier)
+default_dimensions:      # required; [] = worldwide default
+
+cuts:                    # at least one; G/R are examples, not hardcoded
+  - name: G
+    extras: []           # extra dims beyond request grain
+    exclude_from_grain: []
+    ignore_filters: []
+    also_emit: []
+default_cut: G
+
+measure_keys:            # exact keys the host will send in measures_required
+  - current_value
+  - …
+
+calculations:            # English or math for EVERY measure_key (and any helper facts)
+  current_value:         # e.g. SUM(amount) at the selected month
+  previous_year_value:   # e.g. same as current, offset 1 year
+  yoy_pct:              # e.g. (current − previous) / previous × 100
+  …
+
+physical_columns:        # columns DuckDB must retrieve (time, dims, facts)
+  - amount
+  - …
+
+filters_to_declare:      # optional; omit = IN at extract unless a cut ignore_filters the code
+  # region: { column: region, apply: extract }
+```
+
+If `kpi_id`, at least one `measure_key` with a calculation, `model_id` (or reuse), and either `time:` or `snapshot: true` are missing — ask. Do not generate.
+
+### 0.3 Two files, two jobs
+
+| File | Job | Never put here |
+|---|---|---|
+| `udfs/config/models/<model_id>.yaml` | What DuckDB reads (tables/joins or a SQL CTE) | KPI math, `agg:`, `op:`, measure `expr:` |
+| `udfs/config/kpis/<kpi_id>.yaml` | Time, dimensions, base facts, cuts, requestable measures | Dataset URIs, Python, free SQL, invented ops |
+
+`KPI model:` **must equal** model file `model_id:` after folding case / spaces / underscores. `sotif` ≠ `sotif_sql`. Filename: KPI stem equals `execution.kpi_id` **exactly** (no fold). Model filename: `udfs/config/models/<model_id>.yaml` (`.yaml` only). Identifiers: `^[A-Za-z_][A-Za-z0-9_]*$`. Reserved in formulas: `case when then else and or not is null in` (`end` is allowed).
+
+### 0.4 Two calculation layers (do not mix)
+
+| Layer | YAML | Identifiers are | Result |
+|---|---|---|---|
+| Per retrieved row, then fold | `base_measures` + `sql:` / `columns:`+`op:` / `expr:` + `agg:` | **Physical columns** (and earlier helpers) | e.g. SUM of per-row ratios |
+| After aggregation, on the period/cut row | `measures` + `op:` | **Other measure keys** (or `of:` a base) | e.g. ratio of two totals |
+
+```yaml
+# SUM of per-row ratios — usually WRONG for fill rate
+base_measures:
+  line_ratio: { expr: shipped / ordered, agg: sum }
+
+# Ratio of totals — usually RIGHT for fill rate
+base_measures:
+  shipped_qty: { sql: shipped, agg: sum }
+  ordered_qty: { sql: ordered, agg: sum }
+measures:
+  shipped_now: { of: shipped_qty, op: point }
+  ordered_now: { of: ordered_qty, op: point }
+  fill_rate: { op: expr, expr: shipped_now / ordered_now }
+```
+
+Do not mix `expr:` with `columns:` / `op:` / `sql:` on the same base measure.
+
+### 0.5 Map each calculation to YAML (stop at the first match)
+
+| The spec says… | Emit |
+|---|---|
+| Total / sum / count / min / max / distinct count of a column at the selected period | `base_measures.<fact>` with `sql:` + `agg:`, then `measures.<key> { of: <fact>, op: point, offset: { months: 0 } }` |
+| Same metric last year / last month / last quarter | `op: point` + `offset: { years: 1 }` / `{ months: 1 }` / `{ quarters: 1 }` |
+| YoY % / growth vs previous | Two points, then `op: fn` + `fn: growth_pct` + `inputs: [current, previous]` |
+| Trailing N months (or periods) as **one number** | `op: window` + `trailing: { months: N }` + `inclusive: true`. Do not add N point keys by hand |
+| YTD / QTD / MTD / WTD | `op: window` + `range: ytd` (etc.). `qtd` is not trailing 3. `wtd` needs `time.grain: day` |
+| Graph / sparkline / last 12 months as an **array** | `op: trend` + `trailing:`. Restrict `cuts: [default]` if the payload would explode |
+| Ratio / share **on the same row** (already aggregated) | `op: expr` or `op: fn` (`divide`, `percent`, `subtract`, …) |
+| This group as % of **all groups on this cut** | `op: percent_of_total` (not `fn: percent`) |
+| Rank groups | `op: rank` + `order: desc` or `asc` |
+| Hit SLA in N of last M periods / EWMA / CAGR / streak | `op: hook` + a name from the Hooks catalog + `trailing:` |
+| Flag healthy vs drop unhealthy groups | `op: predicate` (keep rows, 1/0) vs top-level `having:` (drop groups) |
+| Fixed target / goal | `op: constant` + `value:` |
+| Echo a dimension as a requestable column | `op: dimension` |
+| qty × price **per row**, then SUM | helper `expr:` then a later base with `agg: sum` |
+| Per-customer lag / running sum **on order rows** | `over:` on a **pre-fold** base (not calendar `op: lag`) |
+| Static code→fee map | `lookup:` on a base |
+| No period column (point-in-time snapshot) | **Omit** `time:`. Only `point` at offset 0 and `constant`. No window/trend/nonzero offset |
+| Math no row in this table covers | **Stop.** Name the missing catalog entry. Do not fake it with `expr:` or Python |
+
+**Aggregations (`agg:`):** `sum`, `avg`, `count`, `count_distinct`, `min`, `max`, `median`, `percentile` (needs `percentile: 0–100`), `first`, `last`.
+
+**Time grains:** `day`, `week`, `month`, `quarter`, `year` only. Default `month`. `week` is ISO Monday.
+
+**Window `range:`:** `trailing`, `leading`, `cumulative`, `ytd`, `mtd`, `qtd`, `wtd`, `full_month`, `full_quarter`, `full_year`.
+
+**Measure `op:` (closed list):** `point`, `window`, `trend`, `arithmetic`, `fn`, `expr`, `constant`, `dimension`, `predicate`, `hook`, `rank`, `percent_of_total`, `ntile`, `dense_rank`, `row_number`, `cumulative_share`, `running_total`, `contribution`, `lag`, `lead`, `index`, `vs_target`, `threshold`, `percent_rank`, `gap_to_leader`, `gap_to_avg`, `zscore`, `running_avg`, `top_n`, `diff`, `pct_change`.
+
+Use `op: fn` when operand names must not be swapped (`inputs:`). Use `op: arithmetic` for `left`/`right` or `of: [a, b]`. Use `op: expr` for nested `+ - * /` and CASE over **measure keys**.
+
+### 0.6 Required KPI YAML skeleton (fill every required key)
+
+Emit this shape. Drop commented blocks only when the intake says they do not apply. Do not drop `kpi_id`, `model`, `default_dimensions`, `cuts`, or `measures`.
+
+```yaml
+# KPI definition for kpi_id <kpi_id>.
+#
+# What this file provides
+#   time, dimensions, base_measures, cuts, measures for this KPI.
+#   context.measures_required[].measure_key must match keys under measures:.
+#
+# Where it is used
+#   binder.load_kpi(<kpi_id>). The engine does not hard-code this math.
+#
+# When to use
+#   Host execution.kpi_id <kpi_id>. Do not put ADLS paths or Python here.
+#
+kpi_id: <kpi_id>              # must equal filename stem and execution.kpi_id
+version: 1
+model: <model_id>             # MUST equal models/<model_id>.yaml model_id:
+
+time:                         # omit the whole block if snapshot: true
+  column: <time_column>
+  grain: month                # day | week | month | quarter | year
+  filter_code: <host_filter>
+  calendar: gregorian
+
+dimensions:
+  - { name: <dim>, from: <physical_column> }
+
+default_dimensions: [<dim>]   # required; [] is worldwide
+
+base_measures:
+  <fact>:
+    sql: <physical_column>    # or expr: / columns:+op: / lookup: / over:
+    agg: sum
+
+cuts:
+  - name: G
+    group_by: []              # extras only — not names already in default_dimensions
+    exclude_from_grain: []
+    ignore_filters: []
+    also_emit: []
+
+default_cut: G
+row_set: span_union           # span_union | anchor_only
+
+measures:
+  <measure_key>:
+    of: <fact>
+    op: point
+    offset: { months: 0 }
+```
+
+**New model file** (only when `reuse_existing_model: no`):
+
+```yaml
+# Physical DuckDB model for <model_id>.
+model_id: <model_id>
+kind: physical                # or sql
+required_aliases: [<alias>]
+sources:
+  <alias>:
+    alias: <alias>
+joins: []
+# kind: sql also needs sql: and output_schema: (walked columns).
+# Prefer $alias_scan so Delta vs Parquet follows context.table_type.
+```
+
+Gold pattern in-repo: `udfs/config/kpis/3004.yaml` + `udfs/config/models/sotif.yaml`. Copy structure, not Sotif names, unless this KPI is Sotif.
+
+### 0.7 Completeness checklist (all must be true before you emit)
+
+- [ ] Filename stem = `kpi_id:` = `execution.kpi_id` (exact). Extension `.yaml`.
+- [ ] `model:` equals an existing or newly emitted `model_id:` (fold = case/space/underscore only).
+- [ ] `default_dimensions` is present (`[]` legal). At least one `cuts[]`. `default_cut` is a declared cut name.
+- [ ] `cuts[].group_by` lists extras only (no overlap with `default_dimensions`).
+- [ ] Every host `measure_key` exists under `measures:`. Helpers the UI does not request live under `base_measures:` only.
+- [ ] Every `of:`, `left`/`right`, `inputs:`, and `expr:` identifier is a declared base or measure (or a physical column on a base `expr:`).
+- [ ] Every identifier matches `^[A-Za-z_][A-Za-z0-9_]*$`. No hyphens, dots, or spaces in YAML names.
+- [ ] If `time:` is present: `column`, `grain`, and `filter_code` are set. Time filter is the **anchor** (one value), never `WHERE month IN (one month)`.
+- [ ] If `time:` is omitted: no `window` / `trend` / nonzero `offset` / period hooks.
+- [ ] No dataset URI in the KPI file. No invented `op`/`fn`/`hook`. No `parameters.selected_dimensions`. No `execution.time_grain`.
+- [ ] Header comments updated for **this** kpi_id (not leftover 3004/Sotif text).
+- [ ] `row_set` is `span_union` or `anchor_only`.
+
+If a calculation needs a new catalog name (new hook, new op, new function): say **cannot bind with current catalog**, name the gap, and do not emit fake YAML.
+
+### 0.8 Closed-world names
+
+If the attached Excel / `CAPABILITIES.md` disagrees with a list below, **the catalog wins**.
+
+- **Measure functions (`op: fn` / `arithmetic`):** `growth_pct`, `divide`, `percent`, `sum`, `subtract`, `multiply`, `min`, `max`, `avg`, `abs`, `clamp`, `attainment`, `coalesce`, `if_null`, `nullif`, `null_if_zero`, `zero_if_null`, `is_null`, `is_not_null`, `if_else`, `sign_label`, `round`, `floor`, `ceil`, `power`, `log`, `log10`, `sqrt`, `date_diff`, `date_add`, `epoch_day`.
+- **Column functions (`base_measures` `columns:`+`op:`):** `value`, `abs`, `sum`, `subtract`, `multiply`, `divide`, `percent_of`, `min`, `max`, `avg`, `coalesce`, `if_null`, `nullif`, `null_if_zero`, `zero_if_null`, `is_null`, `is_not_null`, `if_else`, `round`, `floor`, `ceil`, `power`, `log`, `log10`, `sqrt`, `date_diff`, `date_add`, `epoch_day`.
+- **Hooks (`op: hook`):** `seasonal_index`, `ewma`, `period_max`, `period_min`, `period_median`, `period_avg`, `period_sum`, `hit_rate`, `streak`, `period_stdev`, `period_var`, `period_cv`, `period_range`, `period_count`, `miss_rate`, `miss_streak`, `longest_streak`, `cagr`, `slope`.
+
+Host names fold onto YAML keys (case, spaces, underscores; measure keys also compact-fold). Do not create two YAML keys that collide after fold.
 
 ---
 

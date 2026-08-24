@@ -6,7 +6,7 @@ You onboard a KPI by adding YAML. You should not need to change engine code for 
 
 **Onboarding playbook (steps + which files to change):** [kpi-onboarding-guide.md](kpi-onboarding-guide.md)
 
-**YAML preparation (supported functions, columns vs expressions, when to use what, limits):** [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md)
+**YAML preparation (AI brief + human deep-dive):** [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — attach §0 plus the calculation intake to any AI; it must emit a complete KPI YAML. Same contract on the **YAML preparation** sheet of `docs/KPI-Engine-Capabilities.xlsx`.
 
 **YAML reference (every op, aggregation and key):** [kpi-yaml-reference.md](kpi-yaml-reference.md)
 

@@ -5,7 +5,7 @@ This is the playbook for adding a KPI to the engine, and for deciding **which fi
 Related docs:
 
 - [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) — **live list of every op, function, and hook**
-- [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — **write a KPI YAML: functions, columns vs expressions, when to use what, limits**
+- [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — **write a KPI YAML** (attach §0 + calculations to an AI for a complete file; functions, columns vs expressions, when to use what, limits)
 - [kpi-yaml-reference.md](kpi-yaml-reference.md) — **every YAML key, op and aggregation the engine supports**
 - [README.md](README.md) — folders, install, YAML meaning
 - [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions

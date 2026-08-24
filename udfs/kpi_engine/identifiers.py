@@ -28,7 +28,7 @@ from kpi_engine.exceptions import BindError
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NUMBER = re.compile(r"^(?:\d+\.\d*|\.\d+|\d+)$")
 _KEYWORDS = frozenset(
-    {"case", "when", "then", "else", "end", "and", "or", "not", "is", "null"}
+    {"case", "when", "then", "else", "end", "and", "or", "not", "is", "null", "in"}
 )
 _COMPARE_OPS = frozenset({"=", "<>", "!=", "<", ">", "<=", ">="})
 
@@ -133,6 +133,21 @@ class Group:
     inner: "Expr"
 
 
+@dataclass(frozen=True)
+class ListLit:
+    """Parenthesized list literal: ``('G', 'Y')``. Only legal as the right of ``in``."""
+
+    items: tuple["Expr", ...]
+
+
+@dataclass(frozen=True)
+class In:
+    """``x in y`` — y is a list parameter or a list literal."""
+
+    left: "Expr"
+    right: "Expr"
+
+
 Expr = Union[
     Ident,
     Number,
@@ -147,6 +162,8 @@ Expr = Union[
     Call,
     Case,
     Group,
+    ListLit,
+    In,
 ]
 
 
@@ -198,6 +215,14 @@ def expression_columns(node: Expr) -> tuple[str, ...]:
             return
         if isinstance(item, (Number, String, Null)):
             return
+        if isinstance(item, ListLit):
+            for part in item.items:
+                walk(part)
+            return
+        if isinstance(item, In):
+            walk(item.left)
+            walk(item.right)
+            return
         if isinstance(item, (Unary, Not, Group)):
             walk(item.operand if not isinstance(item, Group) else item.inner)
             return
@@ -235,6 +260,14 @@ def expr_call_names(node: Expr) -> tuple[str, ...]:
             return
         if isinstance(item, (Number, String, Null, Ident)):
             return
+        if isinstance(item, ListLit):
+            for part in item.items:
+                walk(part)
+            return
+        if isinstance(item, In):
+            walk(item.left)
+            walk(item.right)
+            return
         if isinstance(item, (Unary, Not, IsNull)):
             walk(item.operand)
             return
@@ -255,6 +288,90 @@ def expr_call_names(node: Expr) -> tuple[str, ...]:
     return tuple(names)
 
 
+def assert_expr_param_usage(
+    node: Expr, types: Mapping[str, str], *, what: str
+) -> None:
+    """List params only as ``in`` rhs; dict params never in expr."""
+
+    def walk(item: Expr, *, in_rhs: bool = False) -> None:
+        if isinstance(item, Ident):
+            kind = types.get(item.name)
+            if kind == "dict":
+                raise BindError(
+                    f"{what} names dict parameter {item.name!r}; "
+                    "dict params are not usable in expr."
+                )
+            if kind == "list" and not in_rhs:
+                raise BindError(
+                    f"{what} list parameter {item.name!r} may only appear "
+                    "on the right of `in`."
+                )
+            return
+        if isinstance(item, In):
+            walk(item.left)
+            _assert_in_rhs(item.right, types, what)
+            return
+        if isinstance(item, ListLit):
+            raise BindError(
+                f"{what} list literal is only allowed on the right of `in`."
+            )
+        if isinstance(item, (Number, String, Null)):
+            return
+        if isinstance(item, (Unary, Not, IsNull)):
+            walk(item.operand)
+            return
+        if isinstance(item, Group):
+            walk(item.inner, in_rhs=in_rhs)
+            return
+        if isinstance(item, Call):
+            for arg in item.args:
+                walk(arg)
+            return
+        if isinstance(item, Case):
+            for cond, value in item.whens:
+                walk(cond)
+                walk(value)
+            if item.else_ is not None:
+                walk(item.else_)
+            return
+        walk(item.left)
+        walk(item.right)
+
+    walk(node)
+
+
+def _assert_in_rhs(node: Expr, types: Mapping[str, str], what: str) -> None:
+    inner = node
+    while isinstance(inner, Group):
+        inner = inner.inner
+    if isinstance(inner, Ident):
+        kind = types.get(inner.name)
+        if kind != "list":
+            raise BindError(
+                f"{what} `in` right side must be a list parameter or a list "
+                f"literal (got {inner.name!r})."
+            )
+        return
+    if isinstance(inner, ListLit):
+        for el in inner.items:
+            cur = el
+            while isinstance(cur, Group):
+                cur = cur.inner
+            if isinstance(cur, Ident):
+                raise BindError(
+                    f"{what} list literal cannot name {cur.name!r}; "
+                    "use string/number literals or a list parameter."
+                )
+            if not isinstance(cur, (String, Number, Null)):
+                raise BindError(
+                    f"{what} list literal items must be scalars."
+                )
+        return
+    raise BindError(
+        f"{what} `in` right side must be a list parameter or ('a', 'b')."
+    )
+
+
 def assert_expr_calls(node: Expr, allowed: Mapping[str, object], *, what: str) -> None:
     """Bind-error when a call is not in the layer's function registry."""
     keys = {str(name).lower(): str(name) for name in allowed}
@@ -273,7 +390,7 @@ def compile_sql_expr(raw: str, *, prefix: str = "", what: str = "measure sql") -
 def _illegal(raw: str, what: str, extra: str = "") -> BindError:
     """Shared illegal-formula error."""
     hint = extra or (
-        "Only column names, numbers, + - * /, CASE, comparisons, "
+        "Only column names, numbers, + - * /, CASE, comparisons, `in`, "
         "IS NULL, AND/OR/NOT, and allowlisted function calls are allowed."
     )
     return BindError(f"Illegal {what}: {raw!r}. {hint}")
@@ -400,11 +517,43 @@ class _Parser:
                 raise _illegal(self.raw, self.what, "Expected NULL after IS.")
             self._next()
             return IsNull(node, invert)
+        if self._is_kw("in"):
+            self._next()
+            return In(node, self._parse_in_rhs())
         op = self._peek()
         if op in _COMPARE_OPS:
             self._next()
             return Compare(op, node, self.parse_add())
         return node
+
+    def _parse_in_rhs(self) -> Expr:
+        """List parameter Ident, or a parenthesized list literal."""
+        if self._peek() != "(":
+            return self.parse_add()
+        self._next()
+        if self._peek() == ")":
+            self._next()
+            return ListLit(())
+        first = self.parse_or()
+        if self._peek() != ",":
+            if self._peek() != ")":
+                raise BindError(
+                    f"Illegal {self.what}: {self.raw!r}. Unbalanced parentheses."
+                )
+            self._next()
+            return Group(first)
+        items: list[Expr] = [first]
+        while self._peek() == ",":
+            self._next()
+            if self._peek() == ")":
+                break
+            items.append(self.parse_or())
+        if self._peek() != ")":
+            raise BindError(
+                f"Illegal {self.what}: {self.raw!r}. Unbalanced parentheses."
+            )
+        self._next()
+        return ListLit(tuple(items))
 
     def parse_add(self) -> Expr:
         """Addition and subtraction."""
@@ -542,6 +691,11 @@ def _render_sql(node: Expr, prefix: str) -> str:
         return f"{_render_sql(node.operand, prefix)} {mid}"
     if isinstance(node, Group):
         return f"( {_render_sql(node.inner, prefix)} )"
+    if isinstance(node, ListLit):
+        inner = ", ".join(_render_sql(item, prefix) for item in node.items)
+        return f"({inner})"
+    if isinstance(node, In):
+        return f"{_render_sql(node.left, prefix)} IN {_render_sql(node.right, prefix)}"
     if isinstance(node, Call):
         inner = ", ".join(_render_sql(arg, prefix) for arg in node.args)
         return f"{node.name}({inner})"

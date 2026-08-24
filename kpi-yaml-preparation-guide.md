@@ -243,16 +243,28 @@ Rules:
 
 ### Request parameters
 
-`context.parameters` is a sibling of `filters`. It is not `execution.*`. Declare scalars on the KPI; 3004 omits the block and must receive an omitted or empty object.
+`context.parameters` is a sibling of `filters`. It is not `execution.*`. 3004 omits the block and must receive an omitted or empty object.
+
+There are **four** overlays (not one grammar). Do not add `select:`, `use:`, or `{ from: param }` (the key `from` stays `trailing.from` / `dimension.from`).
+
+1. Reserved `time_grain` — pick from `time.grains`
+2. Reserved `output_cut` — emit that cut only, no `also_emit`
+3. `when: { param, cases, else }` on `model` / `measures.*` / `base_measures.*`
+4. `from_param:` on the allowlist (model id string; trailing/offset ints; constant `value` int|float)
 
 ```yaml
 parameters:
   time_grain: { type: string }          # reserved grain pick
   output_cut: { type: string, default: G, allowed: [G, R] }
   Level: { type: string, allowed: [G, Y, R], map: { Green: G } }
+  lookback: { type: int, default: 3 }
+  codes: { type: list, item: string, default: [G, Y] }
+  flags: { type: dict, item: string }   # echo-only; not in expr / fn extras
 ```
 
-Reserved names: `time_grain` (feeds the grain pick) and `output_cut` (emit that cut only, no `also_emit`). Other names are injected into measure `expr` / fn kwargs. Response `parameters` is still the time plan; bound values are `request_parameters`.
+`when:` always needs `else:`. Bind validates every `allowed` case when all `when.param` names are the same. Datasets match **aliases**, not model id. `load_kpi(id, parameters=)` binds the request before resolve — a later bind does not re-pick `when:` bodies. List params are only the right of `in` (`Level in codes` or `Level in ('G', 'Y')`). Expr uses `=` not `==`.
+
+Scalar names still inject into measure `expr` / fn kwargs. Response `parameters` is still the time plan; bound values are `request_parameters`.
 
 ---
 

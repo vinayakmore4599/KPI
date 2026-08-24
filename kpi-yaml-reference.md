@@ -29,7 +29,7 @@ time:
   fiscal_start_month: 4      # only read when calendar: fiscal
 
 parameters:                  # optional; omit when the KPI has none
-  time_grain: { type: string }   # reserved: pick from time.grains
+  time_grain: { type: string }   # reserved overlay: pick from time.grains
   output_cut: { type: string, default: G, allowed: [G, R] }
   Level: { type: string, allowed: [G, Y, R], map: { Green: G } }
 
@@ -168,23 +168,63 @@ dimensions:
 
 ### Request parameters (`context.parameters`)
 
-Calculation controls are **not** filters and **not** `execution.*`. Send them as a top-level `parameters` object, sibling of `filters`. Declare them on the KPI:
+Calculation controls are **not** filters and **not** `execution.*`. Send them as a top-level `parameters` object, sibling of `filters`. Declare them on the KPI.
+
+There are **four** overlays (not one grammar). Do not add a fifth (`select:`, `use:`, `{ from: param }`).
+
+1. Reserved `parameters.time_grain` — pick from `time.grains` (feeds `apply_request_time`).
+2. Reserved `parameters.output_cut` — emit that cut only; drop `also_emit`.
+3. `when:` on `model`, `measures.<key>`, or `base_measures.<name>` only.
+4. `from_param:` on an allowlist (see below). Never the YAML key `from` (that stays `trailing.from: data_points` / `dimension.from`).
 
 ```yaml
 parameters:
-  time_grain:                 # reserved: apply_request_time pick
-    type: string              # string | int | float | bool
+  time_grain:                 # reserved overlay 1
+    type: string              # string | int | float | bool | list | dict
     # default omitted → time.grain
     # allowed omitted → time.grains
-  output_cut:                 # reserved: emit this cut only (no also_emit)
+  output_cut:                 # reserved overlay 2
     type: string
     default: G
     allowed: [G, Y, R]
-  Level:                      # ordinary: injected into measure expr / fn kwargs
+  Level:                      # overlay 3 (when:) and/or scalar inject into expr
     type: string
     allowed: [G, Y, R]
     map: { Green: G, Yellow: Y, Red: R }
+  lookback: { type: int, default: 3 }          # overlay 4 (from_param:)
+  codes: { type: list, item: string, default: [G, Y] }
+  flags: { type: dict, item: string }          # echoed on request_parameters only
 ```
+
+`when:` shape (metadata is not mixed with case labels):
+
+```yaml
+measures:
+  sotif_value:
+    when:
+      param: Level
+      cases:
+        G: { op: expr, expr: g_amt }
+        Y: { op: expr, expr: y_amt }
+      else: { op: expr, expr: r_amt }   # always required
+```
+
+Same shape on `base_measures.*` (each case is a base body) and `model` (each case / else is a model-id **string**). Match is `str(bound)` vs `str(case_key)` after `map:` / `allowed`. `else:` is always required. Case keys must be in `allowed` when `allowed:` is set. `param` / `cases` / `else` are not valid case labels.
+
+`from_param:` is `{ from_param: <declared param> }` only, after `when:` pick:
+
+- `model` — param type `string` (model id). Context datasets still match **aliases**, not model id.
+- `measures.*.trailing.{months,weeks,days,quarters,years,periods}` — `int`
+- `measures.*.offset.{months,weeks,days,quarters,years}` — `int`
+- `measures.*.value` only when `op`/`kind` is `constant` — `int` or `float`. Not hook `value:`.
+
+A slot is `when:` **or** `from_param:` **or** a concrete value, not two. Nested `when:` is an error. `from_param:` inside a picked case body is allowed.
+
+Complete-pack validation: when every `when.param` in the file is the same name, the binder materializes and parses **every** `allowed` value (and `else`), including column checks against the chosen model's `output_schema`. Two different `when.param` names are checked per slot plus the live request combination (no cartesian product). Top-level templated `model` plus any `base_measures.*.model` is a bind error (per-base model is not moved by the KPI default switch).
+
+`type: list` needs `item: string|int|float|bool`. `allowed` / `map` apply per element. Empty list is legal. List params may appear in expr **only** as the right of `in` (`Level in codes` or `Level in ('G', 'Y')`). `type: dict` is string keys / scalar values, echoed on `request_parameters` only — not in expr, not merged as fn extras. Expr still uses `=` (not `==`).
+
+`load_kpi(id, parameters=)` binds the request (or `{}`) **before** resolve. There is no later bind that re-picks `when:` bodies. Tests that need `Level=Y` must pass `parameters={"Level": "Y"}` (or use `compute` / `validate`).
 
 Rules:
 
@@ -192,9 +232,8 @@ Rules:
 - Filters stay source columns. `Interval` / `Level` left in `filters` fail as unmapped columns.
 - A KPI with no `parameters:` block rejects a non-empty `context.parameters` (3004). Omit the object or send `{}`.
 - Unknown keys, missing keys (no default), and values not in `allowed` are bind errors.
-- Parameter names must not equal measure keys.
+- Parameter names must not equal measure keys (`when:` may not add or remove measure **keys**, only bodies).
 - Response `parameters` remains the time plan (`anchor`, `time_grain`, `span_start`, `lookback_months`). Bound request values are `request_parameters`.
-- v1 does not switch model YAML files from parameters.
 
 ```json
 {

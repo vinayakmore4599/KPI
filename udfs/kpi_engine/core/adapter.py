@@ -13,7 +13,8 @@ Capabilities
     - Rejects input_text=heir (hierarchy must be expanded upstream).
     - Ignores business_date (never used in calculations).
     - Dataset path may be omitted; binder fills model default_path when present.
-    - Reads top-level context.parameters as JSON scalars (not filters).
+    - Reads top-level context.parameters as JSON scalars, lists of scalars,
+      or flat dicts of scalars (not filters).
     - Rejects leftover execution.time_grain (grain belongs on parameters).
     - Does not claim the month filter; time_planner does that later.
 
@@ -117,7 +118,7 @@ def _reject_execution_time_grain(execution: dict[str, Any]) -> None:
 
 
 def _parameters(raw: Any) -> dict[str, Any]:
-    """Read context.parameters as JSON scalars. Missing or {} is empty."""
+    """Read context.parameters as JSON scalars, lists of scalars, or flat dicts."""
     if raw is None:
         return {}
     if not isinstance(raw, dict):
@@ -125,14 +126,35 @@ def _parameters(raw: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in raw.items():
         name = str(key)
-        if isinstance(value, bool) or isinstance(value, (str, int, float)):
+        if _is_param_scalar(value):
+            out[name] = value
+            continue
+        if isinstance(value, list):
+            if not all(_is_param_scalar(item) or item is None for item in value):
+                raise ContextError(
+                    f"parameters.{name} list items must be string, int, float, or bool."
+                )
+            out[name] = value
+            continue
+        if isinstance(value, dict):
+            if not all(
+                isinstance(k, str) and _is_param_scalar(v) for k, v in value.items()
+            ):
+                raise ContextError(
+                    f"parameters.{name} must be a flat object of scalar values."
+                )
             out[name] = value
             continue
         kind = "null" if value is None else type(value).__name__
         raise ContextError(
-            f"parameters.{name} must be a string, int, float, or bool (got {kind})."
+            f"parameters.{name} must be a string, int, float, bool, list, or object "
+            f"(got {kind})."
         )
     return out
+
+
+def _is_param_scalar(value: Any) -> bool:
+    return isinstance(value, bool) or isinstance(value, (str, int, float))
 
 
 def _measure_keys(raw: Any) -> tuple[str, ...]:

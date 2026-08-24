@@ -29,7 +29,9 @@ from kpi_engine.identifiers import (
     Expr,
     Group,
     Ident,
+    In,
     IsNull,
+    ListLit,
     Not,
     Null,
     Number,
@@ -247,6 +249,10 @@ def _has_string(node: Expr) -> bool:
         return True
     if isinstance(node, (Ident, Number, Null)):
         return False
+    if isinstance(node, ListLit):
+        return any(_has_string(item) for item in node.items)
+    if isinstance(node, In):
+        return _has_string(node.left) or _has_string(node.right)
     if isinstance(node, (Unary, Not, IsNull)):
         return _has_string(node.operand)
     if isinstance(node, Group):
@@ -275,7 +281,12 @@ def eval_expr_series(node: Expr, frame: pd.DataFrame, *, raw: bool = False) -> p
         env = _EXPR_ENV.get()
         actual = match_name(node.name, env) if env else None
         if actual is not None:
-            return pd.Series(env[actual], index=frame.index)
+            value = env[actual]
+            if isinstance(value, (list, dict)):
+                raise CatalogError(
+                    f"Parameter {node.name!r} is not a scalar in this expr."
+                )
+            return pd.Series(value, index=frame.index)
         return _ident_series(node, frame, raw=raw)
     if isinstance(node, Number):
         return pd.Series(node.value, index=frame.index, dtype="float64")
@@ -299,6 +310,13 @@ def eval_expr_series(node: Expr, frame: pd.DataFrame, *, raw: bool = False) -> p
         left = eval_expr_series(node.left, frame, raw=use_raw)
         right = eval_expr_series(node.right, frame, raw=use_raw)
         return _compare_series(node.op, left, right)
+    if isinstance(node, In):
+        left = eval_expr_series(node.left, frame, raw=True)
+        members = _in_members(node.right, dict(_EXPR_ENV.get() or {}))
+        if not members:
+            return pd.Series(0.0, index=frame.index)
+        flag = left.isin(members)
+        return flag.astype("float64").mask(left.isna())
     if isinstance(node, BoolOp):
         left = eval_expr_series(node.left, frame)
         right = eval_expr_series(node.right, frame)
@@ -327,6 +345,10 @@ def eval_expr_scalar(node: Expr, values: dict[str, Any]) -> float | None:
         if actual is None:
             raise CatalogError(f"Expression names measure {node.name!r}, which was not computed.")
         value = values[actual]
+        if isinstance(value, (list, dict)):
+            raise CatalogError(
+                f"Parameter {node.name!r} is not a scalar in this expr."
+            )
         return None if value is None or (isinstance(value, float) and pd.isna(value)) else float(value)
     if isinstance(node, Number):
         return float(node.value)
@@ -362,6 +384,12 @@ def eval_expr_scalar(node: Expr, values: dict[str, Any]) -> float | None:
         if left is None or right is None:
             return None
         return _compare_scalar(node.op, left, right)
+    if isinstance(node, In):
+        left = _scalar_raw(node.left, values)
+        members = _in_members(node.right, values)
+        if left is None:
+            return None
+        return 1.0 if left in members else 0.0
     if isinstance(node, BoolOp):
         left = eval_expr_scalar(node.left, values)
         right = eval_expr_scalar(node.right, values)
@@ -485,7 +513,43 @@ def _scalar_raw(node: Expr, values: dict[str, Any]) -> Any:
         return node.value
     if isinstance(node, Group):
         return _scalar_raw(node.inner, values)
+    if isinstance(node, ListLit):
+        return [_list_item_value(item, values) for item in node.items]
     return eval_expr_scalar(node, values)
+
+
+def _list_item_value(node: Expr, values: dict[str, Any]) -> Any:
+    inner = node
+    while isinstance(inner, Group):
+        inner = inner.inner
+    if isinstance(inner, String):
+        return inner.value
+    if isinstance(inner, Number):
+        return inner.value if inner.text.find(".") != -1 else int(inner.value) if inner.value == int(inner.value) else inner.value
+    if isinstance(inner, Null):
+        return None
+    return _scalar_raw(inner, values)
+
+
+def _in_members(node: Expr, values: dict[str, Any]) -> list[Any]:
+    inner = node
+    while isinstance(inner, Group):
+        inner = inner.inner
+    if isinstance(inner, ListLit):
+        return [_list_item_value(item, values) for item in inner.items]
+    if isinstance(inner, Ident):
+        actual = match_name(inner.name, values) or (inner.name if inner.name in values else None)
+        if actual is None:
+            raise CatalogError(
+                f"Expression names list parameter {inner.name!r}, which was not bound."
+            )
+        value = values[actual]
+        if not isinstance(value, list):
+            raise CatalogError(
+                f"`in` right side {inner.name!r} must be a list (got {type(value).__name__})."
+            )
+        return list(value)
+    raise CatalogError("`in` right side must be a list parameter or a list literal.")
 
 
 def _compare_scalar(op: str, left: float, right: float) -> float:

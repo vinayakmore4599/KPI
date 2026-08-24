@@ -17,7 +17,12 @@ from kpi_engine.contracts import (
 )
 from kpi_engine.core.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
 from kpi_engine.exceptions import BindError, CatalogError
-from kpi_engine.identifiers import assert_expr_calls, expression_columns, parse_expression
+from kpi_engine.identifiers import (
+    assert_expr_calls,
+    assert_expr_param_usage,
+    expression_columns,
+    parse_expression,
+)
 from kpi_engine.runlog import log_measure_calc
 
 
@@ -279,6 +284,9 @@ class Expr(OpPlugin):
         from kpi_engine.core.fn_apply import MEASURE_FNS
 
         assert_expr_calls(node, MEASURE_FNS, what=f"measures.{key}.expr")
+        assert_expr_param_usage(
+            node, common.parameter_types, what=f"measures.{key}.expr"
+        )
         names = expression_columns(node)
         param_names = common.parameter_names
         measure_names = tuple(n for n in names if n not in param_names)
@@ -496,12 +504,16 @@ def _compose(ctx: EvalCtx, *, kind: str) -> Any:
         raise CatalogError(f"{spec.key} references measures that do not exist: {missing}.")
     values = [ctx.evaluate(ctx.catalog[n]) for n in names]
     combo = _combo(ctx)
-    bound = dict(ctx.kpi.bound_parameters)
+    bound = {
+        key: value
+        for key, value in dict(ctx.kpi.bound_parameters).items()
+        if not isinstance(value, (list, dict))
+    }
     if kind == "expr":
         keys = list(spec.input_params) if spec.input_params else names
         result = eval_expr_scalar(
             parse_expression(spec.expr or "", what=f"measures.{spec.key}.expr"),
-            {**bound, **dict(zip(keys, values))},
+            {**dict(ctx.kpi.bound_parameters), **dict(zip(keys, values))},
         )
         log_measure_calc(
             cut=ctx.cut,

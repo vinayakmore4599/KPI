@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 import yaml
@@ -55,6 +56,7 @@ from kpi_engine.contracts import (
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import (
     assert_expr_calls,
+    assert_expr_param_usage,
     compile_sql_expr,
     expression_columns,
     is_simple_ident,
@@ -88,14 +90,107 @@ def default_config_dir() -> Path:
 
 
 @traced
-def load_kpi(kpi_id: int | str, config_dir: Path | None = None) -> KpiSpec:
-    """Load and parse config/kpis/<kpi_id>.yaml."""
+def load_kpi(
+    kpi_id: int | str,
+    config_dir: Path | None = None,
+    parameters: dict[str, Any] | None = None,
+    *,
+    _validate_cases: bool = True,
+) -> KpiSpec:
+    """Bind request parameters, resolve when:/from_param:, then parse.
+
+    ``parameters=None`` means ``{}`` (defaults fill). There is no template path
+    vs 3004 path — 3004 is identity resolve.
+    """
+    from dataclasses import replace as _replace
+
+    from kpi_engine.core.parameters import apply_bound_to_spec, bind_incoming
+    from kpi_engine.core.resolve import resolve_kpi, validate_when_cases, yaml_has_overlays
+
     root = config_dir or default_config_dir()
     path = root / "kpis" / f"{kpi_id}.yaml"
     if not path.exists():
         raise BindError(f"No KPI YAML for kpi_id={kpi_id} at {path}.")
     raw = _read_yaml(path)
-    return _parse_kpi(raw, expected_id=kpi_id)
+    schema = _parse_parameters(raw.get("parameters"))
+    time = _parse_time(raw.get("time"))
+    bound = bind_incoming(
+        parameters if parameters is not None else {},
+        schema,
+        time=time,
+        cut_names=_cut_names(raw),
+        measure_keys=tuple(str(k) for k in (raw.get("measures") or {})),
+        kpi_id=kpi_id,
+    )
+    materialized, model_templated = resolve_kpi(raw, bound)
+    kpi = _parse_kpi(materialized, expected_id=kpi_id)
+    bound = _replace(bound, model_templated=model_templated)
+    kpi = apply_bound_to_spec(kpi, bound)
+    if model_templated or yaml_has_overlays(raw):
+        models = _load_kpi_models(kpi, root)
+        assert_pack_columns(kpi, models)
+    if _validate_cases:
+        validate_when_cases(
+            raw,
+            bound,
+            parse_kpi=lambda data: _parse_kpi(data, expected_id=kpi_id),
+            load_model=lambda mid: load_model(mid, root),
+            check_columns=assert_pack_columns,
+        )
+    return kpi
+
+
+def _cut_names(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    names: list[str] = []
+    for cut in raw.get("cuts") or []:
+        if isinstance(cut, dict) and cut.get("name"):
+            names.append(str(cut["name"]))
+    return tuple(names)
+
+
+def _load_kpi_models(kpi: KpiSpec, root: Path) -> dict[str, ModelSpec]:
+    models: dict[str, ModelSpec] = {}
+    ids: list[str] = []
+    seen: set[str] = set()
+    for measure in kpi.base_measures:
+        mid = measure.model_id or kpi.model_id
+        key = norm_name(mid)
+        if key in seen:
+            continue
+        seen.add(key)
+        ids.append(mid)
+    if not ids and kpi.model_id:
+        ids.append(kpi.model_id)
+    for mid in ids:
+        try:
+            model = load_model(mid, root)
+        except BindError:
+            continue
+        models[norm_name(mid)] = model
+        models[mid] = model
+    return models
+
+
+def assert_pack_columns(kpi: KpiSpec, models: Mapping[str, ModelSpec]) -> None:
+    """Bind-error when a remaining base/expr column is missing from the chosen model."""
+    for base in kpi.base_measures:
+        mid = base.model_id or kpi.model_id
+        model = models.get(norm_name(mid)) or models.get(mid)
+        if model is None:
+            continue
+        schema = set(model.output_schema)
+        if not schema:
+            continue
+        needed: list[str] = list(base.columns)
+        if not needed and is_simple_ident(base.sql):
+            needed = [base.sql]
+        for col in needed:
+            if match_name(col, schema) is None:
+                raise BindError(
+                    f"Model {model.model_id!r} is missing column {col!r} needed by "
+                    f"base_measures.{base.name}. when: that measure or pick a model "
+                    f"that has it."
+                )
 
 
 @traced
@@ -256,13 +351,14 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     time = _parse_time(raw.get("time"))
     parameter_schema = _parse_parameters(raw.get("parameters"))
     param_names = frozenset(spec.name for spec in parameter_schema)
+    param_types = {spec.name: spec.type_name for spec in parameter_schema}
 
     dim_specs = tuple(_parse_dimension(d) for d in raw.get("dimensions") or [])
     dimensions = tuple(d.name for d in dim_specs)
 
     bases: list[BaseMeasure] = []
     for name, spec in (raw.get("base_measures") or {}).items():
-        bases.append(_parse_base_measure(name, spec, param_names))
+        bases.append(_parse_base_measure(name, spec, param_names, param_types))
 
     cuts = tuple(_parse_cut(c) for c in raw.get("cuts") or [])
     if not cuts:
@@ -272,7 +368,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         raise BindError(f"default_cut {default_cut!r} is not a declared cut.")
 
     measures = tuple(
-        _parse_measure(k, v, param_names) for k, v in (raw.get("measures") or {}).items()
+        _parse_measure(k, v, param_names, param_types) for k, v in (raw.get("measures") or {}).items()
     )
     if not measures:
         raise BindError("measures cannot be empty.")
@@ -369,7 +465,10 @@ def _parse_dimension(raw: Any) -> DimensionSpec:
 
 
 def _parse_base_measure(
-    name: str, spec: Any, param_names: frozenset[str] = frozenset()
+    name: str,
+    spec: Any,
+    param_names: frozenset[str] = frozenset(),
+    param_types: Mapping[str, str] | None = None,
 ) -> BaseMeasure:
     """Parse sql:/columns:/op:/expr:/agg:/where for one base fact."""
     if not isinstance(spec, dict):
@@ -381,6 +480,7 @@ def _parse_base_measure(
     if expr:
         node = parse_expression(expr, what=f"base_measures.{name}.expr")
         assert_expr_calls(node, COLUMN_FNS, what=f"base_measures.{name}.expr")
+        assert_expr_param_usage(node, param_types or {}, what=f"base_measures.{name}.expr")
         if row_op is not None or columns:
             raise BindError(
                 f"base_measures.{name} uses `expr:` and cannot also set `columns:` / `op:`."
@@ -425,6 +525,7 @@ def _parse_base_measure(
         expr = sql_raw
         sql_node = parse_expression(expr, what="measure sql")
         assert_expr_calls(sql_node, COLUMN_FNS, what=f"base_measures.{name}.sql")
+        assert_expr_param_usage(sql_node, param_types or {}, what=f"base_measures.{name}.sql")
         columns = tuple(col for col in expression_columns(sql_node) if col not in param_names)
     default_agg = "sum" if row_op is None else spec.get("agg")
     agg = spec.get("agg", default_agg)
@@ -504,12 +605,12 @@ def _parse_where(name: str, raw: Any) -> MeasureWhere | None:
 
 
 def _parse_parameters(raw: Any) -> tuple[ParameterSpec, ...]:
-    """Parse optional YAML parameters: (scalar schema only). Missing means none."""
+    """Parse optional YAML parameters:. Missing means none."""
     if raw is None:
         return ()
     if not isinstance(raw, dict):
         raise BindError("parameters must be an object.")
-    from kpi_engine.core.parameters import SCALAR_TYPES
+    from kpi_engine.core.parameters import COLLECTION_TYPES, ITEM_TYPES, SCALAR_TYPES
 
     out: list[ParameterSpec] = []
     seen: set[str] = set()
@@ -521,9 +622,24 @@ def _parse_parameters(raw: Any) -> tuple[ParameterSpec, ...]:
         if not isinstance(spec, dict):
             raise BindError(f"parameters.{ident} must be an object.")
         type_name = spec.get("type")
-        if type_name not in SCALAR_TYPES:
+        if type_name not in SCALAR_TYPES | COLLECTION_TYPES:
             raise BindError(
-                f"parameters.{ident}.type must be string, int, float, or bool."
+                f"parameters.{ident}.type must be string, int, float, bool, list, or dict."
+            )
+        item_type = spec.get("item")
+        if type_name in COLLECTION_TYPES:
+            if item_type is None:
+                raise BindError(
+                    f"parameters.{ident} type {type_name} requires item: "
+                    "(string, int, float, or bool)."
+                )
+            if item_type not in ITEM_TYPES:
+                raise BindError(
+                    f"parameters.{ident}.item must be string, int, float, or bool."
+                )
+        elif item_type is not None:
+            raise BindError(
+                f"parameters.{ident}.item is only valid on type list or dict."
             )
         allowed_raw = spec.get("allowed")
         allowed: tuple[Any, ...] | None = None
@@ -544,6 +660,7 @@ def _parse_parameters(raw: Any) -> tuple[ParameterSpec, ...]:
                 has_default="default" in spec,
                 allowed=allowed,
                 value_map=dict(value_map),
+                item_type=str(item_type) if item_type is not None else None,
             )
         )
     return tuple(out)
@@ -800,7 +917,10 @@ def _parse_relation(raw: Any) -> ModelRelation:
 
 
 def _parse_measure(
-    key: str, raw: Any, param_names: frozenset[str] = frozenset()
+    key: str,
+    raw: Any,
+    param_names: frozenset[str] = frozenset(),
+    param_types: Mapping[str, str] | None = None,
 ) -> OutputSpec:
     """Parse one requestable measure via the registered OpPlugin."""
     if not isinstance(raw, dict):
@@ -884,6 +1004,7 @@ def _parse_measure(
             window_range=window_range,
             raw=raw,
             parameter_names=param_names,
+            parameter_types=dict(param_types or {}),
         ),
     )
 

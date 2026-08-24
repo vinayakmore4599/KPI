@@ -68,7 +68,7 @@ from kpi_engine.core.pipelines import (
     partition_request,
 )
 from kpi_engine.core.relations import join_monthly
-from kpi_engine.core.parameters import bind_parameters, declared_time_grain
+from kpi_engine.core.parameters import declared_time_grain
 from kpi_engine.core.time_planner import apply_request_time, plan_time, span_for_keys
 from kpi_engine.dates import add_periods, iso_period, parse_date, period_label
 from kpi_engine.exceptions import BindError, KPIEngineError
@@ -125,8 +125,7 @@ def _compute(
     log_step("adapt")
     request = adapt(context)
     log_step("bind")
-    kpi = load_kpi(request.kpi_id, root)
-    kpi = bind_parameters(request, kpi)
+    kpi = load_kpi(request.kpi_id, root, parameters=request.parameters)
     request, kpi = _apply_host_defaults(request, kpi)
     requested = request.measure_keys
     pipelines = partition_request(kpi, requested)
@@ -245,8 +244,7 @@ def _validate(
     log_context(context)
     root = Path(config_dir) if config_dir else default_config_dir()
     request = adapt(context)
-    kpi = load_kpi(request.kpi_id, root)
-    kpi = bind_parameters(request, kpi)
+    kpi = load_kpi(request.kpi_id, root, parameters=request.parameters)
     request, kpi = _apply_host_defaults(request, kpi)
     pipelines = partition_request(kpi, request.measure_keys)
     models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
@@ -317,6 +315,13 @@ def _bind_context_models(
             bound = bind_datasets(model, request)
         except BindError:
             if key in required:
+                if kpi.model_templated:
+                    raise BindError(
+                        f"Model {model.model_id!r} requires alias "
+                        f"{list(model.required_aliases)}; chosen model (templated "
+                        f"KPI model {kpi.model_id!r}) needs those aliases on "
+                        f"context.datasets."
+                    ) from None
                 raise
             continue
         loaded[key] = model

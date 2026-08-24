@@ -127,7 +127,7 @@ class Pagination:
 
 @dataclass(frozen=True)
 class ParameterSpec:
-    """One KPI YAML `parameters:` entry: scalar type, default, aliases, allowlist."""
+    """One KPI YAML `parameters:` entry: type, default, aliases, allowlist, list item type."""
 
     name: str
     type_name: str
@@ -135,6 +135,17 @@ class ParameterSpec:
     has_default: bool = False
     allowed: tuple[Any, ...] | None = None
     value_map: Mapping[Any, Any] = field(default_factory=dict)
+    item_type: str | None = None
+
+
+@dataclass(frozen=True)
+class BoundParameters:
+    """Request parameters after schema bind, before YAML resolve."""
+
+    values: Mapping[str, Any] = field(default_factory=dict)
+    schema: tuple[ParameterSpec, ...] = ()
+    locked_cut: str | None = None
+    model_templated: bool = False
 
 
 @dataclass(frozen=True)
@@ -284,6 +295,7 @@ class KpiSpec:
     parameter_schema: tuple[ParameterSpec, ...] = ()
     bound_parameters: Mapping[str, Any] = field(default_factory=dict)
     locked_cut: str | None = None
+    model_templated: bool = False
 
 
 @dataclass(frozen=True)

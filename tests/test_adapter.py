@@ -107,11 +107,26 @@ def test_execution_time_grain_is_rejected(parquet_path):
         raise AssertionError("expected BindError")
 
 
-def test_non_scalar_parameter_is_rejected(parquet_path):
-    ctx = make_context(parquet_path, measures=["current_value"], parameters={"Level": ["G"]})
+def test_list_and_flat_dict_parameters_are_adapted(parquet_path):
+    request = adapt(
+        make_context(
+            parquet_path,
+            measures=["current_value"],
+            parameters={"codes": ["G", "Y"], "flags": {"a": 1}},
+        )
+    )
+    assert request.parameters == {"codes": ["G", "Y"], "flags": {"a": 1}}
+
+
+def test_nested_parameter_object_is_rejected(parquet_path):
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value"],
+        parameters={"flags": {"inner": {"x": 1}}},
+    )
     try:
         adapt(ctx)
     except ContextError as exc:
-        assert "parameters.Level" in str(exc)
+        assert "parameters.flags" in str(exc)
     else:
         raise AssertionError("expected ContextError")

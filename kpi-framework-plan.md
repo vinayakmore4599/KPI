@@ -40,7 +40,7 @@ Onboard a new KPI with YAML. A new reusable name (op, hook, function) is `capabi
 
 | Area | Decision |
 |---|---|
-| Host | In-process Python library. Entry point for now: `udfs.sotif.main` as a thin shim over a generic engine. |
+| Host | In-process Python library. Entry: `udfs.kpi_engine.main` → `compute(context)`. `kpi_id` selects YAML. |
 | Context | Immutable envelope. Adapter maps it; we do not redesign it. |
 | Paths | Taken from `context.datasets`. KPI/model YAML does not own file locations. |
 | `business_date` | Present on the context. **Never used in calculations.** |
@@ -175,9 +175,9 @@ The engine does not change the context schema. It maps the existing envelope.
   },
   "udf": {
     "udf_id": 6,
-    "udf_name": "sotif",
+    "udf_name": "kpi_engine",
     "udf_type": "MEASURE",
-    "module_path": "udfs.sotif,main",
+    "module_path": "udfs.kpi_engine.main",
     "output_type": "df"
   },
   "output": {
@@ -204,7 +204,7 @@ The engine does not change the context schema. It maps the existing envelope.
 | `datasets.*.columns` | Projection and bind-time column check |
 | `datasets.*.filter_column_mappings` | `filter_code` → `column_name`, operator (already `in`) |
 | `datasets.*.join_managed_by: udf` | Legacy. Ignored when a model YAML/SQL exists |
-| `udf.module_path` | Current entry shim only. YAML KPIs do not import this path |
+| `udf.module_path` | Host entry `udfs.kpi_engine.main`. YAML KPIs do not import this path |
 | `output.page` / `page_size` / `limit` | Paginate the **result**, never the extract |
 
 ### 4.3 Adapter rules
@@ -621,22 +621,18 @@ Fallback if upstream cannot expand: a hierarchy model in YAML, queried before bu
 
 ### 11.1 Current entry
 
-`udfs.sotif.main` remains the UDF the metadata layer calls (`output_type: df`).
-
-Implement it as a **thin shim**:
+`udfs.kpi_engine.main` is the UDF the metadata layer calls (`output_type: df`). One module for every KPI; `execution.kpi_id` loads `config/kpis/<id>.yaml`.
 
 ```text
-udfs.sotif.main(context) → kpi_engine.compute(context) → DataFrame or JSON
+udfs.kpi_engine.main(context) → kpi_engine.compute(context) → DataFrame or JSON
 ```
-
-Later, one generic UDF (`kpi_engine.main`) can replace per-KPI UDF names via metadata only.
 
 ### 11.2 Folder structure
 
 ```text
 udfs/
-  sotif/main.py              # thin shim → kpi_engine.compute(context)
   kpi_engine/
+    main.py                  # UDF entry → kpi_engine.compute(context)
     core/
       adapter.py             # context quirks, month-filter claim, single-view assert
       binder.py              # kpi_id → YAML, common measure fields
@@ -709,7 +705,6 @@ Do not put Delta paths, YoY math, or DuckDB connection code in the KPI file.
 - Second model / `model_relations`.
 - Hierarchy expansion.
 - Non-additive aggs.
-- Generic shared UDF rename.
 - Fiscal calendar.
 - Result cache.
 

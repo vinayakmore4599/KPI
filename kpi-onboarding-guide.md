@@ -134,7 +134,7 @@ Add a test under `tests/` with local parquet (see `tests/conftest.py`). Do not h
 
 ### Step 7 — Entry point
 
-Keep calling `udfs.sotif.main` (file `udfs/sotif/main.py`). **Do not** add `udfs/<kpi>.py` per KPI unless the platform still requires a unique module name. Routing is by `kpi_id`. Copy the whole `udfs/` folder (sotif, kpi_engine, config) into the host.
+Call `udfs.kpi_engine.main` (file `udfs/kpi_engine/main.py`). **Do not** add `udfs/<kpi>.py` per KPI. Routing is by `kpi_id`. Copy the whole `udfs/` folder (`kpi_engine`, `config`) into the host.
 
 DuckDB/ADLS stay on the platform. Set `kpi_engine.platform.HOST_DUCKDB_GETTER` to the existing helper (`module.path:function_name`) when you copy this tree in. The engine reuses that session and does not `duckdb.connect()` in production. Context `datasets.*.table_type` chooses `delta_scan` (DELTA) or `read_parquet` (PARQUET). In SQL models prefer `$alias_scan` so the same YAML works for both.
 
@@ -168,7 +168,7 @@ Work **top-down**. Stop at the first row that fits.
 | Change | Do not change |
 |---|---|
 | `udfs/config/kpis/<id>.yaml` | `kpi_engine/**` |
-| `udfs/config/models/<name>.yaml` only if the source is new | `udfs/sotif/main.py` |
+| `udfs/config/models/<name>.yaml` only if the source is new | `udfs/kpi_engine/main.py` |
 | `tests/` for this KPI | `adapter.py`, `orchestrator.py` |
 
 ### 4.2 New source shape (joins or CTE)
@@ -229,7 +229,7 @@ A new **name** is not an engine change. Add the body under `capabilities/` and t
 | `capabilities/ops/` + `registries/ops.yaml` | `core/`, `contracts.py` |
 | `capabilities/hooks/` + `registries/hooks.yaml` (`requires_value` / `extra_keys` if needed) | `importlib` of a path from YAML |
 | `capabilities/functions/` + `registries/functions/` (`min_args` if the fn is variadic and not the default 2) | A one-off `if kpi_id == 3004` |
-| Optional: a `compute()` test under `tests/` | `udfs/sotif/main.py` |
+| Optional: a `compute()` test under `tests/` | `udfs/kpi_engine/main.py` |
 
 **Still engine work** (not a new catalog name): a new `agg:`, filter operator, compose template, time format, or a new *common* measure field like `offset`. A new extras allowlist key (`min_args`, `requires_value`, `extra_keys`) is a rare one-line loader change.
 
@@ -256,11 +256,7 @@ Month filter **name** is per-KPI (`time.filter_code`). A new name for one KPI is
 
 ### 4.7 New UDF module name
 
-Only if metadata **must** call `udfs.<something>.main`.
-
-| Change | Do not change |
-|---|---|
-| Thin shim: `return compute(context)` like `udfs/sotif/main.py` | Duplicate engine code in the shim |
+Do not add a second entry. Metadata calls `udfs.kpi_engine.main` for every KPI. Routing is `execution.kpi_id` → `config/kpis/<id>.yaml`.
 
 ---
 
@@ -294,7 +290,7 @@ Only if metadata **must** call `udfs.<something>.main`.
 | `capabilities/ops/` + `registries/ops.yaml` | A new measure kind | Per-KPI formulas |
 | `capabilities/hooks/` + `registries/hooks.yaml` | A new named hook | Import paths from context |
 | `registries/CAPABILITIES.md` | Regenerated after a registry change (`write_generated_docs()`) | Hand edits |
-| `udfs/sotif/main.py` | Never, except shim signature | Calculations |
+| `udfs/kpi_engine/main.py` | Never, except the UDF signature | Calculations |
 | `contracts.py` | New typed fields for YAML/context | Parsing or SQL |
 
 ### Never put in KPI YAML

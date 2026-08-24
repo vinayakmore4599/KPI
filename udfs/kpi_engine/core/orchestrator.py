@@ -6,7 +6,7 @@ What this file provides
     validate(context) — same through compile_extract; no file scan.
 
 Where it is used
-    kpi_engine.compute / validate re-export these. udfs.sotif.main calls compute.
+    kpi_engine.compute / validate re-export these. kpi_engine.main calls compute.
 
 Capabilities
     One DuckDB session per compute, from the platform helper (or a local

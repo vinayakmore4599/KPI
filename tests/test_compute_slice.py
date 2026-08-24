@@ -1,8 +1,8 @@
-"""End-to-end slice tests: scan width, errors, UDF shim.
+"""End-to-end slice tests: scan width, errors, UDF entry.
 
 What this file provides
     Unrequested measures do not widen lookback; missing month filter errors;
-    unknown measure_key errors; udfs.sotif.main matches compute.
+    unknown measure_key errors; kpi_engine.main matches compute.
 
 Where it is used
     pytest tests/test_compute_slice.py.
@@ -13,7 +13,7 @@ When to use
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError, TimePlanError
 from tests.conftest import make_context
-from udfs.sotif.main import main
+from kpi_engine.main import main
 
 
 def test_unrequested_measures_do_not_widen_scan(parquet_path, config_dir):
@@ -62,11 +62,11 @@ def test_unknown_measure_key(parquet_path, config_dir):
         raise AssertionError("expected BindError")
 
 
-def test_udf_shim_matches_compute(parquet_path, config_dir):
-    """udfs.sotif.main is a thin wrapper around kpi_engine.compute."""
+def test_udf_entry_matches_compute(parquet_path, config_dir):
+    """kpi_engine.main is a pass-through around kpi_engine.compute."""
     import importlib
 
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
-    mod = importlib.import_module("udfs.sotif.main")
+    mod = importlib.import_module("kpi_engine.main")
     assert mod.main is main
     assert main(ctx, config_dir=str(config_dir))["rows"] == compute(ctx, config_dir=config_dir)["rows"]

@@ -21,7 +21,7 @@ from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError, KPIEngineError
 from kpi_engine.platform import register_duckdb_getter
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
-from udfs.sotif.main import main
+from kpi_engine.main import main
 
 
 @pytest.fixture(autouse=True)
@@ -120,7 +120,7 @@ def test_bad_host_getter_spec_is_an_error(parquet_path, config_dir, monkeypatch)
 
 
 def test_main_forwards_platform_connection(parquet_path, config_dir):
-    """udfs.sotif.main passes the host connection through to compute."""
+    """kpi_engine.main passes the host connection through to compute."""
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
     connection = duckdb.connect()
     try:

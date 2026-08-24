@@ -272,9 +272,9 @@ def make_context(
         "datasets": datasets,
         "udf": {
             "udf_id": 6,
-            "udf_name": "sotif",
+            "udf_name": "kpi_engine",
             "udf_type": "MEASURE",
-            "module_path": "udfs.sotif.main",
+            "module_path": "udfs.kpi_engine.main",
             "output_type": "df",
         },
         "output": {

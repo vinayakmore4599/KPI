@@ -5,7 +5,7 @@ What this file provides
     `validate(context)` — bind and compile SQL without scanning data (CI / dry-run).
 
 Where it is used
-    Platform UDF (`udfs.sotif.main`), notebooks, and tests import from here so
+    Platform UDF (`udfs.kpi_engine.main`), notebooks, and tests import from here so
     callers never need to know core module names.
 
 Capabilities

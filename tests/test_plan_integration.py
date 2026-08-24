@@ -2,7 +2,7 @@
 
 What this file provides
     One request: multi-CTE SQL model, mmyyyy time column, Region / Reason_Code
-    filters, op: constant, op: rank, and the UDF shim.
+    filters, op: constant, op: rank, and the UDF entry.
 
 Where it is used
     pytest tests/test_plan_integration.py.
@@ -18,7 +18,7 @@ import pandas as pd
 from kpi_engine import compute, validate
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 from tests.test_sql_cte_model import _CTE_SQL, _write_dims
-from udfs.sotif.main import main
+from kpi_engine.main import main
 
 
 def test_sql_cte_format_names_constant_rank_compute(parquet_path, extra_config, tmp_path):
@@ -61,8 +61,8 @@ def test_sql_cte_format_names_constant_rank_compute(parquet_path, extra_config, 
     assert g_other["reason_code_rank"] == 2
     assert all("reason_code_rank" not in r for r in result["rows"] if r["output_cut"] == "R")
 
-    shim = main(ctx, config_dir=str(extra_config))
-    assert shim["rows"] == result["rows"]
+    udf = main(ctx, config_dir=str(extra_config))
+    assert udf["rows"] == result["rows"]
 
 
 def _mmyyyy_facts(parquet_path, tmp_path):

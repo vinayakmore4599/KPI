@@ -5,7 +5,7 @@ What this file provides
     register_duckdb_getter — tests / hosts that inject the helper at import time.
 
 Where it is used
-    orchestrator.compute. udfs.sotif.main does not open DuckDB itself.
+    orchestrator.compute. kpi_engine.main does not open DuckDB itself.
 
 Capabilities
     Production uses the connection the platform already manages. The engine

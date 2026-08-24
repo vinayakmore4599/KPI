@@ -107,7 +107,7 @@ def test_unknown_hook_fails_at_bind(extra_config):
 
 def test_dotted_import_path_is_not_a_hook(extra_config):
     """Hooks are allowlisted names, not context.udf.module_path / importlib strings."""
-    spec = _hook_kpi(9008, hook_name="udfs.sotif.main")
+    spec = _hook_kpi(9008, hook_name="not.a.registry.hook")
     spec["measures"].pop("blended", None)
     write_yaml(
         extra_config / "kpis" / "9008.yaml",
@@ -116,10 +116,10 @@ def test_dotted_import_path_is_not_a_hook(extra_config):
     try:
         load_kpi(9008, extra_config)
     except BindError as exc:
-        assert "udfs.sotif.main" in str(exc)
+        assert "not.a.registry.hook" in str(exc)
     else:
         raise AssertionError("expected BindError")
-    assert "udfs.sotif.main" not in REGISTRY
+    assert "not.a.registry.hook" not in REGISTRY
 
 
 def test_hook_without_name_fails(extra_config):

@@ -22,8 +22,8 @@ Every Python and YAML file starts with a header covering **what it provides**, *
 
 ```text
 udfs/                         Copy this folder into the platform
-  sotif/main.py               Entry: udfs.sotif.main → compute(context)
   kpi_engine/
+    main.py                   Entry: udfs.kpi_engine.main → compute(context)
     core/                     Frozen engine (adapt, bind, extract, dispatch)
     capabilities/             Op / function / hook bodies
     registries/               YAML allowlist + generated CAPABILITIES.md
@@ -58,18 +58,18 @@ pytest -q
 
 ## Run a request
 
-The metadata layer already builds `context`. This engine only consumes it. DuckDB and ADLS stay on the platform — `compute` / `udfs.sotif.main` reuse that connection.
+The metadata layer already builds `context`. This engine only consumes it. DuckDB and ADLS stay on the platform — `compute` / `udfs.kpi_engine.main` reuse that connection.
 
 ```python
 from kpi_engine import compute, validate
-from udfs.sotif.main import main
+from kpi_engine.main import main
 
 # Compile DuckDB SQL without scanning files
 validate(context)
 
 # Full calculation (pass the platform DuckDB session when the host has one)
 result = compute(context, connection=platform_connection)
-# or the UDF shim:
+# or the UDF entry:
 result = main(context, connection=platform_connection)
 ```
 

@@ -19,7 +19,7 @@ import pytest
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import KPIEngineError
 from tests.conftest import make_context, minimal_kpi, write_yaml
-from udfs.sotif.main import main
+from kpi_engine.main import main
 
 
 def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
@@ -167,7 +167,7 @@ def test_compute_is_deterministic_and_leaves_the_context_untouched(parquet_path,
 
 
 def test_udf_entry_point_returns_the_whole_response(parquet_path, config_dir):
-    """udfs.sotif.main is a pass-through, not a reduced view of the response."""
+    """kpi_engine.main is a pass-through, not a reduced view of the response."""
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
     assert main(ctx, config_dir=str(config_dir)) == compute(ctx, config_dir=config_dir)
 

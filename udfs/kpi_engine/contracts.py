@@ -361,6 +361,7 @@ class KpiSpec:
     model_templated: bool = False
     default_dimensions: tuple[str, ...] = ()
     request_grain: tuple[str, ...] = ()
+    identity_grain: tuple[str, ...] = ()
     having: HavingSpec | None = None
 
 

@@ -262,7 +262,7 @@ Rules:
 - A day pick requires a full `YYYY-MM-DD` unless `time.format` says otherwise. Week / month / quarter / year may accept `YYYY-MM` and truncate to the pick.
 - `week` buckets to ISO Monday (Python and DuckDB). Do not assume DuckDB `date_trunc('week')`.
 - `time.timezone` is rejected. Convert in a `kind: sql` model if needed.
-- Omit the whole `time:` block for a snapshot KPI. Then a measure may not use a nonzero `offset`, `trailing`, or any kind that requires time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not.
+- Omit the whole `time:` block for a snapshot KPI. Then a measure may not use a nonzero `offset`, `trailing`, or any kind that requires time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not. Host `reporting_month` (and other time-like leftover codes) skip with `reason: no_time`; other unmapped filters still fail.
 
 ### Request parameters
 
@@ -394,7 +394,7 @@ base_measures:
     agg: sum
 ```
 
-Identifiers must be simple SQL names: `[A-Za-z_][A-Za-z0-9_]*`. `CASE`, `WHEN`, `THEN`, `ELSE`, `END`, `AND`, `OR`, `NOT`, `IS`, and `NULL` are reserved.
+Identifiers must be simple SQL names: `[A-Za-z_][A-Za-z0-9_]*`. `CASE`, `WHEN`, `THEN`, `ELSE`, `AND`, `OR`, `NOT`, `IS`, `NULL`, and `IN` are reserved. `END` is a CASE terminator; `end` is a legal column name outside CASE (`date_diff(start, end, 'day')`).
 
 ### 7.5 `agg:` — how rows fold
 
@@ -920,6 +920,8 @@ Design around these; they are intentional.
 - `lookup:` / `over:` / `expr:` / `sql:` / `columns:`+`op` are mutually exclusive on one base.
 - Calendar `op: lag` is vs the densified spine and the **anchor**. Entity windows are `over:` on pre-fold detail. `op: lag` cannot set `partition_by`.
 - `over.partition_by` / cut `partition_by` must be a subset of that cut’s **effective grain**. Existing BindErrors stay.
+- Row helpers (`expr`/`lookup`/`over` without `agg:`) are `measures.of` only at `identity_grain` (every emitted cut must match). Otherwise fold with `agg:` or keep them as named steps.
+- `kind: sql` retrieve SELECTs walked columns, not the full parquet list. Walked names must appear on the CTE / `output_schema`.
 - Zero-filled sparse groups (densify / `fill_zero`) can fail `having` `gt: 0`. HAVING is not a second pass.
 
 **Product boundary (not a later engine version)**

@@ -335,9 +335,20 @@ def _jsonish(value: Any) -> Any:
             return None
     except (TypeError, ValueError):
         pass
+    if isinstance(value, pd.Timestamp):
+        return value.date().isoformat()
+    from datetime import date, datetime
+
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
     if hasattr(value, "item"):
         try:
-            return value.item()
+            inner = value.item()
         except (ValueError, AttributeError):
             return value
+        if inner is value:
+            return value
+        return _jsonish(inner)
     return value

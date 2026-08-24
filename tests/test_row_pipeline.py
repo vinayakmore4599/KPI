@@ -48,15 +48,19 @@ def test_named_row_steps_topo_and_cycle(parquet_path, extra_config):
         load_kpi(8802, extra_config)
 
 
-def test_helper_cannot_be_measure_of(extra_config):
+def test_helper_cannot_be_measure_of(parquet_path, extra_config):
+    _write(
+        extra_config,
+        8803,
+        base_measures={"gross": {"expr": "amount * 2"}},
+        measures={"current_value": {"of": "gross", "op": "point"}},
+    )
+    load_kpi(8803, extra_config)
+    ctx = make_context(parquet_path, measures=["current_value"], kpi_id=8803)
     with pytest.raises(BindError, match="row helper"):
-        _write(
-            extra_config,
-            8803,
-            base_measures={"gross": {"expr": "amount * 2"}},
-            measures={"current_value": {"of": "gross", "op": "point"}},
-        )
-        load_kpi(8803, extra_config)
+        compute(ctx, config_dir=extra_config)
+    with pytest.raises(BindError, match="row helper"):
+        validate(ctx, config_dir=extra_config)
 
 
 def test_lookup_default_and_strict(tmp_path, extra_config):
@@ -152,7 +156,9 @@ def test_name_clash_needs_replace(parquet_path, extra_config):
         measures={"current_value": {"of": "amount", "op": "point"}},
     )
     ctx = make_context(parquet_path, measures=["current_value"], kpi_id=8808)
-    with pytest.raises(CatalogError, match="overwrite extract column"):
+    with pytest.raises(BindError, match="overwrite extract column"):
+        validate(ctx, config_dir=extra_config)
+    with pytest.raises(BindError, match="overwrite extract column"):
         compute(ctx, config_dir=extra_config)
 
 
@@ -474,3 +480,308 @@ def test_agg_ok_warns_and_computes(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     assert any(w.get("reason") == "window_agg_ok" for w in result["grain_warnings"])
     assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] is not None
+
+
+def test_end_column_parses_outside_case():
+    from kpi_engine.identifiers import Ident, parse_expression
+
+    node = parse_expression("date_diff(start, end, 'day')", what="measure expr")
+    names = {child.name for child in (node.args if hasattr(node, "args") else []) if isinstance(child, Ident)}
+    assert "end" in names
+    parse_expression("CASE WHEN x THEN 1 END", what="measure expr")
+
+
+def test_helper_at_identity_grain(tmp_path, extra_config):
+    frame = pd.DataFrame(
+        {
+            "event_month": [date(2026, 3, 1)],
+            "reason_code": ["LATE_SUPPLIER"],
+            "region": ["NA"],
+            "supplier_name": ["ABC"],
+            "amount": [10.0],
+        }
+    )
+    path = tmp_path / "id.parquet"
+    frame.to_parquet(path, index=False)
+    _write(
+        extra_config,
+        8821,
+        default_dimensions=["reason_code", "region", "supplier"],
+        identity_grain=["reason_code", "region", "supplier"],
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
+        base_measures={"gross": {"expr": "amount * 2"}},
+        measures={"current_value": {"of": "gross", "op": "point"}},
+    )
+    ctx = make_context(path, measures=["current_value"], kpi_id=8821)
+    ctx["datasets"]["Sotif"]["columns"] = list(frame.columns)
+    ctx["selected_dimensions"] = ["reason_code", "region", "supplier"]
+    result = compute(ctx, config_dir=extra_config)
+    row = next(r for r in result["rows"] if r["output_cut"] == "G")
+    assert row["current_value"] == pytest.approx(20.0)
+
+
+def test_helper_also_emit_coarser_cut_bind_error(parquet_path, extra_config):
+    _write(
+        extra_config,
+        8822,
+        default_dimensions=["reason_code", "region", "supplier"],
+        identity_grain=["reason_code", "region", "supplier"],
+        cuts=[
+            {
+                "name": "G",
+                "group_by": [],
+                "exclude_from_grain": ["region"],
+                "ignore_filters": ["region"],
+                "also_emit": ["R"],
+            },
+            {"name": "R", "group_by": [], "ignore_filters": []},
+        ],
+        base_measures={"gross": {"expr": "amount * 2"}},
+        measures={"current_value": {"of": "gross", "op": "point"}},
+    )
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value"],
+        kpi_id=8822,
+        selected_dimensions=["reason_code", "region", "supplier"],
+    )
+    with pytest.raises(BindError, match="identity_grain"):
+        compute(ctx, config_dir=extra_config)
+
+
+def test_helper_duplicate_identity_catalog_error(parquet_path, extra_config):
+    _write(
+        extra_config,
+        8823,
+        default_dimensions=["reason_code"],
+        identity_grain=["reason_code"],
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
+        base_measures={"gross": {"expr": "amount * 2"}},
+        measures={"current_value": {"of": "gross", "op": "point"}},
+    )
+    ctx = make_context(parquet_path, measures=["current_value"], kpi_id=8823)
+    with pytest.raises(CatalogError, match="not unique"):
+        compute(ctx, config_dir=extra_config)
+
+
+def test_last_n_cannot_feed_arithmetic(extra_config):
+    with pytest.raises(BindError, match="last_n"):
+        _write(
+            extra_config,
+            8824,
+            base_measures={
+                "recent": {
+                    "over": {
+                        "fn": "last_n",
+                        "of": "amount",
+                        "n": 2,
+                        "partition_by": ["region"],
+                        "order_by": ["event_month"],
+                    },
+                    "agg": "last",
+                }
+            },
+            measures={
+                "listed": {"of": "recent", "op": "point"},
+                "plus": {"op": "arithmetic", "fn": "sum", "of": ["listed", "listed"]},
+            },
+        )
+        load_kpi(8824, extra_config)
+
+
+def test_over_of_required_message(extra_config):
+    with pytest.raises(BindError, match="does not default"):
+        _write(
+            extra_config,
+            8825,
+            base_measures={
+                "running": {
+                    "over": {
+                        "fn": "running_sum",
+                        "partition_by": ["region"],
+                        "order_by": ["event_month"],
+                    },
+                    "agg": "max",
+                }
+            },
+            measures={"current_value": {"of": "running", "op": "point"}},
+        )
+        load_kpi(8825, extra_config)
+
+
+def test_fill_zero_having_drops_densified_zero(tmp_path, extra_config):
+    frame = pd.DataFrame(
+        {
+            "event_month": [date(2026, 2, 1), date(2026, 3, 1)],
+            "reason_code": ["ONLY_FEB", "HAS_MAR"],
+            "region": ["NA", "NA"],
+            "supplier_name": ["ABC", "ABC"],
+            "amount": [10.0, 10.0],
+        }
+    )
+    path = tmp_path / "sparse.parquet"
+    frame.to_parquet(path, index=False)
+    _write(
+        extra_config,
+        8826,
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
+        measures={
+            "current_value": {"of": "sotif_value", "op": "point"},
+            "value_3m": {
+                "of": "sotif_value",
+                "op": "window",
+                "trailing": {"months": 2},
+                "inclusive": True,
+            },
+        },
+        having={"predicates": [{"of": "current_value", "cmp": "gt", "value": 0}]},
+    )
+    ctx = make_context(
+        path,
+        measures=["current_value", "value_3m"],
+        kpi_id=8826,
+        month="2026-03",
+    )
+    ctx["datasets"]["Sotif"]["columns"] = list(frame.columns)
+    result = compute(ctx, config_dir=extra_config)
+    reasons = {row["reason_code"] for row in result["rows"] if row["output_cut"] == "G"}
+    assert "HAS_MAR" in reasons
+    assert "ONLY_FEB" not in reasons
+    assert any(item["reason"] == "having" for item in result["dropped_groups"])
+
+
+def test_sql_model_missing_walked_column(tmp_path, extra_config):
+    frame = pd.DataFrame(
+        {
+            "event_month": [date(2026, 3, 1)],
+            "reason_code": ["LATE_SUPPLIER"],
+            "region": ["NA"],
+            "supplier_name": ["ABC"],
+            "amount": [10.0],
+            "order_date": [date(2026, 3, 2)],
+        }
+    )
+    path = tmp_path / "sql_miss.parquet"
+    frame.to_parquet(path, index=False)
+    write_yaml(
+        extra_config / "models" / "thin_sql.yaml",
+        {
+            "model_id": "thin_sql",
+            "kind": "sql",
+            "required_aliases": ["sotif"],
+            "output_schema": [
+                {"name": "event_month", "type": "date"},
+                {"name": "reason_code", "type": "varchar"},
+                {"name": "region", "type": "varchar"},
+                {"name": "supplier_name", "type": "varchar"},
+                {"name": "amount", "type": "double"},
+            ],
+            "sql": "SELECT event_month, reason_code, region, supplier_name, amount FROM read_parquet($sotif_path)\n",
+        },
+    )
+    _write(
+        extra_config,
+        8827,
+        model="thin_sql",
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
+        base_measures={
+            "seq": {
+                "over": {
+                    "fn": "row_number",
+                    "partition_by": ["reason_code"],
+                    "order_by": ["order_date"],
+                },
+                "agg": "max",
+            }
+        },
+        measures={"current_value": {"of": "seq", "op": "point"}},
+    )
+    ctx = make_context(path, measures=["current_value"], kpi_id=8827)
+    ctx["datasets"]["Sotif"]["columns"] = list(frame.columns)
+    with pytest.raises(BindError, match="does not project 'order_date'"):
+        validate(ctx, config_dir=extra_config)
+
+
+def test_measure_date_add_iso(tmp_path, extra_config):
+    frame = pd.DataFrame(
+        {
+            "event_month": [date(2026, 3, 1)],
+            "reason_code": ["LATE_SUPPLIER"],
+            "region": ["NA"],
+            "supplier_name": ["ABC"],
+            "amount": [1.0],
+            "ship_date": [date(2026, 3, 1)],
+        }
+    )
+    path = tmp_path / "ship.parquet"
+    frame.to_parquet(path, index=False)
+    _write(
+        extra_config,
+        8828,
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
+        base_measures={"ship_date": {"sql": "ship_date", "agg": "max"}},
+        measures={
+            "ship_date": {"of": "ship_date", "op": "point"},
+            "one": {"op": "constant", "value": 1},
+            "next": {
+                "op": "fn",
+                "fn": "date_add",
+                "inputs": ["ship_date", "one"],
+                "params": {"unit": "month"},
+            },
+        },
+    )
+    ctx = make_context(path, measures=["next"], kpi_id=8828)
+    ctx["datasets"]["Sotif"]["columns"] = list(frame.columns)
+    result = compute(ctx, config_dir=extra_config)
+    row = next(r for r in result["rows"] if r["output_cut"] == "G")
+    assert row["next"] == "2026-04-01"
+
+
+def test_measure_date_add_rejects_number(parquet_path, extra_config):
+    _write(
+        extra_config,
+        8829,
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
+        measures={
+            "current_value": {"of": "sotif_value", "op": "point"},
+            "one": {"op": "constant", "value": 1},
+            "next": {
+                "op": "fn",
+                "fn": "date_add",
+                "inputs": ["current_value", "one"],
+                "params": {"unit": "day"},
+            },
+        },
+    )
+    ctx = make_context(parquet_path, measures=["next"], kpi_id=8829)
+    with pytest.raises(CatalogError, match="needs a date"):
+        compute(ctx, config_dir=extra_config)
+
+
+def test_end_as_column_in_row_expr(tmp_path, extra_config):
+    frame = pd.DataFrame(
+        {
+            "event_month": [date(2026, 3, 1)],
+            "reason_code": ["LATE_SUPPLIER"],
+            "region": ["NA"],
+            "supplier_name": ["ABC"],
+            "amount": [1.0],
+            "start": [date(2026, 3, 1)],
+            "end": [date(2026, 3, 4)],
+        }
+    )
+    path = tmp_path / "endcol.parquet"
+    frame.to_parquet(path, index=False)
+    _write(
+        extra_config,
+        8830,
+        cuts=[{"name": "G", "group_by": [], "ignore_filters": []}],
+        base_measures={"gap": {"expr": "date_diff(start, end, 'day')", "agg": "sum"}},
+        measures={"current_value": {"of": "gap", "op": "point"}},
+    )
+    ctx = make_context(path, measures=["current_value"], kpi_id=8830)
+    ctx["datasets"]["Sotif"]["columns"] = list(frame.columns)
+    result = compute(ctx, config_dir=extra_config)
+    row = next(r for r in result["rows"] if r["output_cut"] == "G")
+    assert row["current_value"] == pytest.approx(3.0)

@@ -95,6 +95,9 @@ def bind_filters(
         if op not in {"is_null", "is_not_null"} and _is_blank(item.values):
             skipped.append({"filter_code": item.code, "reason": "blank"})
             continue
+        if kpi.time is None and _is_time_like_filter(item.code, kpi):
+            skipped.append({"filter_code": item.code, "reason": "no_time"})
+            continue
         column = _resolve_column(item, mappings, kpi, extract_columns, spec=spec)
         canonical = match_name(column, extract_columns) or column
         if match_name(canonical, extract_columns) is None:
@@ -118,6 +121,26 @@ def bind_filters(
             )
         )
     return tuple(bound), tuple(skipped)
+
+
+_TIME_LIKE_CODES = frozenset(
+    {"reporting_month", "month", "year", "as_of_period"}
+)
+
+
+def _is_time_like_filter(code: str, kpi: KpiSpec) -> bool:
+    """True for leftover period codes a snapshot KPI should not IN-filter."""
+    key = norm_name(code)
+    if key in _TIME_LIKE_CODES:
+        return True
+    for spec in kpi.filter_specs:
+        template = spec.compose_template
+        if not template:
+            continue
+        names = {norm_name(n) for n in compose_placeholder_names(template)}
+        if key in names:
+            return True
+    return False
 
 
 @traced

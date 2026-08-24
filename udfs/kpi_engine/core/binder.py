@@ -476,6 +476,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         raise BindError(f"default_cut {default_cut!r} is not a declared cut.")
 
     default_dimensions = _parse_default_dimensions(raw, dim_specs)
+    identity_grain = _parse_identity_grain(raw, dim_specs)
     _assert_cut_grain_rules(cuts, default_dimensions, dim_specs)
     filter_map = {
         str(k): require_ident(str(v), what="filter_map column")
@@ -495,7 +496,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
             f"Parameter name(s) {clash} collide with measure keys. "
             "Rename the parameter."
         )
-    _assert_measure_graph(measures, tuple(b.name for b in bases), dimensions)
+    _assert_measure_graph(measures, tuple(bases), dimensions)
     if time is None:
         _assert_snapshot_measures(measures)
 
@@ -539,6 +540,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         parameter_schema=parameter_schema,
         default_dimensions=default_dimensions,
         request_grain=default_dimensions,
+        identity_grain=identity_grain,
         having=having,
     )
     for spec in kpi.measures:
@@ -547,6 +549,9 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
                 f"measures.{spec.key} trailing.from: data_points needs a top-level data_points:."
             )
         get_op(spec.kind).validate(spec, kpi)
+    from kpi_engine.capabilities.ops.support import assert_last_n_consumers
+
+    assert_last_n_consumers(kpi)
     return kpi
 
 
@@ -631,6 +636,33 @@ def _parse_default_dimensions(
         if mapped is None:
             raise BindError(
                 f"default_dimensions {ident!r} is not a catalog dimension "
+                f"(have {list(catalog.values())})."
+            )
+        if mapped in seen:
+            continue
+        names.append(mapped)
+        seen.add(mapped)
+    return tuple(names)
+
+
+def _parse_identity_grain(
+    raw: dict[str, Any], specs: tuple[DimensionSpec, ...]
+) -> tuple[str, ...]:
+    """Optional identity_grain: subset of dimensions; empty/omitted means unset."""
+    if "identity_grain" not in raw:
+        return ()
+    value = raw.get("identity_grain")
+    if not isinstance(value, list):
+        raise BindError("identity_grain must be a list.")
+    catalog = {norm_name(spec.name): spec.name for spec in specs}
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        ident = require_ident(str(item), what="identity_grain")
+        mapped = catalog.get(norm_name(ident))
+        if mapped is None:
+            raise BindError(
+                f"identity_grain {ident!r} is not a catalog dimension "
                 f"(have {list(catalog.values())})."
             )
         if mapped in seen:
@@ -921,7 +953,10 @@ def _parse_over(name: str, raw: Any) -> OverSpec | None:
     of_name = str(of).strip() if of else None
     needs_of = fn in {"lag", "lead", "running_sum", "running_avg", "last_n", "rank", "dense_rank"}
     if needs_of and not of_name and fn not in {"rank", "dense_rank"}:
-        raise BindError(f"base_measures.{name}.over.fn={fn} requires of:.")
+        raise BindError(
+            f"base_measures.{name}.over.fn={fn} requires of: "
+            "(it does not default to this helper's name)."
+        )
     n_raw = raw.get("n")
     n = None
     if n_raw is not None:
@@ -959,6 +994,17 @@ def _assert_base_pipeline(
     topo_bases(bases)
     by_name = {measure.name: measure for measure in bases}
     for measure in bases:
+        if (
+            measure.over is not None
+            and measure.over.fn == "last_n"
+            and measure.over.of
+        ):
+            src = by_name.get(measure.over.of)
+            if src is not None and src.over is not None and src.over.fn == "last_n":
+                raise BindError(
+                    f"base_measures.{measure.name} over.fn=last_n cannot take "
+                    f"of={measure.over.of!r} which is also last_n."
+                )
         own = measure.model_id or default_model
         if not own:
             continue
@@ -1220,12 +1266,13 @@ def measure_dependencies(spec: OutputSpec) -> tuple[str, ...]:
 
 def _assert_measure_graph(
     measures: tuple[OutputSpec, ...],
-    base_names: tuple[str, ...],
+    bases: tuple[BaseMeasure, ...],
     dimensions: tuple[str, ...],
 ) -> None:
     """Fail at bind time on unknown references and dependency cycles."""
     by_key = {m.key: m for m in measures}
-    known_bases = set(base_names)
+    known_bases = {b.name for b in bases}
+    helpers = {b.name for b in bases if b.agg is None}
     for spec in measures:
         for name in measure_dependencies(spec):
             if name in by_key:
@@ -1239,6 +1286,12 @@ def _assert_measure_graph(
                 continue
             if get_op(spec.kind).phase == "cut" and name in known_bases:
                 continue
+            if name in helpers:
+                raise BindError(
+                    f"measures.{spec.key} of={name!r} is a row helper (no agg:). "
+                    "Use it in later base expr/over, or declare identity_grain and "
+                    f"measures.{spec.key} op=point of that helper."
+                )
             raise BindError(
                 f"measures.{spec.key} references unknown measure {name!r}. "
                 f"Valid keys: {sorted(by_key)}."

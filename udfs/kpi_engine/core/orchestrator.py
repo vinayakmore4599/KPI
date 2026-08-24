@@ -135,6 +135,7 @@ def _compute(
     requested = request.measure_keys
     pipelines = partition_request(kpi, requested)
     models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
+    _assert_listed_name_clash(kpi, models_by_id, datasets)
     log_step("plan_time")
     time_plan, remaining_filters = plan_time(request, kpi)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
@@ -170,6 +171,7 @@ def _compute(
                 request=request,
                 connection=con,
                 joined=pipe.joined,
+                measure_keys=pipe.measure_keys,
             )
             pipe_rows, axes, pipe_dropped = compute_cuts(
                 monthly,
@@ -278,6 +280,7 @@ def _validate(
     request, kpi = _apply_host_defaults(request, kpi)
     pipelines = partition_request(kpi, request.measure_keys)
     models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
+    _assert_listed_name_clash(kpi, models_by_id, datasets)
     time_plan, remaining = plan_time(request, kpi)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
     bound, skipped_filters = bind_filters(remaining, kpi, datasets, extract_columns)
@@ -376,6 +379,26 @@ def _bind_context_models(
     return loaded, datasets
 
 
+def _assert_listed_name_clash(
+    kpi: KpiSpec, models_by_id: dict[str, ModelSpec], datasets: dict
+) -> None:
+    """BindError when a writing helper shares a listed extract / output_schema name."""
+    listed: set[str] = set()
+    for dataset in datasets.values():
+        listed.update(norm_name(col) for col in dataset.columns)
+    for model in models_by_id.values():
+        listed.update(norm_name(col) for col in model.output_schema)
+    if not listed:
+        return
+    for measure in kpi.base_measures:
+        writes = bool(measure.expr or measure.lookup or measure.over)
+        if writes and not measure.replace and norm_name(measure.name) in listed:
+            raise BindError(
+                f"base_measures.{measure.name} would overwrite extract column "
+                f"{measure.name!r}. Set replace: true if that is intended."
+            )
+
+
 def _union_extract_columns(
     models_by_id: dict[str, ModelSpec], datasets: dict, kpi: KpiSpec
 ) -> set[str]:
@@ -451,6 +474,9 @@ def _prepare_pipeline(
     source_filters, deferred, result_filters = split_filters(pipe_bound, emitted)
     extra = tuple(dict.fromkeys([*extra, *(item.column for item in deferred)]))
     grain = extract_grain(kpi, emitted, pipe.bases, extra=extra)
+    from kpi_engine.capabilities.ops.support import assert_helper_of_allowed
+
+    assert_helper_of_allowed(kpi, emitted, pipe.measure_keys)
     return {
         "models": models,
         "datasets": pipe_ds,
@@ -536,6 +562,7 @@ def _extract_all(
     request: AdaptedRequest,
     connection: Any | None = None,
     joined: bool = False,
+    measure_keys: tuple[str, ...] = (),
 ) -> tuple[pd.DataFrame, pd.DataFrame | None, list[str]]:
     """Per-model row-level retrieve of physical columns, then Pandas builds the monthly frame."""
     scoped = replace(kpi, base_measures=needed_bases)
@@ -576,7 +603,9 @@ def _extract_all(
         mapped = stabilize_detail(mapped, kpi)
         facted = apply_pandas_facts(mapped, sub)
         detail_parts.append(facted)
-        pandas_monthly = collapse_pandas_detail(facted, sub, grain, facts_applied=True)
+        pandas_monthly = collapse_pandas_detail(
+            facted, sub, grain, facts_applied=True, measure_keys=measure_keys
+        )
         if not pandas_monthly.empty:
             frames[model.model_id] = pandas_monthly
     detail = pd.concat(detail_parts, ignore_index=True) if detail_parts else None
@@ -589,12 +618,16 @@ def _extract_all(
         monthly = pd.DataFrame(columns=cols)
     monthly = apply_dimension_maps(monthly, kpi)
     monthly = apply_frame_filters(monthly, calc_filters)
-    monthly = _to_monthly(monthly, scoped, grain, plan)
+    monthly = _to_monthly(monthly, scoped, grain, plan, measure_keys=measure_keys)
     return monthly, detail, sqls
 
 
 def _to_monthly(
-    frame: pd.DataFrame, kpi: KpiSpec, grain: tuple[str, ...], plan: TimePlan | None
+    frame: pd.DataFrame,
+    kpi: KpiSpec,
+    grain: tuple[str, ...],
+    plan: TimePlan | None,
+    measure_keys: tuple[str, ...] = (),
 ) -> pd.DataFrame:
     """Place the DuckDB extract on a dense month spine from span_start through the anchor.
 
@@ -607,7 +640,7 @@ def _to_monthly(
         return work
     time_col = kpi.time.column
     keys = pandas_group_keys(kpi, grain)
-    value_cols = _monthly_value_cols(kpi)
+    value_cols = _monthly_value_cols(kpi, measure_keys)
     fill_zero = [m.name for m in kpi.base_measures if m.agg in {"sum", "count"}]
     densify_end = plan.anchor
     if plan.lookback_forward:
@@ -628,17 +661,13 @@ def _to_monthly(
     return densify(frame, **kwargs)
 
 
-def _monthly_value_cols(kpi: KpiSpec) -> list[str]:
+def _monthly_value_cols(
+    kpi: KpiSpec, measure_keys: tuple[str, ...] = ()
+) -> list[str]:
     """Columns densify must carry (named facts plus avg carry columns)."""
-    cols: list[str] = []
-    for measure in kpi.base_measures:
-        if measure.agg is None or measure.agg in NON_ADDITIVE:
-            continue
-        if measure.agg == "avg":
-            cols.extend([f"{measure.name}__sum", f"{measure.name}__count"])
-            continue
-        cols.append(measure.name)
-    return cols
+    from kpi_engine.capabilities.ops.support import monthly_fact_columns
+
+    return monthly_fact_columns(kpi, measure_keys or None)
 
 
 def _apply_host_defaults(

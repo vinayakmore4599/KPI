@@ -30,6 +30,8 @@ _NUMBER = re.compile(r"^(?:\d+\.\d*|\.\d+|\d+)$")
 _KEYWORDS = frozenset(
     {"case", "when", "then", "else", "end", "and", "or", "not", "is", "null", "in"}
 )
+# `end` is a CASE terminator, not a reserved identifier (`date_diff(start, end, 'day')`).
+_RESERVED_IDENTS = _KEYWORDS - {"end"}
 _COMPARE_OPS = frozenset({"=", "<>", "!=", "<", ">", "<=", ">="})
 
 
@@ -600,7 +602,7 @@ class _Parser:
             name = self._next()
             if self._peek() == "(":
                 return self._parse_call(name)
-            if name.lower() in _KEYWORDS:
+            if name.lower() in _RESERVED_IDENTS:
                 raise _illegal(
                     self.raw,
                     self.what,

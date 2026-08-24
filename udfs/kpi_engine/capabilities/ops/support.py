@@ -224,7 +224,7 @@ def point_value(
     return value_from_row(hit.iloc[0], base)
 
 
-def value_from_row(row: pd.Series, base) -> float | None:
+def value_from_row(row: pd.Series, base) -> Any:
     """Read one aggregated base measure from a monthly/snapshot row."""
     if not bool(row.get("_observed", True)):
         return None
@@ -239,7 +239,27 @@ def value_from_row(row: pd.Series, base) -> float | None:
     value = row[base.name]
     if pd.isna(value):
         return None
-    return float(value)
+    if isinstance(value, pd.Timestamp):
+        return value.date().isoformat()
+    from datetime import date, datetime
+
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    try:
+        import numpy as np
+
+        if isinstance(value, np.datetime64):
+            return pd.Timestamp(value).date().isoformat()
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, str):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
 
 
 def window_value(
@@ -646,7 +666,7 @@ def parse_partition_by(key: str, kind: str, raw: dict[str, Any]) -> tuple[str, .
 
 
 def require_base_of(spec: OutputSpec, kpi: KpiSpec) -> None:
-    """`of` must name a declared folded base measure (not a row helper)."""
+    """`of` must name a declared base measure. Row helpers are gated later."""
     known = {b.name: b for b in kpi.base_measures}
     if not spec.of:
         raise BindError(
@@ -658,12 +678,130 @@ def require_base_of(spec: OutputSpec, kpi: KpiSpec) -> None:
             f"measures.{spec.key} of={spec.of!r} is not a base measure. "
             f"Declared base_measures: {sorted(known)}."
         )
-    base = known[spec.of]
-    if base.agg is None:
+
+
+def reject_helper_of(spec: OutputSpec, kpi: KpiSpec) -> None:
+    """Window / calendar shift cannot take a row helper as `of`."""
+    known = {b.name: b for b in kpi.base_measures}
+    base = known.get(spec.of or "")
+    if base is not None and base.agg is None:
         raise BindError(
             f"measures.{spec.key} of={spec.of!r} is a row helper (no agg:). "
             "Add agg: on that base, or use it only in later base expr/over."
         )
+
+
+def helper_names_used_as_of(kpi: KpiSpec, keys: tuple[str, ...]) -> tuple[str, ...]:
+    """Row helpers named by requested measures as `of` / inputs."""
+    bases = {b.name: b for b in kpi.base_measures}
+    measures = {m.key: m for m in kpi.measures}
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def walk(name: str) -> None:
+        if not name or name in seen:
+            return
+        seen.add(name)
+        base = bases.get(name)
+        if base is not None and base.agg is None:
+            found.append(base.name)
+        spec = measures.get(name)
+        if spec is None:
+            return
+        for dep in (spec.of, spec.left, spec.right, *spec.operands, *spec.inputs):
+            if dep:
+                walk(dep)
+
+    for key in keys:
+        walk(key)
+    return tuple(dict.fromkeys(found))
+
+
+def assert_helper_of_allowed(
+    kpi: KpiSpec, emitted: tuple, keys: tuple[str, ...]
+) -> None:
+    """Point `of` a helper only when every emitted cut equals identity_grain."""
+    helpers = helper_names_used_as_of(kpi, keys)
+    if not helpers:
+        return
+    first = helpers[0]
+    if not kpi.identity_grain:
+        raise BindError(
+            f"of={first!r} is a row helper (no agg:). "
+            "Add agg: on that base, declare identity_grain: and emit only that "
+            "grain, or use it only in later base expr/over."
+        )
+    from kpi_engine.core.cuts import effective_group_by
+    from kpi_engine.identifiers import norm_name
+
+    wanted = {norm_name(name) for name in kpi.identity_grain}
+    for cut in emitted:
+        grain = effective_group_by(cut, kpi)
+        have = {norm_name(name) for name in grain}
+        if have != wanted:
+            raise BindError(
+                f"Row helper {first!r} can be measures.of only when every emitted "
+                f"cut's grain equals identity_grain {list(kpi.identity_grain)}. "
+                f"cuts.{cut.name} grain is {list(grain)}."
+            )
+
+
+def is_last_n_valued(name: str, kpi: KpiSpec, *, _seen: set[str] | None = None) -> bool:
+    """True when `name` is a last_n base or a point that folds one."""
+    seen = _seen if _seen is not None else set()
+    if not name or name in seen:
+        return False
+    seen.add(name)
+    bases = {b.name: b for b in kpi.base_measures}
+    base = bases.get(name)
+    if base is not None and base.over is not None and base.over.fn == "last_n":
+        return True
+    measures = {m.key: m for m in kpi.measures}
+    spec = measures.get(name)
+    if spec is None:
+        return False
+    if spec.kind == "point" and spec.of:
+        return is_last_n_valued(spec.of, kpi, _seen=seen)
+    for dep in (spec.of, spec.left, spec.right, *spec.operands, *spec.inputs):
+        if dep and is_last_n_valued(dep, kpi, _seen=seen):
+            return True
+    return False
+
+
+def assert_last_n_consumers(kpi: KpiSpec) -> None:
+    """last_n JSON lists may sit on `op: point`; numeric consumers BindError."""
+    skip = {"point", "dimension", "constant"}
+    for spec in kpi.measures:
+        if spec.kind in skip:
+            continue
+        names = [
+            n
+            for n in (spec.of, spec.left, spec.right, *spec.operands, *spec.inputs)
+            if n
+        ]
+        vs = spec.params.get("vs") if spec.params else None
+        if vs:
+            names.append(str(vs))
+        for name in names:
+            if is_last_n_valued(name, kpi):
+                raise BindError(
+                    f"measures.{spec.key} cannot use {name!r}: last_n is a JSON "
+                    "list, not a numeric measure. Keep it on op: point."
+                )
+    if kpi.green_when is not None and is_last_n_valued(kpi.green_when.of, kpi):
+        raise BindError(
+            f"green_when.of={kpi.green_when.of!r} is last_n (JSON list); "
+            "green_when needs a numeric measure."
+        )
+    if kpi.having is not None:
+        from kpi_engine.core.predicates import predicate_names
+
+        for name in predicate_names(kpi.having.predicates):
+            if is_last_n_valued(name, kpi):
+                raise BindError(
+                    f"having of={name!r} is last_n (JSON list); having needs a "
+                    "numeric measure."
+                )
 
 
 def require_measure_or_base_of(spec: OutputSpec, kpi: KpiSpec) -> None:
@@ -689,6 +827,26 @@ def require_measure_or_base_of(spec: OutputSpec, kpi: KpiSpec) -> None:
             f"measures.{spec.key} of={spec.of!r} is a row helper (no agg:). "
             "Add agg: on that base, or use it only in later base expr/over."
         )
+
+
+def monthly_fact_columns(
+    kpi: KpiSpec, measure_keys: tuple[str, ...] | None = None
+) -> list[str]:
+    """Densify value columns: folded facts plus helpers used as `of`."""
+    keys = measure_keys if measure_keys is not None else tuple(m.key for m in kpi.measures)
+    needed = set(helper_names_used_as_of(kpi, keys))
+    cols: list[str] = []
+    for measure in kpi.base_measures:
+        if measure.name in needed:
+            cols.append(measure.name)
+            continue
+        if measure.agg is None or measure.agg in NON_ADDITIVE_AGGS:
+            continue
+        if measure.agg == "avg":
+            cols.extend([f"{measure.name}__sum", f"{measure.name}__count"])
+            continue
+        cols.append(measure.name)
+    return cols
 
 
 def assert_partition_keys(spec: OutputSpec, kpi: KpiSpec) -> None:

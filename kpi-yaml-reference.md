@@ -150,7 +150,7 @@ The practical consequences:
 | `format` | `yyyy-mm-dd`, `yyyy-mm`, `yyyy/mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, or a strptime string | ISO `YYYY-MM` / `YYYY-MM-DD` | How the physical column and the context time filter are stored (`062026` → `format: mmyyyy`) |
 | `compose` | `{ template: "{year}{month:02}" }` | omitted | Build `filter_code` from segregated context keys. Literals between `{placeholders}` are kept (`{year}/{month:02}` → `2026/04`). `{month:02}` zero-pads. The part keys are then removed so they are not leftover `IN` filters. If `filter_code` is already on the context, that scalar wins. |
 
-Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. A snapshot measure may not use a nonzero `offset`, `trailing`, or any kind that needs time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not.
+Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Leftover host period filters (`reporting_month`, `month`, `year`, `as_of_period`, and compose year-month keys) are skipped with `reason: no_time` even if mapped — they are not IN-filters on a snapshot. Other unmapped valued filters stay FilterError. A snapshot measure may not use a nonzero `offset`, `trailing`, or any kind that needs time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not. Snapshot KPIs may still use `over:` with a non-time `order_by`.
 
 Rules the engine enforces:
 
@@ -331,9 +331,9 @@ base_measures:
 
 Prefer `expr:` for nested arithmetic, or `columns:` + `op:` for a registered function. Do **not** desugar `arithmetic` / `fn` / `columns`+`op` into `expr` — those kinds stay for plugins and existing YAML. The preferred authoring path for new KPIs is named `expr:` steps (and `lookup:` / `over:`).
 
-`expr:` / `lookup:` / `over:` without `agg:` are **row helpers**: they exist only in the row pipeline. They are not densify-filled and cannot be `measures.of` (BindError). Add `agg:` to fold them. Omit `agg` on `sql:` / `columns:`+`op` and it still defaults to `sum`.
+`expr:` / `lookup:` / `over:` without `agg:` are **row helpers**: they exist only in the row pipeline and are not densify-filled. They cannot be `measures.of` unless the KPI sets `identity_grain:` (a subset of `dimensions`) and **every emitted cut's** effective grain equals that set (point, offset 0 only). Duplicate identity tuples are CatalogError. Omit `identity_grain` (or emit a coarser `also_emit` cut) → BindError; fold with `agg: first|last|max` instead. Calendar `window` / `lag` of a helper stay illegal. Omit `agg` on `sql:` / `columns:`+`op` and it still defaults to `sum`.
 
-A later `expr:` may name an earlier base. Cycles are BindError. If an extract column and a YAML `expr:` / `over:` / `lookup:` share a name: BindError, unless the base sets `replace: true` (Pandas overwrites and `grain_warnings` records `replace_extract_column`).
+A later `expr:` may name an earlier base. Cycles are BindError. If an extract column listed on `datasets[].columns` or model `output_schema` and a YAML `expr:` / `over:` / `lookup:` share a name: BindError, unless the base sets `replace: true` (Pandas overwrites and `grain_warnings` records `replace_extract_column`). If the host lists **no** columns and the name is not in `output_schema`, `validate()` cannot see the clash; compute still CatalogError.
 
 `sql:` / `expr:` name physical columns **or earlier helpers** (and optional `+ - * /`, CASE, or allowlisted calls including `date_diff` / `date_add` / `epoch_day` and `round` / `floor` / `ceil` / `power` / `log` / `log10` / `sqrt`). SQL `SUM()` / subqueries are rejected in KPI `sql:`; put the aggregation in `agg:`. DuckDB only SELECTs the physical column names; Pandas evaluates the formula. A `kind: sql` model may still contain `SUM(` / `LAG(` to shape **this extract**.
 
@@ -397,11 +397,11 @@ running_final:
   agg: max
 ```
 
-`fn`: `lag` / `lead` / `row_number` / `rank` / `dense_rank` / `running_sum` / `running_avg` / `last_n`. `order_by` is required (≥1 column). Window sort is `order_by` then `_kpi_row_id`; nulls sort last. `over.of` defaults to a named numeric helper/column; required for `running_*` / `last_n` / `lag` of a value. `last_n` writes a JSON list of the last n `of` values; fold only with `first`/`last` (or `agg_ok`).
+`fn`: `lag` / `lead` / `row_number` / `rank` / `dense_rank` / `running_sum` / `running_avg` / `last_n`. `order_by` is required (≥1 column). Window sort is `order_by` then `_kpi_row_id`; nulls sort last. `over.of` is required for `running_*` / `last_n` / `lag` / `lead` of a value (it does not default to this helper's name). Rank fns stay of-optional. `last_n` writes a JSON list of the last n `of` values (dates as ISO strings); fold only with `first`/`last` (or `agg_ok`). `last_n` may sit on `op: point`. It cannot be `of`/`inputs` of window, arithmetic, fn, predicate, having, cut ops, `green_when`, threshold, trend, or numeric hooks.
 
 Caps: `OVER_ROW_CAP` (500,000 detail rows) and `OVER_PARTITION_CAP` (50,000 distinct partition tuples). Exceed → CatalogError; no silent truncate.
 
-`agg: sum|avg|count|count_distinct` on a window is BindError unless `agg_ok: true` (computes + `grain_warnings` `window_agg_ok`). Allowed identity aggs: `first|last|min|max`. Densify / `fill_zero` never feed `over:`. Snapshot KPIs may use `over:` with a non-time `order_by`. Two-model KPIs: `partition_by` / `order_by` / `lookup.column` must be on **that** model's retrieve (BindError if they name a base on the other extract). Combo/measure `of`/`expr` may only name folded bases (`agg` present) or other measures — never a row helper.
+`agg: sum|avg|count|count_distinct` on a window is BindError unless `agg_ok: true` (computes + `grain_warnings` `window_agg_ok`). Allowed identity aggs: `first|last|min|max`. Densify / `fill_zero` never feed `over:`. Snapshot KPIs may use `over:` with a non-time `order_by`. Two-model KPIs: `partition_by` / `order_by` / `lookup.column` must be on **that** model's retrieve (BindError if they name a base on the other extract). Combo `op: expr` / arithmetic / fn may only name other **measures**, not a row helper (BindError). Helper as `op: point` `of` requires `identity_grain` (see above).
 
 
 ### Built-in aggregations
@@ -751,6 +751,7 @@ default_cut: G
 | `also_emit` | Other cuts to return in the same response (chains are followed, cycles are safe) |
 | `default_cut` | The cut the walk starts from; defaults to the first declared cut |
 | `default_dimensions` | Grain when `selected_dimensions` is omitted. Required. `[]` is worldwide |
+| `identity_grain` | Optional. Subset of `dimensions`. Helpers may be `op: point` `of` only when every emitted cut equals this grain |
 
 **How `ignore_filters` works.** A filter ignored by *any* **emitted** cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Default `apply: extract` is legal with `ignore_filters`; at request time `split_filters` promotes it to calc when that cut is emitted. If only R is emitted (`parameters.output_cut: R` on a KPI that declares it), region can stay extract. Do not combine `ignore_filters` with `apply: result`. The response reports where each filter ran under `applied_filters`, cut-level skips under `ignored_filters`, and present-but-blank keys under `skipped_filters`. A dim-named ignore token must also appear in `exclude_from_grain`, and the reverse.
 
@@ -926,7 +927,7 @@ joins:
 
 ### SQL / CTE model
 
-Prefer this when the extract needs anything a simple join cannot express.
+Prefer this when the extract needs anything a simple join cannot express. DuckDB SELECT is grain + walked physical columns (not the full parquet column list). A walked name missing from `output_schema` is BindError; the dump skip does not invent CTE columns.
 
 ```yaml
 model_id: sotif_multi
@@ -1254,6 +1255,12 @@ pytest -q
 | `measures.<k> names unknown hook '<x>'` | Hook not in `registries/hooks.yaml` | Add the function under `capabilities/hooks/` and a registry row |
 | `Filter '<x>' is hierarchical (input_text=heir)` | Hierarchy not expanded | Fix in the context builder |
 | `output.page must be >= 1` | Paging from 0 | Pages are 1-based |
+| `is a row helper` | Helper used as `of` without identity grain, or on a coarser cut | Set `identity_grain` and emit only that grain, or add `agg:` |
+| `last_n is a JSON list` | Numeric op consumed `last_n` | Keep `last_n` on `op: point` |
+| `would overwrite extract column` | Writing helper name listed on datasets/output_schema | Rename, or `replace: true` |
+| `does not project` | `kind: sql` walked column not in the CTE | Expose it on the SQL SELECT / `output_schema` |
+
+**Exception kinds.** BindError is illegal YAML/request (helper vs grain, listed name clash, `last_n` as numeric `of`, missing SQL walked column). CatalogError is data shape at apply (helper group `n>1`, unlisted name clash, tz-aware dates, numeric-as-date). FilterError is a valued leftover filter that is not time-like and does not bind.
 
 ---
 

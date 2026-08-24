@@ -622,6 +622,9 @@ def _bool_scalar(op: str, left: float | None, right: float | None) -> float | No
     return None
 
 
+_DATE_MEASURE_FNS = frozenset({"date_diff", "date_add", "epoch_day"})
+
+
 def _call_scalar(node: Call, values: dict[str, Any]) -> float | None:
     """Dispatch an expr call to a measure function."""
     key = _fn_key(MEASURE_FNS, node.name)
@@ -629,6 +632,9 @@ def _call_scalar(node: Call, values: dict[str, Any]) -> float | None:
         raise CatalogError(
             f"Unknown measure function {node.name!r}. Registered: {sorted(MEASURE_FNS)}."
         )
+    if key in _DATE_MEASURE_FNS:
+        args = [_scalar_raw(arg, values) for arg in node.args]
+        return call_measure_fn(key, args)
     args = [eval_expr_scalar(arg, values) for arg in node.args]
     return call_measure_fn(key, args)
 
@@ -855,7 +861,7 @@ def apply_row_op(
     problem = column_op_error(name, len(columns), params)
     if problem:
         raise CatalogError(f"Column op {problem}")
-    args = [pd.to_numeric(frame[c], errors="coerce") for c in columns]
+    args = [_column_series(frame, c) for c in columns]
     result = fn(**dict(zip(params, args))) if params else fn(*args)
     if not isinstance(result, pd.Series):
         raise CatalogError(
@@ -866,6 +872,22 @@ def apply_row_op(
             f"Column op {name!r} returned {len(result)} values for {len(frame)} rows."
         )
     return result.reindex(frame.index) if not result.index.equals(frame.index) else result
+
+
+def _column_series(frame: pd.DataFrame, name: str) -> pd.Series:
+    """Numeric series, or datetime as stored (for date fns / max of a date)."""
+    series = frame[name]
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    if series.dtype == object:
+        from datetime import date, datetime
+
+        sample = series.dropna()
+        if not sample.empty and isinstance(
+            sample.iloc[0], (date, datetime, pd.Timestamp)
+        ):
+            return series
+    return pd.to_numeric(series, errors="coerce")
 
 
 def _fold(step: Callable[[Any, Any], Any], args: tuple[Any, ...]) -> Any:
@@ -936,6 +958,7 @@ def collapse_pandas_detail(
     grain: tuple[str, ...],
     *,
     facts_applied: bool = False,
+    measure_keys: tuple[str, ...] | None = None,
 ) -> pd.DataFrame:
     """Compute KPI YAML facts per row, then fold additive aggs to the extract grain."""
     from kpi_engine.core.model_sql import NON_ADDITIVE
@@ -960,7 +983,31 @@ def collapse_pandas_detail(
     keys = [c for c in keys if c in work.columns]
     aggs: dict[str, Any] = {}
     foldable = {"sum", "avg", "min", "max", "count", "first", "last"}
+    from kpi_engine.capabilities.ops.support import helper_names_used_as_of
+
+    keys_for_helpers = (
+        measure_keys if measure_keys is not None else tuple(m.key for m in kpi.measures)
+    )
+    needed_helpers = helper_names_used_as_of(kpi, keys_for_helpers)
+    if needed_helpers:
+        if not keys:
+            if len(work) > 1:
+                raise CatalogError(
+                    f"identity_grain is not unique ({len(work)} rows in the extract)."
+                )
+        else:
+            present = [c for c in keys if c in work.columns]
+            if present:
+                sizes = work.groupby(present, dropna=False).size()
+                if not sizes.empty and int(sizes.max()) > 1:
+                    raise CatalogError(
+                        "identity_grain is not unique: some groups have more than "
+                        f"one row (max {int(sizes.max())})."
+                    )
     for measure in kpi.base_measures:
+        if measure.name in needed_helpers and measure.name in work.columns:
+            aggs[measure.name] = "first"
+            continue
         if is_helper(measure) or measure.name not in work.columns:
             continue
         if measure.agg in NON_ADDITIVE:

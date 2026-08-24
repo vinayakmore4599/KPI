@@ -55,6 +55,24 @@ def test_snapshot_kpi_computes_without_a_month_filter(parquet_path, extra_config
     assert row["current_value"] == expected
 
 
+def test_snapshot_kpi_skips_host_reporting_month(parquet_path, extra_config):
+    """Usual host context still has reporting_month; snapshot skips it as no_time."""
+    write_yaml(extra_config / "kpis" / "9706.yaml", _snapshot_kpi(9706))
+    ctx = make_context(
+        parquet_path, measures=["current_value"], supplier=["ABC"], kpi_id=9706
+    )
+    result = compute(ctx, config_dir=extra_config)
+    assert any(
+        item.get("filter_code") == "reporting_month" and item.get("reason") == "no_time"
+        for item in result["skipped_filters"]
+    )
+    assert result["parameters"]["anchor"] is None
+    frame = pd.read_parquet(parquet_path)
+    expected = float(frame.loc[frame["reason_code"] == "LATE_SUPPLIER", "amount"].sum())
+    row = find_row(result, cut="G", reason="LATE_SUPPLIER")
+    assert row["current_value"] == expected
+
+
 def test_snapshot_kpi_rejects_window_measures(extra_config):
     """Windows and trends need a time column; snapshot YAML cannot declare them."""
     spec = _snapshot_kpi(9702)

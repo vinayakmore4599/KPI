@@ -373,21 +373,19 @@ def _rollup_after_having(
             else cut_monthly.iloc[0:0]
         )
     grain = tuple(target)
-    collapsed = collapse_pandas_detail(survivors, kpi, grain, facts_applied=True)
+    collapsed = collapse_pandas_detail(
+        survivors, kpi, grain, facts_applied=True, measure_keys=tuple(need)
+    )
     if kpi.time is None or plan is None:
         rolled = collapsed.copy()
         if "_observed" not in rolled.columns:
             rolled["_observed"] = True
     else:
+        from kpi_engine.capabilities.ops.support import monthly_fact_columns
+
         time_col = kpi.time.column
         keys = pandas_group_keys(kpi, grain)
-        value_cols = [
-            m.name
-            for m in kpi.base_measures
-            if m.agg is not None and m.agg not in NON_ADDITIVE and m.agg != "avg"
-        ]
-        value_cols += [f"{m.name}__sum" for m in kpi.base_measures if m.agg == "avg"]
-        value_cols += [f"{m.name}__count" for m in kpi.base_measures if m.agg == "avg"]
+        value_cols = monthly_fact_columns(kpi, tuple(need))
         fill_zero = [m.name for m in kpi.base_measures if m.agg in {"sum", "count"}]
         densify_end = plan.anchor
         if plan.lookback_forward:
@@ -522,14 +520,12 @@ def _cut_monthly(
     kpi: KpiSpec,
 ) -> pd.DataFrame:
     """Filter then re-aggregate the monthly frame to this cut's group_by."""
+    from kpi_engine.capabilities.ops.support import monthly_fact_columns
+
     work = apply_cut_filters(monthly, cut, deferred)
     time_col = kpi.time.column if kpi.time is not None else None
     dims = list(cut_group_dims(cut, time_col or "", kpi))
-    value_cols = [
-        m.name
-        for m in kpi.base_measures
-        if m.agg is not None and (m.agg not in NON_ADDITIVE or m.row_op)
-    ]
+    value_cols = monthly_fact_columns(kpi)
     extra = [f"{m.name}__sum" for m in kpi.base_measures if m.agg == "avg"]
     extra += [f"{m.name}__count" for m in kpi.base_measures if m.agg == "avg"]
     cols = [c for c in [*value_cols, *extra, "_observed"] if c in work.columns]

@@ -1025,6 +1025,42 @@ root:
   inputs: [current_value]
 ```
 
+### `date_diff`
+
+end minus start in day, week, month, or year. Lists and trends are BindError.  
+`role: platform` · `enabled: on`
+
+```yaml
+gap:
+  op: expr
+  expr: "date_diff(prev_date, ship_date, 'day')"
+```
+
+### `date_add`
+
+Add n day/week/month/year units to a date. Result is an ISO date string.  
+`role: platform` · `enabled: on`
+
+```yaml
+next:
+  op: fn
+  fn: date_add
+  inputs: [ship_date, one]
+  params: {unit: month}
+```
+
+### `epoch_day`
+
+Integer days since 1970-01-01. Needs a date, not a number.  
+`role: platform` · `enabled: on`
+
+```yaml
+epoch:
+  op: fn
+  fn: epoch_day
+  inputs: [ship_date]
+```
+
 ## Hooks (`measures.hook`)
 
 ### `seasonal_index`

@@ -52,6 +52,13 @@ class Point(OpPlugin):
             raise BindError(
                 f"measures.{spec.key} (point offset) needs a time: block."
             )
+        known = {b.name: b for b in kpi.base_measures}
+        helper = known.get(spec.of or "")
+        if helper is not None and helper.agg is None and _offset_nonzero(spec.offset):
+            raise BindError(
+                f"measures.{spec.key} of={spec.of!r} is a row helper (no agg:). "
+                "Point offset on a helper is illegal; use offset 0 at identity_grain."
+            )
 
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
         if not spec.offset:
@@ -112,6 +119,7 @@ class Window(OpPlugin):
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         support.require_base_of(spec, kpi)
+        support.reject_helper_of(spec, kpi)
         if kpi.time is None:
             raise BindError(f"measures.{spec.key} (window) needs a time: block.")
         support.assert_window_range(spec, kpi)
@@ -154,6 +162,7 @@ class Trend(OpPlugin):
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         support.require_base_of(spec, kpi)
+        support.reject_helper_of(spec, kpi)
         if kpi.time is None:
             raise BindError(f"measures.{spec.key} (trend) needs a time: block.")
         support.assert_window_range(spec, kpi)
@@ -268,6 +277,9 @@ class Fn(OpPlugin):
     def evaluate(self, ctx: EvalCtx) -> Any:
         return _compose(ctx, kind="fn")
 
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        _assert_date_fn_inputs(spec, kpi)
+
 
 class Expr(OpPlugin):
     name = "expr"
@@ -325,6 +337,9 @@ class Expr(OpPlugin):
 
     def evaluate(self, ctx: EvalCtx) -> Any:
         return _compose(ctx, kind="expr")
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        _assert_date_fn_inputs(spec, kpi)
 
 
 class Constant(OpPlugin):
@@ -530,6 +545,27 @@ def _dep_keys(spec: OutputSpec) -> list[str]:
     if spec.operands:
         return list(spec.operands)
     return [n for n in (spec.left, spec.right) if n]
+
+
+_DATE_FNS = frozenset({"date_diff", "date_add", "epoch_day"})
+
+
+def _assert_date_fn_inputs(spec: OutputSpec, kpi: KpiSpec) -> None:
+    """Date measure fns reject trend arrays at bind."""
+    fn = spec.fn or ""
+    expr = spec.expr or ""
+    uses_date = fn in _DATE_FNS or any(name in expr for name in _DATE_FNS)
+    if not uses_date:
+        return
+    from kpi_engine.core.op_registry import get_op
+
+    by_key = {m.key: m for m in kpi.measures}
+    for name in spec.inputs:
+        child = by_key.get(name)
+        if child is not None and get_op(child.kind).emits_trend:
+            raise BindError(
+                f"measures.{spec.key} date function cannot take trend array {name!r}."
+            )
 
 
 def _max_dep_lookback(spec, by_key, time, anchor, seen, lookback_for) -> int:

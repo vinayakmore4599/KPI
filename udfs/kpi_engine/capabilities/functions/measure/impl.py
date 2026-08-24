@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from kpi_engine.exceptions import CatalogError
+
 
 def _fold(step: Callable[[Any, Any], Any], args: tuple[Any, ...]) -> Any:
     """Apply a two-argument step left to right."""
@@ -236,3 +238,81 @@ def sqrt_scalar(value: Any) -> float | None:
         return _finite_or_none(math.sqrt(float(value)))
     except Exception:
         return None
+
+
+def _reject_date_collection(value: Any, name: str) -> None:
+    if isinstance(value, (list, tuple)):
+        raise CatalogError(f"{name} cannot take a list or trend array.")
+
+
+def _as_naive_timestamp(value: Any, name: str):
+    """Parse a date-like scalar. Numbers are rejected (not Excel serials)."""
+    import pandas as pd
+
+    _reject_date_collection(value, name)
+    if _is_null(value):
+        return None
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        raise CatalogError(f"{name} needs a date, not a number ({value!r}).")
+    ts = pd.Timestamp(value)
+    if pd.isna(ts):
+        return None
+    if ts.tzinfo is not None:
+        raise CatalogError(f"{name} requires tz-naive timestamps.")
+    return ts
+
+
+def _date_unit(unit: Any, name: str) -> str:
+    kind = "day" if unit is None else str(unit).strip().lower()
+    if kind not in {"day", "week", "month", "year"}:
+        raise CatalogError(f"{name} unit must be day, week, month, or year (got {kind!r}).")
+    return kind
+
+
+def date_diff(start: Any, end: Any, unit: Any = "day") -> float | None:
+    """end - start in day/week/month/year. Null in either side is null."""
+    left = _as_naive_timestamp(start, "date_diff")
+    right = _as_naive_timestamp(end, "date_diff")
+    if left is None or right is None:
+        return None
+    kind = _date_unit(unit, "date_diff")
+    if kind == "day":
+        return float((right - left).days)
+    if kind == "week":
+        return float((right - left).days // 7)
+    if kind == "month":
+        return float((right.year - left.year) * 12 + (right.month - left.month))
+    return float(right.year - left.year)
+
+
+def date_add(value: Any, n: Any, unit: Any = "day") -> str | None:
+    """Add n day/week/month/year units. Returns an ISO date string."""
+    import pandas as pd
+
+    stamp = _as_naive_timestamp(value, "date_add")
+    _reject_date_collection(n, "date_add")
+    if stamp is None or _is_null(n):
+        return None
+    kind = _date_unit(unit, "date_add")
+    step = int(float(n))
+    if kind == "day":
+        out = stamp + pd.Timedelta(days=step)
+    elif kind == "week":
+        out = stamp + pd.Timedelta(weeks=step)
+    elif kind == "month":
+        out = stamp + pd.DateOffset(months=step)
+    else:
+        out = stamp + pd.DateOffset(years=step)
+    ts = pd.Timestamp(out)
+    return ts.normalize().date().isoformat()
+
+
+def epoch_day(value: Any) -> float | None:
+    """Integer days since 1970-01-01 (tz-naive date)."""
+    import pandas as pd
+
+    stamp = _as_naive_timestamp(value, "epoch_day")
+    if stamp is None:
+        return None
+    origin = pd.Timestamp("1970-01-01")
+    return float((stamp.normalize() - origin).days)

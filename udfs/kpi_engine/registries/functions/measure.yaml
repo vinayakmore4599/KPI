@@ -368,3 +368,43 @@ sqrt:
       inputs: [current_value]
   module: kpi_engine.capabilities.functions.measure.impl
   attr: sqrt_scalar
+
+date_diff:
+  role: platform
+  enabled: true
+  aliases: []
+  description: end minus start in day, week, month, or year. Lists and trends are BindError.
+  example: |
+    gap:
+      op: expr
+      expr: "date_diff(prev_date, ship_date, 'day')"
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: date_diff
+
+date_add:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Add n day/week/month/year units to a date. Result is an ISO date string.
+  example: |
+    next:
+      op: fn
+      fn: date_add
+      inputs: [ship_date, one]
+      params: {unit: month}
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: date_add
+
+epoch_day:
+  role: platform
+  enabled: true
+  aliases: []
+  description: Integer days since 1970-01-01. Needs a date, not a number.
+  example: |
+    epoch:
+      op: fn
+      fn: epoch_day
+      inputs: [ship_date]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: epoch_day
+

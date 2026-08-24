@@ -333,10 +333,12 @@ def _select_model_columns(
         if "__event_time" not in seen:
             parts.append(f"{parsed} AS {quote_ident('__event_time')}")
             seen.add("__event_time")
-    for col in _fact_dataset_columns(kpi, datasets):
-        if time_col and norm_name(col) == norm_name(time_col):
-            continue
-        add(col)
+    if model is None or model.kind != "sql":
+        for col in _fact_dataset_columns(kpi, datasets):
+            if time_col and norm_name(col) == norm_name(time_col):
+                continue
+            add(col)
+    _assert_sql_projection(kpi, model, grain, source_filters)
     for col in _used_join_columns(kpi, grain, source_filters, model, datasets):
         add(col)
     if not parts:
@@ -463,6 +465,34 @@ def _used_join_columns(
 def _bases_by_name(kpi: KpiSpec) -> dict[str, BaseMeasure]:
     """Lookup from YAML base name to spec, used to walk helpers to physical columns."""
     return {measure.name: measure for measure in kpi.base_measures}
+
+
+def _assert_sql_projection(
+    kpi: KpiSpec,
+    model: ModelSpec | None,
+    grain: tuple[str, ...],
+    source_filters: tuple[BoundFilter, ...],
+) -> None:
+    """kind: sql walked columns must appear on output_schema when it is listed."""
+    del source_filters
+    if model is None or model.kind != "sql" or not model.output_schema:
+        return
+    from kpi_engine.core.fn_apply import input_columns
+
+    allowed = {norm_name(col) for col in model.output_schema}
+    bases = _bases_by_name(kpi)
+    needed: list[str] = list(grain)
+    for measure in kpi.base_measures:
+        needed.extend(input_columns(measure, bases))
+        if measure.where is not None:
+            needed.append(measure.where.column)
+    for col in dict.fromkeys(needed):
+        if norm_name(col) in allowed:
+            continue
+        raise BindError(
+            f"kind: sql model {model.model_id!r} does not project {col!r}. "
+            "Add it to the SQL SELECT and output_schema."
+        )
 
 
 def _assert_facts_on_context(

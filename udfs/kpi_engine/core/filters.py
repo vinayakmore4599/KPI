@@ -4,16 +4,17 @@ What this file provides
     bind_filters — map filter_code → column (YAML filters, mappings, filter_map).
     split_filters — extract (DuckDB) vs calc (Pandas) vs result (JSON rows).
     apply_cut_filters / apply_frame_filters — Pandas mask (same ops as SQL).
-    apply_result_filters — drop output rows after compute_cuts.
+    apply_result_filters — drop JSON rows after compute_cuts.
 
 Where it is used
     orchestrator after plan_time. calc_engine per-cut path for G vs R region.
 
 Capabilities
-    YAML `filters:` sets op / optional / apply. Undeclared context codes stay
-    IN at extract unless a cut lists them in ignore_filters (then calc).
-    Empty IN (not optional) matches nothing. Optional omitted/null is skipped.
-    extract + ignore_filters is a bind error (declared in binder).
+    YAML `filters:` sets op / apply. All row filters are non-binding: omitted,
+    [], or all-null comparison values skip (recorded on skipped_filters).
+    Undeclared context codes stay IN at extract unless an emitted cut lists
+    them in ignore_filters (then calc). extract + ignore_filters is legal;
+    split_filters promotes to calc per emitted cut.
 
 When to use
     Change mapping rules if metadata mappings change. Hierarchy (heir) is
@@ -35,9 +36,13 @@ from kpi_engine.contracts import (
     KpiSpec,
     ModelSpec,
 )
-from kpi_engine.core.compose import expand_compose, strip_compose_keys
+from kpi_engine.core.compose import (
+    compose_placeholder_names,
+    expand_compose,
+    strip_compose_keys,
+)
 from kpi_engine.core.filter_ops import assert_filter_arity, pandas_mask
-from kpi_engine.exceptions import BindError, FilterError, TimePlanError
+from kpi_engine.exceptions import FilterError, TimePlanError
 from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.runlog import traced
 
@@ -78,16 +83,17 @@ def bind_filters(
     kpi: KpiSpec,
     datasets: dict[str, DatasetBinding],
     extract_columns: set[str],
-) -> tuple[BoundFilter, ...]:
-    """Map leftover filters to source columns. Unmapped filters are a hard error."""
-    remaining = _apply_filter_composes(remaining, kpi.filter_specs)
+) -> tuple[tuple[BoundFilter, ...], tuple[dict[str, str], ...]]:
+    """Map leftover filters to source columns. Blank keys skip; valued unmapped fail."""
+    remaining, skipped = _apply_filter_composes(remaining, kpi.filter_specs)
     mappings = _mapping_index(datasets, kpi)
     specs = _spec_index(kpi)
-    _assert_required_filters(remaining, specs)
     bound: list[BoundFilter] = []
     for item in remaining:
         spec = _spec_for(item, specs)
-        if spec is not None and _skip_optional(spec, item):
+        op = spec.op if spec is not None else "in"
+        if op not in {"is_null", "is_not_null"} and _is_blank(item.values):
+            skipped.append({"filter_code": item.code, "reason": "blank"})
             continue
         column = _resolve_column(item, mappings, kpi, extract_columns, spec=spec)
         canonical = match_name(column, extract_columns) or column
@@ -98,7 +104,6 @@ def bind_filters(
                 "control (Level, Interval, time_grain), declare it under YAML "
                 "parameters: and send it in context.parameters, not filters."
             )
-        op = spec.op if spec is not None else "in"
         values = () if op in {"is_null", "is_not_null"} else item.values
         assert_filter_arity(op, values, code=item.code)
         bound.append(
@@ -108,11 +113,11 @@ def bind_filters(
                 values=values,
                 stage=spec.apply if spec is not None else "extract",
                 op=op,
-                optional=bool(spec.optional) if spec is not None else False,
+                optional=True,
                 input_text=item.input_text,
             )
         )
-    return tuple(bound)
+    return tuple(bound), tuple(skipped)
 
 
 @traced
@@ -210,15 +215,6 @@ def apply_result_filters(rows: list[dict], items: tuple[BoundFilter, ...]) -> li
     return [row for row, ok in zip(rows, keep.tolist()) if bool(ok)]
 
 
-def _skip_optional(spec: FilterApplySpec, item: IncomingFilter) -> bool:
-    """optional: true and omitted/null comparison values → do not apply."""
-    if not spec.optional:
-        return False
-    if spec.op in {"is_null", "is_not_null"}:
-        return False
-    return _is_blank(item.values)
-
-
 def _is_blank(values: tuple) -> bool:
     """True when the context sent no comparison value (or only nulls)."""
     if not values:
@@ -228,10 +224,15 @@ def _is_blank(values: tuple) -> bool:
 
 def _apply_filter_composes(
     remaining: tuple[IncomingFilter, ...], specs: tuple
-) -> tuple[IncomingFilter, ...]:
-    """Build synthetic IncomingFilters from filters:.compose and drop part keys."""
+) -> tuple[tuple[IncomingFilter, ...], list[dict[str, str]]]:
+    """Build synthetic IncomingFilters from filters:.compose and drop part keys.
+
+    Missing or blank compose parts skip the composed filter (row filters are
+    never required). Time compose is claimed earlier and still errors.
+    """
     work = remaining
     extras: list[IncomingFilter] = []
+    skipped: list[dict[str, str]] = []
     for spec in specs:
         template = spec.compose_template
         if not template:
@@ -248,15 +249,25 @@ def _apply_filter_composes(
         if existing is not None and len(existing.values) == 1 and existing.values[0] is not None:
             work = strip_compose_keys(work, template)
             continue
+        if _compose_parts_blank(template, work):
+            skipped.append({"filter_code": spec.code, "reason": "blank"})
+            work = strip_compose_keys(work, template)
+            if existing is not None:
+                work = tuple(
+                    item
+                    for item in work
+                    if norm_name(item.code) != norm_name(spec.code)
+                    and norm_name(item.raw_key) != norm_name(spec.code)
+                )
+            continue
         try:
             value, _consumed = expand_compose(
                 template, work, what=f"filters.{spec.code}.compose.template"
             )
-        except TimePlanError as exc:
-            if spec.optional:
-                work = strip_compose_keys(work, template)
-                continue
-            raise BindError(str(exc)) from exc
+        except TimePlanError:
+            skipped.append({"filter_code": spec.code, "reason": "blank"})
+            work = strip_compose_keys(work, template)
+            continue
         extras.append(
             IncomingFilter(
                 raw_key=spec.code,
@@ -273,23 +284,27 @@ def _apply_filter_composes(
                 if norm_name(item.code) != norm_name(spec.code)
                 and norm_name(item.raw_key) != norm_name(spec.code)
             )
-    return tuple(extras) + work
+    return tuple(extras) + work, skipped
 
 
-def _assert_required_filters(
-    remaining: tuple[IncomingFilter, ...], specs: dict[str, FilterApplySpec]
-) -> None:
-    """optional: false specs must appear on the context."""
-    present = {norm_name(item.code) for item in remaining} | {
-        norm_name(item.raw_key) for item in remaining
-    }
-    for spec in specs.values():
-        if spec.optional:
-            continue
-        if spec.compose_template:
-            continue
-        if norm_name(spec.code) not in present:
-            raise BindError(f"Required filter {spec.code!r} is missing from context.")
+def _compose_parts_blank(
+    template: str, filters: tuple[IncomingFilter, ...]
+) -> bool:
+    """True when any compose placeholder is missing, empty, or all-null."""
+    index: dict[str, IncomingFilter] = {}
+    for item in filters:
+        index.setdefault(norm_name(item.code), item)
+        index.setdefault(norm_name(item.raw_key), item)
+    for name in compose_placeholder_names(template):
+        item = index.get(norm_name(name))
+        if item is None or _is_blank(item.values):
+            return True
+        if len(item.values) != 1:
+            return True
+        value = item.values[0]
+        if isinstance(value, str) and value == "":
+            return True
+    return False
 
 
 def _spec_index(kpi: KpiSpec) -> dict[str, FilterApplySpec]:

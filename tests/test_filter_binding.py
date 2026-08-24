@@ -163,10 +163,17 @@ def test_apply_cut_filters_with_no_values_matches_nothing():
     assert apply_cut_filters(frame, cut, (empty,)).empty
 
 
-def test_empty_deferred_filter_empties_only_the_cut_that_applies_it(parquet_path, config_dir):
-    """region=[] wipes the R rows while G, which ignores region, still reports."""
+def test_empty_region_skips_and_emits_all_r_rows(parquet_path, config_dir):
+    """region=[] skips the predicate; G is worldwide and R lists every region."""
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"], region=[])
     result = compute(ctx, config_dir=config_dir)
+    assert {"filter_code": "region", "reason": "blank"} in result["skipped_filters"]
     cuts = {row["output_cut"] for row in result["rows"]}
-    assert cuts == {"G"}
+    assert cuts == {"G", "R"}
     assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    r_regions = {
+        row["region"]
+        for row in result["rows"]
+        if row["output_cut"] == "R" and row["reason_code"] == "LATE_SUPPLIER"
+    }
+    assert r_regions == {"NA", "EU"}

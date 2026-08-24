@@ -248,7 +248,7 @@ Rules:
 There are **four** overlays (not one grammar). Do not add `select:`, `use:`, or `{ from: param }` (the key `from` stays `trailing.from` / `dimension.from`).
 
 1. Reserved `time_grain` — pick from `time.grains`
-2. Reserved `output_cut` — emit that cut only, no `also_emit`
+2. Reserved `output_cut` — emit that cut only, no `also_emit`. 3004 omits it so G still packs R; filter JSON `output_cut` in the client if you need one grain.
 3. `when: { param, cases, else }` on `model` / `measures.*` / `base_measures.*`
 4. `from_param:` on the allowlist (model id string; trailing/offset ints; constant `value` int|float)
 
@@ -668,7 +668,7 @@ row_set: span_union
 | Key | Meaning |
 |---|---|
 | `group_by` | Dimensions this cut groups by |
-| `ignore_filters` | Cuts that skip this **calc** filter (G worldwide / R filtered). Not valid with `apply: extract` or `apply: result` |
+| `ignore_filters` | Cuts that skip this **calc** filter (G worldwide / R filtered). Legal with default `apply: extract` (runtime defers). Not valid with `apply: result` |
 | `also_emit` | Extra cuts in the same response |
 | `row_set: span_union` | Row if the combo has data **anywhere in the scan** |
 | `row_set: anchor_only` | Row only if it has data **at the selected period** |
@@ -686,12 +686,11 @@ filters:
   effective_day:
     column: day
     op: lte              # DAY <= @EffectiveDay
-    optional: true       # skip when the param is omitted/null
     apply: extract       # DuckDB WHERE — cheapest; SUM / percent_of_total are correct
   region:
     column: region
     op: in
-    apply: calc          # Pandas before measures; needed when G ignore_filters: [region]
+    apply: extract       # legal with ignore_filters; runtime defers when G is emitted
   reason_code:
     column: reason_code
     op: in
@@ -703,7 +702,7 @@ filters:
 | Fiscal year + month | `time:` — not this block |
 | `DAY <= EffectiveDay` on facts | **extract** (or calc if `day` is Pandas-only) |
 | Region IN, all cuts the same | **extract** |
-| Region IN, G ignores it | **calc** + `ignore_filters` |
+| Region IN, G ignores it | **extract** (or calc) + `ignore_filters` |
 | Hide reasons in JSON, keep full share | **result** |
 
 You normally declare nothing for plain `IN` lists. Context `filter_column_mappings` or a matching column name is enough (extract, unless a cut ignores the code).
@@ -713,9 +712,10 @@ filter_map:
   plant_code: region         # this KPI only; wins over context mappings
 ```
 
-- Unmapped filter → hard error (never dropped).
-- Empty `in` list → no rows (`FALSE`). Empty `in` is not `IS NULL`.
-- `optional: true` + omitted/null → skip.
+- Unmapped filter **with values** → hard error (never dropped). Unmapped `[]` → skip (`skipped_filters`).
+- Empty `in` list, omitted key, or all-null → **skip** (not `FALSE`). Breaking vs matching nothing. `[""]` is a real value.
+- All row filters are optional. `optional: true` is ignored; `optional: false` is a bind error.
+- `is_null` / `is_not_null` apply when the key is present; omit the key to skip.
 - `input_text: heir` / `hier` is rejected; expand hierarchies in the context builder.
 - Values are SQL parameters; nothing is concatenated into SQL text.
 - Ops: `in`, `eq` (`==`), `ne` (`<>`), `lt`/`lte`/`gt`/`gte`, `like`/`ilike`/`not_like`, `between`/`not_between`, `is_null`/`is_not_null`. Host supplies LIKE `%` / `_`.
@@ -967,7 +967,8 @@ Use local parquet fixtures (`tests/conftest.py`: `make_context`, `write_yaml`). 
 | `Month filter must contain exactly one value` | Anchor is one period, not a multi-select |
 | `Filter '…' has no column mapping` | Add context mapping or `filter_map` |
 | `Unknown filter op` | Use a name from §10 (`lte`, `like`, `between`, …) |
-| `apply: extract cannot be listed in ignore_filters` | Use `apply: calc` |
+| `apply: result cannot be listed in ignore_filters` | Use `apply: calc` + `ignore_filters` |
+| `optional: false is not supported` | Row filters cannot be required |
 | `Compose placeholder 'year' is missing` | Send every `{placeholder}` on the context, or send `time.filter_code` as one scalar |
 | `compose.template must name at least two` | Two or more `{filter}` placeholders |
 | `Illegal measure sql` / unknown function | Use CASE or an allowlisted call; put `SUM` in `agg:` |

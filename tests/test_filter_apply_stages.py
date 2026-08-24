@@ -3,7 +3,7 @@
 What this file provides
     Same OTHER reason filter at extract/calc (share = 100) vs result (share
     stays 45/51). One case per comparison op at extract and at calc.
-    Bind errors for unknown op, arity, extract+ignore_filters, optional skip.
+    Bind errors for unknown op, arity, result+ignore_filters, optional skip.
 
 Where it is used
     pytest tests/test_filter_apply_stages.py.
@@ -201,27 +201,56 @@ def test_optional_filter_skipped_when_omitted_or_null(parquet_path, extra_config
     assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 15.0
 
 
-def test_required_filter_missing_from_context_is_a_bind_error(parquet_path, extra_config):
-    """optional: false (the default) means the context must send the filter."""
+def test_declared_filter_omitted_from_context_does_not_shrink_extract(
+    parquet_path, extra_config
+):
+    """YAML-declared filters are never required; omit the key to skip."""
     spec = minimal_kpi(9881)
     spec["filters"] = {"reason_code": {"column": "reason_code", "op": "in"}}
     write_yaml(extra_config / "kpis" / "9881.yaml", spec)
     ctx = make_context(
         parquet_path, measures=["current_value"], supplier=["ABC"], kpi_id=9881
     )
-    with pytest.raises(BindError, match="Required filter 'reason_code'"):
-        validate(ctx, config_dir=extra_config)
+    result = compute(ctx, config_dir=extra_config)
+    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert all(f["filter_code"] != "reason_code" for f in result["applied_filters"])
+    assert result["skipped_filters"] == []
 
 
-def test_extract_filter_cannot_be_in_ignore_filters(extra_config):
-    """DuckDB cannot apply a mask that G must skip; that is apply: calc."""
+def test_optional_false_is_a_bind_error(extra_config):
+    """optional: false is rejected; row filters cannot be required."""
+    spec = minimal_kpi(9887)
+    spec["filters"] = {
+        "reason_code": {"column": "reason_code", "op": "in", "optional": False}
+    }
+    write_yaml(extra_config / "kpis" / "9887.yaml", spec)
+    from kpi_engine.core.binder import load_kpi
+
+    with pytest.raises(BindError, match="optional: false is not supported"):
+        load_kpi(9887, extra_config)
+
+
+def test_extract_filter_in_ignore_filters_loads_and_defers(parquet_path, extra_config):
+    """apply: extract + ignore_filters: [Region] loads; G+R keeps region out of SQL."""
     spec = minimal_kpi(9882)
     spec["filters"] = {"region": {"column": "region", "op": "in", "apply": "extract"}}
     write_yaml(extra_config / "kpis" / "9882.yaml", spec)
     from kpi_engine.core.binder import load_kpi
 
-    with pytest.raises(BindError, match="apply: extract cannot be listed in ignore_filters"):
-        load_kpi(9882, extra_config)
+    load_kpi(9882, extra_config)
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value"],
+        supplier=["ABC"],
+        region=["NA"],
+        kpi_id=9882,
+    )
+    planned = validate(ctx, config_dir=extra_config)
+    assert '"region" IN' not in " ".join(planned["sql"].split())
+    result = compute(ctx, config_dir=extra_config)
+    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")["current_value"] == 30.0
+    assert {r["region"] for r in result["rows"] if r["output_cut"] == "R"} == {"NA"}
 
 
 def test_result_filter_cannot_be_in_ignore_filters(extra_config):
@@ -271,3 +300,50 @@ def test_pandas_mask_matches_sql_null_semantics():
     sql, params = sql_predicate('"reason_code"', "lte", (15,))
     assert sql == '"reason_code" <= ?'
     assert params == [15]
+
+
+def test_unmapped_blank_filter_is_skipped(parquet_path, config_dir):
+    """Host keys sent as [] are skipped even when they have no column."""
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value"],
+        supplier=["ABC"],
+        extra_filters={"not_a_column": {"value": [], "input_text": "simple"}},
+    )
+    result = compute(ctx, config_dir=config_dir)
+    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert {"filter_code": "not_a_column", "reason": "blank"} in result["skipped_filters"]
+
+
+def test_empty_string_filter_is_not_skipped(parquet_path, config_dir):
+    """[''] is a real IN value, not blank skip."""
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value"],
+        supplier=["ABC"],
+        region=[""],
+    )
+    result = compute(ctx, config_dir=config_dir)
+    assert all(f["filter_code"] != "region" or f.get("reason") != "blank" for f in result["skipped_filters"])
+    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    r_rows = [r for r in result["rows"] if r["output_cut"] == "R"]
+    assert r_rows == [] or all(r.get("region") == "" for r in r_rows)
+
+
+def test_is_null_omitted_skips_present_applies(parquet_path, extra_config):
+    """is_null runs only when the key is on the context."""
+    spec = minimal_kpi(9888)
+    spec["filters"] = {
+        "reason_code": {"column": "reason_code", "op": "is_null", "apply": "extract"}
+    }
+    write_yaml(extra_config / "kpis" / "9888.yaml", spec)
+    ctx = make_context(
+        parquet_path, measures=["current_value"], supplier=["ABC"], kpi_id=9888
+    )
+    omitted = compute(ctx, config_dir=extra_config)
+    assert find_row(omitted, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+
+    ctx["filters"]["reason_code"] = {"values": [], "input_text": "simple"}
+    present = compute(ctx, config_dir=extra_config)
+    g_reasons = {r["reason_code"] for r in present["rows"] if r["output_cut"] == "G"}
+    assert "LATE_SUPPLIER" not in g_reasons

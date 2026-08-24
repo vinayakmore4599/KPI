@@ -35,6 +35,7 @@ def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
         "request_parameters",
         "applied_filters",
         "ignored_filters",
+        "skipped_filters",
         "trend_axes",
         "trend_labels",
         "meta",

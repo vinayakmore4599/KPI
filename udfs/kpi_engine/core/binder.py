@@ -837,6 +837,11 @@ def _parse_filters(raw: Any) -> tuple[FilterApplySpec, ...]:
             raise BindError(
                 f"filters.{code}.apply must be extract, calc, or result (got {spec.get('apply')!r})."
             )
+        if "optional" in spec and spec.get("optional") is False:
+            raise BindError(
+                f"filters.{code}.optional: false is not supported. "
+                "All row filters are optional; omit the key or send [] to skip."
+            )
         out.append(
             FilterApplySpec(
                 code=str(code),
@@ -857,16 +862,15 @@ def _assert_filter_specs(
     cuts: tuple[CutSpec, ...],
     dimensions: tuple[str, ...],
 ) -> None:
-    """extract/result cannot sit in ignore_filters; result columns are dimensions."""
+    """result cannot sit in ignore_filters; result columns are dimensions.
+
+    apply: extract plus ignore_filters is legal. split_filters promotes that
+    filter to calc when an emitted cut ignores it (G worldwide / R extract).
+    """
     ignored = {norm_name(name) for cut in cuts for name in cut.ignore_filters}
     for spec in specs:
         names = {norm_name(spec.code), norm_name(spec.column)}
         listed = sorted(names & ignored)
-        if listed and spec.apply == "extract":
-            raise BindError(
-                f"filters.{spec.code} apply: extract cannot be listed in ignore_filters "
-                f"({listed[0]}); use apply: calc."
-            )
         if listed and spec.apply == "result":
             raise BindError(
                 f"filters.{spec.code} apply: result cannot be listed in ignore_filters "

@@ -133,7 +133,7 @@ def _compute(
     log_step("plan_time")
     time_plan, remaining_filters = plan_time(request, kpi)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
-    bound = bind_filters(remaining_filters, kpi, datasets, extract_columns)
+    bound, skipped_filters = bind_filters(remaining_filters, kpi, datasets, extract_columns)
     log_step("extract")
     con, owned = acquire_connection(connection)
     rows: list[dict[str, Any]] = []
@@ -196,6 +196,7 @@ def _compute(
         "request_parameters": dict(kpi.bound_parameters),
         "applied_filters": _dedupe_applied(_applied(applied_src, applied_def, applied_res)),
         "ignored_filters": _dedupe_ignored(ignored),
+        "skipped_filters": list(skipped_filters),
         "trend_axes": trend_axes,
         "trend_labels": _trend_labels(trend_axes, kpi),
         "meta": _response_meta(kpi),
@@ -250,7 +251,7 @@ def _validate(
     models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
     time_plan, remaining = plan_time(request, kpi)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
-    bound = bind_filters(remaining, kpi, datasets, extract_columns)
+    bound, skipped_filters = bind_filters(remaining, kpi, datasets, extract_columns)
     sqls: list[str] = []
     param_count = 0
     for pipe in pipelines:
@@ -281,6 +282,7 @@ def _validate(
         "sql": sqls[0] if sqls else "",
         "sqls": sqls,
         "param_count": param_count,
+        "skipped_filters": list(skipped_filters),
     }
     log_step("END validate", kpi_id=kpi.kpi_id, sql_count=len(sqls), param_count=param_count)
     return result

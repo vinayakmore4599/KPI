@@ -1,7 +1,7 @@
 """Request-level scenarios: pagination, filters, SQL models, empty extracts.
 
 What this file provides
-    Pagination slices, empty IN → no rows, unmapped filters fail, kind: sql
+    Pagination slices, empty IN skips, unmapped filters fail, kind: sql
     models scan via $alias_path, unknown measure ops fail at bind.
 
 Where it is used
@@ -39,17 +39,23 @@ def test_pagination_slices_after_calc(parquet_path, config_dir):
     assert len(last["rows"]) == 1
 
 
-def test_empty_in_list_matches_nothing(parquet_path, config_dir):
-    """Empty supplier IN is FALSE in SQL, not an unbounded scan."""
+def test_empty_in_list_skips_the_filter(parquet_path, config_dir):
+    """Empty supplier IN is skipped, not FALSE — the extract is unfiltered on supplier."""
     ctx = make_context(
         parquet_path,
         measures=["current_value"],
         supplier=[],
     )
     planned = validate(ctx, config_dir=config_dir)
-    assert "FALSE" in planned["sql"]
+    assert "FALSE" not in planned["sql"]
+    assert planned["skipped_filters"] == [
+        {"filter_code": "Supplier Name", "reason": "blank"}
+    ]
     result = compute(ctx, config_dir=config_dir)
-    assert result["rows"] == []
+    assert result["rows"]
+    assert result["skipped_filters"] == [
+        {"filter_code": "Supplier Name", "reason": "blank"}
+    ]
 
 
 def test_unmapped_filter_is_hard_error(parquet_path, config_dir):

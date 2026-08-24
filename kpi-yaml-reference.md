@@ -56,9 +56,11 @@ cuts:
 default_cut: G
 row_set: span_union          # span_union | anchor_only
 
-# How context filters land (values still come from the request). Omit = today's IN at extract.
+# How context filters land (values still come from the request). Omit = IN at extract
+# unless an emitted cut ignore_filters the code (then calc). All row filters skip when
+# omitted or []. optional: true is accepted and ignored; optional: false is a bind error.
 # filters:
-#   effective_day: { column: day, op: lte, optional: true, apply: extract }
+#   effective_day: { column: day, op: lte, apply: extract }
 
 measures:                    # every measure_key the UI can send
   current_value:
@@ -173,7 +175,7 @@ Calculation controls are **not** filters and **not** `execution.*`. Send them as
 There are **four** overlays (not one grammar). Do not add a fifth (`select:`, `use:`, `{ from: param }`).
 
 1. Reserved `parameters.time_grain` — pick from `time.grains` (feeds `apply_request_time`).
-2. Reserved `parameters.output_cut` — emit that cut only; drop `also_emit`.
+2. Reserved `parameters.output_cut` — emit that cut only; drop `also_emit`. 3004 does **not** declare this (so G still `also_emit`s R). Hosts that want one grain filter JSON `output_cut`. A KPI that declares the parameter accepts the lock.
 3. `when:` on `model`, `measures.<key>`, or `base_measures.<name>` only.
 4. `from_param:` on an allowlist (see below). Never the YAML key `from` (that stays `trailing.from: data_points` / `dimension.from`).
 
@@ -635,7 +637,7 @@ default_cut: G
 | `also_emit` | Other cuts to return in the same response (chains are followed, cycles are safe) |
 | `default_cut` | The cut the walk starts from; defaults to the first declared cut |
 
-**How `ignore_filters` works.** A filter ignored by *any* emitted cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Declare that filter with `apply: calc` (or leave it undeclared — undeclared codes used in `ignore_filters` are deferred automatically). `apply: extract` plus `ignore_filters` is a bind error. The response reports where each filter ran under `applied_filters` (`stage` / `apply`: `extract`, `calc`, or `result`) and lists skipped ones under `ignored_filters`.
+**How `ignore_filters` works.** A filter ignored by *any* **emitted** cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Default `apply: extract` is legal with `ignore_filters`; at request time `split_filters` promotes it to calc when that cut is emitted. If only R is emitted (`parameters.output_cut: R` on a KPI that declares it), region can stay extract. Do not combine `ignore_filters` with `apply: result`. The response reports where each filter ran under `applied_filters`, cut-level skips under `ignored_filters`, and present-but-blank keys under `skipped_filters`.
 
 Every cut re-aggregates the spine from scratch, so a global average is a true weighted average, not a mean of regional averages.
 
@@ -661,7 +663,6 @@ filters:
   effective_day:
     column: day
     op: lte                 # or "<="; aliases are case-insensitive
-    optional: true          # omitted or null → skip (SP: @EffectiveDay IS NULL OR …)
     apply: extract          # extract | calc | result  (default extract)
 
   region:
@@ -688,19 +689,19 @@ filters:
 | **`calc`** | Pandas after retrieve, before densify / cut measures | **Yes** (same math as extract) | After maps/join, or some cuts skip it (`ignore_filters`) |
 | **`result`** | After `compute_cuts`, on JSON rows | **No** | Hide groups in the payload; shares still include dropped rows |
 
-`ignore_filters` is not a fourth apply. It only names which cuts skip a **`calc`** filter. Do not combine it with `apply: result`. Bind error if `apply: extract` and the code is in `ignore_filters`.
+`ignore_filters` is not a fourth apply. It names which **emitted** cuts skip a calc-stage filter. Default `apply: extract` plus `ignore_filters` is legal (runtime defers when that cut is emitted). Do not combine it with `apply: result`.
 
-Undeclared context codes keep today's behaviour: `IN` at extract, unless a cut lists them in `ignore_filters` (then calc). `filter_map` still remaps a code to a column (`op: in`, `apply: extract`).
+Undeclared context codes stay `IN` at extract, unless an emitted cut lists them in `ignore_filters` (then calc). `filter_map` still remaps a code to a column (`op: in`, `apply: extract`).
 
-`optional: true` skips when the context omits the key or sends null. Empty `in` that is not optional matches no rows (`FALSE`). Empty `in` is not `IS NULL`.
+**All row filters are non-binding (breaking vs empty `IN` = FALSE).** Omit the key, send `[]`, or send all-null comparison values → skip; the key appears on `skipped_filters` when it was present but blank. `[""]`, `["ALL"]`, `["*"]` are real predicates. `optional: true` is accepted and ignored. `optional: false` is a bind error. `is_null` / `is_not_null` apply when the key is **present** (omit the key to skip). Row-filter `compose` with a missing or blank part skips; time `compose` still errors. The selected period (`time.filter_code`) is not a row filter — empty or missing month is still a TimePlanError.
 
-`apply: result` may name **dimension** columns on the output row only, not measure keys.
+`apply: result` may name **dimension** columns on the output row only, not measure keys. Dimensions not in a cut's `group_by` are `null` on that cut; a result `IN` on those fields hides the cut. G worldwide is `group_by: [reason_code]` plus `ignore_filters: [region]`, not `group_by: []`.
 
 ### Operators (all three `apply` stages)
 
 | Canonical | YAML aliases | Values |
 |---|---|---|
-| `in` | `IN` (default if `op` omitted) | 0+ (empty + not optional → no rows) |
+| `in` | `IN` (default if `op` omitted) | 0+ (empty / omitted → skip) |
 | `eq` | `==`, `=`, `equals` | exactly one |
 | `ne` | `<>`, `!=`, `not_equals` | exactly one |
 | `lt` | `<` | exactly one |
@@ -724,7 +725,7 @@ You can still declare nothing when metadata already maps the filter, or the code
 | Metadata already maps the filter to a column | Nothing — `filter_column_mappings` is used (`IN`, extract unless ignored) |
 | The filter code equals the column name | Nothing — it binds by name |
 | No mapping exists, or this KPI needs a different column | Add `filter_map` to the KPI YAML |
-| Comparison other than `IN`, optional skip, or a chosen `apply` | Add `filters:` |
+| Comparison other than `IN`, or a chosen `apply` | Add `filters:` |
 
 ```yaml
 filter_map:
@@ -735,8 +736,8 @@ filter_map:
 
 Contract details:
 
-- An unmapped filter is a **hard error**, never silently dropped.
-- An empty `in` list means "nothing selected" and matches no rows (compiled as `FALSE`).
+- An unmapped filter **with values** is a **hard error**, never silently dropped. An unmapped blank `[]` is skipped (`skipped_filters`).
+- An empty `in` list, omitted key, or all-null values **skip** the predicate (not `FALSE`). This is a breaking change from matching nothing.
 - `input_text: heir` is rejected — expand hierarchies in the context builder.
 - Values are always bound as SQL parameters; nothing is concatenated into SQL text.
 - Unknown `op` or wrong value count is a bind error listing the expected arity.
@@ -1118,8 +1119,8 @@ pytest -q
 | `Filter '<x>' has no column mapping` | No context mapping and no matching column | Add `filter_column_mappings` or `filter_map` |
 | `Unknown filter op '…'` | YAML `filters.*.op` is not in the operator table | Use a name or alias from §7 |
 | `Filter '…' op 'between' expects 2 value(s)` | Wrong arity | `between` needs `[low, high]`; `eq` needs one value; `is_null` needs none |
-| `filters.x apply: extract cannot be listed in ignore_filters` | DuckDB cannot skip the mask on cut G | Use `apply: calc` |
-| `Required filter '…' is missing from context` | `optional: false` (default) and the host omitted it | Send the filter, or set `optional: true` |
+| `filters.x apply: result cannot be listed in ignore_filters` | Hiding JSON rows is not a per-cut skip | Use `apply: calc` + `ignore_filters` |
+| `filters.x.optional: false is not supported` | Row filters cannot be required | Omit `optional:`, or omit/[] the key at request time |
 | `Filter '<x>' does not bind to a source column` | Mapped to a column the extract does not expose, or a control sent as a filter | Add it to `output_schema`, or declare YAML `parameters:` and send `context.parameters` |
 | `execution.time_grain is not supported` | Grain pick was on `execution` | Send `parameters.time_grain` |
 | `This KPI declares no parameters` | `context.parameters` was non-empty on a KPI with no schema | Omit it, or add YAML `parameters:` |

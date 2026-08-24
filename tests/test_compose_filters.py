@@ -205,3 +205,28 @@ def test_non_time_compose_builds_an_extract_filter(parquet_path, extra_config):
     assert applied["reason_code"]["values"] == ["LATE_SUPPLIER"]
     assert "reason_a" not in applied
     assert "reason_b" not in applied
+
+
+def test_non_time_compose_skips_when_a_part_is_blank(parquet_path, extra_config):
+    """Missing compose placeholders skip the row filter instead of bind-error."""
+    spec = minimal_kpi(9897)
+    spec["filters"] = {
+        "reason_code": {
+            "column": "reason_code",
+            "op": "eq",
+            "apply": "extract",
+            "compose": {"template": "{reason_a}_{reason_b}"},
+        }
+    }
+    write_yaml(extra_config / "kpis" / "9897.yaml", spec)
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value"],
+        supplier=["ABC"],
+        kpi_id=9897,
+        extra_filters={"reason_a": {"values": ["LATE"], "input_text": "simple"}},
+    )
+    result = compute(ctx, config_dir=extra_config)
+    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert {"filter_code": "reason_code", "reason": "blank"} in result["skipped_filters"]
+    assert all(f["filter_code"] != "reason_code" for f in result["applied_filters"])

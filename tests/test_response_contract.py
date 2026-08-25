@@ -48,15 +48,17 @@ def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
         "dropped_cuts",
         "dropped_groups",
         "grain_warnings",
+        "notes",
     }
     assert result["kpi_id"] == 3004
     assert result["request_id"] == "REQ-page-001"
-    assert result["parameters"] == {
-        "anchor": "2026-03-01",
-        "time_grain": "month",
-        "span_start": "2025-04-01",
-        "lookback_months": 11,
-    }
+    assert result["parameters"]["anchor"] == "2026-03-01"
+    assert result["parameters"]["time_grain"] == "month"
+    assert result["parameters"]["span_start"] == "2025-04-01"
+    assert result["parameters"]["lookback_months"] == 11
+    assert result["parameters"]["time_selection"]["anchor_source"] == "legacy"
+    assert result["parameters"]["time_selection"]["start"] == "2026-03-01"
+    assert result["parameters"]["time_selection"]["end"] == "2026-03-01"
     assert result["request_parameters"] == {}
     assert set(result["pagination"]) == {"page", "page_size", "total_count", "has_more"}
 

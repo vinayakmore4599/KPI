@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 
 from kpi_engine import compute, validate
-from kpi_engine.exceptions import TimePlanError
+from kpi_engine.exceptions import BindError
 from tests.conftest import make_context
 
 
@@ -85,22 +85,21 @@ def test_validate_logs_the_full_compiled_query(parquet_path, config_dir, tmp_pat
 
 
 def test_failures_are_written_to_the_same_run_file(parquet_path, config_dir, tmp_path):
-    """A missing month filter still produces a log that includes the traceback."""
+    """A bind error still produces a log that includes the traceback."""
     log_dir = tmp_path / "logs"
-    ctx = make_context(parquet_path, measures=["current_value"])
-    del ctx["filters"]["reporting_month"]
+    ctx = make_context(parquet_path, measures=["not_a_real_measure"])
     try:
         compute(ctx, config_dir=config_dir, log_dir=log_dir)
-    except TimePlanError:
+    except BindError:
         pass
     else:
-        raise AssertionError("expected TimePlanError")
+        raise AssertionError("expected BindError")
     files = list(Path(log_dir).glob("kpi-compute-3004-*.log"))
     assert len(files) == 1
     text = files[0].read_text(encoding="utf-8")
     assert "compute failed" in text
-    assert "TimePlanError" in text
-    assert "reporting_month" in text
+    assert "BindError" in text
+    assert "not_a_real_measure" in text
 
 
 def test_full_received_context_is_logged(parquet_path, config_dir, tmp_path):

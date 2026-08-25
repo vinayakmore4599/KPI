@@ -76,7 +76,7 @@ Set `kpi_id` and `model` to match.
 - `column` — date/timestamp on the extract.
 - `grain` — `day`, `month`, `quarter`, or `year`.
 - `calendar` — `gregorian` (default) or `fiscal` with `fiscal_start_month` (default 4). Fiscal affects quarter and year grains only.
-- `filter_code` — **exact** context filter key for the user-selected period. This is per KPI (not always `reporting_month`). Omit the whole `time:` block if the KPI has no period column.  
+- `filter_code` — **exact** context filter key for a scalar selected period (optional when `periods:` or `compose:` is set). This is per KPI (not always `reporting_month`). Omit the whole `time:` block if the KPI has no period column. Add `periods:` when the host sends independent year/quarter/month keys.  
   That filter is the **anchor**. It must never be applied as `IN (one month)`.
 
 **`dimensions`**
@@ -117,7 +117,7 @@ Optional top-level keys: `row_set` (`span_union` default, or `anchor_only`), `fi
 ### Step 5 — Align metadata
 
 - `measures_required` only lists keys from `measures:`.
-- Month filter name = `time.filter_code`.
+- Month filter name = `time.filter_code` (scalar) and/or `time.periods` (independent year/month/quarter).
 - Non-month filters have `filter_column_mappings` (or `filter_map` in YAML).
 - `input_text: heir` is **rejected** until the context builder expands leaves.
 
@@ -146,7 +146,7 @@ Each `compute` / `validate` writes `logs/kpi-<kind>-<kpi_id>-<timestamp>.log` wi
 
 - [ ] `kpi_config/kpis/<kpi_group>/<kpi_id>.yaml` exists; `kpi_id` matches context (ids unique across groups)
 - [ ] `model` points at a model whose aliases exist on the context
-- [ ] `time.filter_code` matches the selected-month filter
+- [ ] `time.filter_code` matches the selected-month filter, **or** `time.periods` names the independent year/month keys
 - [ ] `base_measures` column exists on the extract
 - [ ] Every UI `measure_key` is under `measures:`
 - [ ] Cuts `group_by` only list real dimensions
@@ -362,7 +362,7 @@ value_9m:
 | Symptom | Likely cause | Fix in |
 |---|---|---|
 | `Unknown measure_key` | Context key not in YAML `measures:` | KPI YAML |
-| `Missing month filter` | `time.filter_code` ≠ context filter key | KPI YAML or metadata |
+| `Cannot parse month` | Time part was not an integer (`3` / `"03"`) | KPI YAML or metadata |
 | Previous year all null | Month applied as IN; or span too short | Must be range (engine); check requested keys widen span |
 | Unmapped filter error | No `filter_column_mappings` for that filter | Metadata mappings or YAML `filter_map` |
 | `heir` error | Hierarchical filter not expanded | Context builder, not the engine |

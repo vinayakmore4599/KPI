@@ -10,7 +10,7 @@ Filter operators, compose templates, time formats, and aggregations stay platfor
 
 ### `point`
 
-Value at the selected period, optional calendar offset.  
+Value over the time selection (one bucket or many), optional calendar offset.  
 `role: platform` · `enabled: on`
 
 ```yaml
@@ -225,7 +225,7 @@ yoy_contrib:
 
 ### `lag`
 
-Value of a base or shiftable measure at offset before the anchor.  
+Value of a base or shiftable measure over the selection shifted by offset.  
 `role: addon` · `enabled: on`
 
 ```yaml
@@ -237,7 +237,7 @@ value_3m_ly:
 
 ### `lead`
 
-Value of a base or shiftable measure at offset after the anchor.  
+Value of a base or shiftable measure over the selection shifted forward by offset.  
 `role: addon` · `enabled: on`
 
 ```yaml
@@ -249,7 +249,7 @@ next_month:
 
 ### `index`
 
-of / lagged of × 100. Source is a base or shiftable measure. 100 means unchanged vs the offset period.  
+of / lagged of × 100 over the selection vs the shifted selection. Source is a base or shiftable measure. 100 means unchanged.  
 `role: addon` · `enabled: on`
 
 ```yaml
@@ -357,7 +357,7 @@ top_reason:
 
 ### `diff`
 
-of minus the same measure at offset before the anchor. Source is a base or shiftable measure.  
+of minus the same measure over the selection shifted by offset. Source is a base or shiftable measure.  
 `role: addon` · `enabled: on`
 
 ```yaml
@@ -369,7 +369,7 @@ vs_last_year:
 
 ### `pct_change`
 
-growth_pct(of, lagged of) at offset. Source is a base or shiftable measure. Same scale as fn growth_pct.  
+growth_pct(of, lagged of) over the selection vs the shifted selection. Source is a base or shiftable measure. Same scale as fn growth_pct.  
 `role: addon` · `enabled: on`
 
 ```yaml

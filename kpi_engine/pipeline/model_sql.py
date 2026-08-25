@@ -238,11 +238,15 @@ def _where_clause(
     parts: list[str] = []
     params: list[Any] = []
     if kpi.time is not None and plan is not None:
-        time_expr = _time_bucket_expr(kpi, model=model, datasets=datasets)
-        parts.append(f"{time_expr} >= ?")
-        params.append(plan.span_start)
-        parts.append(f"{time_expr} < ?")
-        params.append(plan.span_end_exclusive)
+        empty = bool(plan.selection and plan.selection.empty_reason)
+        if plan.span_start is not None and plan.span_end_exclusive is not None:
+            time_expr = _time_bucket_expr(kpi, model=model, datasets=datasets)
+            parts.append(f"{time_expr} >= ?")
+            params.append(plan.span_start)
+            parts.append(f"{time_expr} < ?")
+            params.append(plan.span_end_exclusive)
+        elif empty:
+            parts.append("FALSE")
     for item in source_filters:
         col = _qualified_column(item.column, model, datasets)
         fragment, bound = sql_predicate(col, item.op, item.values)
@@ -587,9 +591,43 @@ def _select_physical(
     return expr
 
 
+def compile_period_probe(
+    *,
+    model: ModelSpec,
+    kpi: KpiSpec,
+    datasets: dict[str, DatasetBinding],
+    source_filters: tuple[BoundFilter, ...],
+    parts: dict[str, tuple[int, ...]] | None = None,
+) -> tuple[str, tuple[Any, ...]]:
+    """SELECT min/max time bucket under part predicates and extract filters. No span."""
+    if kpi.time is None:
+        raise BindError("Cannot probe periods: this KPI has no time: block.")
+    params: list[Any] = []
+    from_sql = _from_clause(model, datasets, params)
+    time_expr = _time_bucket_expr(kpi, model=model, datasets=datasets)
+    from kpi_engine.pipeline.period_select import period_predicate_sql
+
+    clauses: list[str] = []
+    part_sql, part_params = period_predicate_sql(time_expr, parts or {}, kpi.time)
+    if part_sql != "TRUE":
+        clauses.append(part_sql)
+        params.extend(part_params)
+    for item in source_filters:
+        col = _qualified_column(item.column, model, datasets)
+        fragment, bound = sql_predicate(col, item.op, item.values)
+        clauses.append(fragment)
+        params.extend(bound)
+    where_sql = " AND ".join(clauses) if clauses else "TRUE"
+    sql = (
+        f"SELECT min({time_expr}) AS lo, max({time_expr}) AS hi\n"
+        f"FROM {from_sql}\nWHERE {where_sql}"
+    )
+    return sql, tuple(params)
+
+
 def _assert_no_month_in(sql: str, plan: TimePlan | None) -> None:
     """Guardrail: the anchor month must not appear as a lone IN list."""
-    if plan is None:
+    if plan is None or plan.anchor is None:
         return
     compacted = " ".join(sql.upper().split())
     if " IN (" in compacted and str(plan.anchor) in sql:

@@ -35,14 +35,25 @@ def _kpi(cuts: tuple[CutSpec, ...], default: str, **overrides) -> KpiSpec:
     return KpiSpec(**spec)
 
 
-def test_locked_cut_skips_also_emit():
-    """parameters.output_cut emits that cut only, even when also_emit is set."""
+def test_locked_cut_walks_also_emit():
+    """parameters.output_cut is a walk root; also_emit still packs unless pack_also_emit is false."""
     cuts = (
         CutSpec(name="G", group_by=("reason_code",), ignore_filters=(), also_emit=("R",)),
         CutSpec(name="R", group_by=("reason_code", "region"), ignore_filters=(), also_emit=()),
     )
-    assert [c.name for c in emitted_cuts(_kpi(cuts, "G", locked_cut="G"))] == ["G"]
+    assert [c.name for c in emitted_cuts(_kpi(cuts, "G", locked_cut="G"))] == ["G", "R"]
     assert [c.name for c in emitted_cuts(_kpi(cuts, "G", locked_cut="R"))] == ["R"]
+    locked = (
+        CutSpec(
+            name="G",
+            group_by=("reason_code",),
+            ignore_filters=(),
+            also_emit=("R",),
+            pack_also_emit=False,
+        ),
+        CutSpec(name="R", group_by=("reason_code", "region"), ignore_filters=(), also_emit=()),
+    )
+    assert [c.name for c in emitted_cuts(_kpi(locked, "G", locked_cut="G"))] == ["G"]
     """A KPI that declares extra cuts still emits just the default unless asked."""
     cuts = (
         CutSpec(name="G", group_by=("reason_code",), ignore_filters=(), also_emit=()),

@@ -93,13 +93,28 @@ def _unshiftable_leaf(
     return None
 
 
-def _eval_named(ctx: EvalCtx, name: str, *, anchor=None) -> Any:
+def _eval_named(ctx: EvalCtx, name: str, *, anchor=None, selection=None) -> Any:
     spec = ctx.catalog.get(name)
     if spec is None:
         spec = OutputSpec(key=name, kind="point", of=name)
+    kwargs: dict[str, Any] = {}
     if anchor is not None:
-        return ctx.evaluate(spec, anchor=anchor)
+        kwargs["anchor"] = anchor
+    if selection is not None:
+        kwargs["selection"] = selection
+    if kwargs:
+        return ctx.evaluate(spec, **kwargs)
     return ctx.evaluate(spec)
+
+
+def _shifted_selection(ctx: EvalCtx, *, backward: bool) -> tuple:
+    from kpi_engine.pipeline.period_select import negate_offset, shift_selection
+
+    periods = support.effective_selection(ctx)
+    if not periods or ctx.spec.offset is None or ctx.kpi.time is None:
+        return periods
+    offset = negate_offset(ctx.spec.offset) if backward else ctx.spec.offset
+    return shift_selection(periods, offset, ctx.kpi.time)
 
 
 class _Shift(OpPlugin):
@@ -151,10 +166,13 @@ class Lag(_Shift):
     def evaluate(self, ctx: EvalCtx) -> Any:
         if ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} op=lag needs a time plan.")
-        target = support.shifted_anchor(
-            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=True
-        )
-        value = _eval_named(ctx, ctx.spec.of or "", anchor=target)
+        target_sel = _shifted_selection(ctx, backward=True)
+        if not target_sel:
+            value = None
+            target = None
+        else:
+            value = _eval_named(ctx, ctx.spec.of or "", selection=target_sel)
+            target = target_sel[-1]
         log_measure_calc(
             cut=ctx.cut,
             key=ctx.spec.key,
@@ -174,10 +192,13 @@ class Lead(_Shift):
     def evaluate(self, ctx: EvalCtx) -> Any:
         if ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} op=lead needs a time plan.")
-        target = support.shifted_anchor(
-            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=False
-        )
-        value = _eval_named(ctx, ctx.spec.of or "", anchor=target)
+        target_sel = _shifted_selection(ctx, backward=False)
+        if not target_sel:
+            value = None
+            target = None
+        else:
+            value = _eval_named(ctx, ctx.spec.of or "", selection=target_sel)
+            target = target_sel[-1]
         log_measure_calc(
             cut=ctx.cut,
             key=ctx.spec.key,
@@ -198,10 +219,12 @@ class Index(_Shift):
         if ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} op=index needs a time plan.")
         current = _eval_named(ctx, ctx.spec.of or "")
-        target = support.shifted_anchor(
-            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=True
+        target_sel = _shifted_selection(ctx, backward=True)
+        baseline = (
+            _eval_named(ctx, ctx.spec.of or "", selection=target_sel)
+            if target_sel
+            else None
         )
-        baseline = _eval_named(ctx, ctx.spec.of or "", anchor=target)
         if current is None or baseline in (None, 0):
             value = None
         else:
@@ -386,10 +409,12 @@ class Diff(_Shift):
         if ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} op=diff needs a time plan.")
         current = _eval_named(ctx, ctx.spec.of or "")
-        target = support.shifted_anchor(
-            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=True
+        target_sel = _shifted_selection(ctx, backward=True)
+        baseline = (
+            _eval_named(ctx, ctx.spec.of or "", selection=target_sel)
+            if target_sel
+            else None
         )
-        baseline = _eval_named(ctx, ctx.spec.of or "", anchor=target)
         if current is None or baseline is None:
             value = None
         else:
@@ -414,10 +439,12 @@ class PctChange(_Shift):
         if ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} op=pct_change needs a time plan.")
         current = _eval_named(ctx, ctx.spec.of or "")
-        target = support.shifted_anchor(
-            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=True
+        target_sel = _shifted_selection(ctx, backward=True)
+        baseline = (
+            _eval_named(ctx, ctx.spec.of or "", selection=target_sel)
+            if target_sel
+            else None
         )
-        baseline = _eval_named(ctx, ctx.spec.of or "", anchor=target)
         if current is None or baseline in (None, 0):
             value = None
         else:

@@ -25,7 +25,13 @@ from kpi_engine.contracts import (
 class EvaluateFn(Protocol):
     """Child evaluator. Keyword-only `anchor` overrides the inherited period."""
 
-    def __call__(self, spec: OutputSpec, *, anchor: date | None = None) -> Any: ...
+    def __call__(
+        self,
+        spec: OutputSpec,
+        *,
+        anchor: date | None = None,
+        selection: tuple[date, ...] | None = None,
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -44,6 +50,7 @@ class EvalCtx:
     cut: str
     evaluate: EvaluateFn
     anchor: date | None = None
+    selection: tuple[date, ...] | None = None
 
 
 @dataclass(frozen=True)

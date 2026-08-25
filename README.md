@@ -105,7 +105,7 @@ Example: `kpi_config/kpis/sotif/3004.yaml`.
 
 **`cuts`** — grouping grains, not measures. Example: **G** = global (no region), **R** = by region. `also_emit` packs extra grains into the same response.
 
-**`time.filter_code`** — which context filter is the selected month. That filter is **never** applied as `IN (one month)`; it becomes a date **range** so lookbacks have history.
+**`time.filter_code` / `time.periods`** — which context filters define the selected periods. A scalar `filter_code` still wins if present. Those keys are **never** applied as `IN (one month)`; they become a date **range** so lookbacks have history. Independent `periods` parts conjoin (year alone = full year).
 
 ---
 
@@ -113,7 +113,7 @@ Example: `kpi_config/kpis/sotif/3004.yaml`.
 
 1. Adapt context (one view, `value`/`values` → IN lists).
 2. Load KPI + model YAML; bind dataset **alias** to context paths.
-3. Claim the month filter → anchor + `required_span`.
+3. Claim time filters → selection S, `anchor = max(S)`, `required_span`. Missing parts probe the data.
 4. DuckDB: scan, source IN filters, time range, `GROUP BY` month grain.
 5. Pandas: dense month spine, cuts, then each requested measure via its registered plugin.
 6. JSON: one row per dimension combo per cut; one column per requested `measure_key`.

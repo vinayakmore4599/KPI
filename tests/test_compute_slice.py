@@ -11,7 +11,7 @@ When to use
     Add a test here for a new request-level rule (pagination, extra view, etc.).
 """
 from kpi_engine import compute, validate
-from kpi_engine.exceptions import BindError, TimePlanError
+from kpi_engine.exceptions import BindError
 from tests.conftest import make_context
 from kpi_engine.main import main
 
@@ -39,16 +39,13 @@ def test_unrequested_measures_do_not_widen_scan(parquet_path, config_dir):
     assert trend["lookback_months"] == 11
 
 
-def test_missing_month_filter_is_an_error(parquet_path, config_dir):
-    """No selected month → TimePlanError; we do not default to latest data."""
+def test_missing_month_filter_is_whole_history(parquet_path, config_dir):
+    """No selected month → unbounded plan; validate reports a data probe, not an error."""
     ctx = make_context(parquet_path, measures=["value_3m"])
     del ctx["filters"]["reporting_month"]
-    try:
-        validate(ctx, config_dir=config_dir)
-    except TimePlanError as exc:
-        assert "reporting_month" in str(exc)
-    else:
-        raise AssertionError("expected TimePlanError")
+    planned = validate(ctx, config_dir=config_dir)
+    assert planned["anchor"] is None
+    assert planned["time_selection"]["anchor_source"] == "data"
 
 
 def test_unknown_measure_key(parquet_path, config_dir):

@@ -441,23 +441,26 @@ def evaluate(
     cut: str = "",
     source_only: bool = False,
     anchor: date | None = None,
+    selection: tuple[date, ...] | None = None,
 ) -> Any:
     """Dispatch one measure op against a single partition's monthly series.
 
     `memo` is keyed by (spec.key, effective_anchor) so a parent can hold the
     same child at two periods in one combo pass. `source_only` is never cached.
     `_child` inherits this call's effective anchor unless `anchor=` is passed.
+    `selection=` overrides the request-level time selection for this eval.
     """
     try:
         plugin = get_op(spec.kind)
     except CatalogError as exc:
         raise CatalogError(f"Cannot evaluate {spec.key} kind={spec.kind}.") from exc
     effective = anchor if anchor is not None else (plan.anchor if plan else None)
-    memo_key = (spec.key, effective)
+    inherited_selection = selection
+    memo_key = (spec.key, effective, inherited_selection)
     if memo is not None and memo_key in memo and not source_only:
         return memo[memo_key]
 
-    def _child(child: OutputSpec, *, anchor: date | None = None) -> Any:
+    def _child(child: OutputSpec, *, anchor: date | None = None, selection: tuple[date, ...] | None = None) -> Any:
         return evaluate(
             child,
             series,
@@ -470,6 +473,7 @@ def evaluate(
             memo=memo,
             cut=cut,
             anchor=anchor if anchor is not None else effective,
+            selection=selection if selection is not None else inherited_selection,
         )
 
     if (
@@ -495,6 +499,7 @@ def evaluate(
         cut=cut,
         evaluate=_child,
         anchor=effective,
+        selection=inherited_selection,
     )
     value = plugin.source_for_cut(ctx) if source_only else plugin.evaluate(ctx)
     if memo is not None and not plugin.emits_trend and not source_only:
@@ -519,6 +524,8 @@ def _combos_at_anchor(
     if cut_monthly.empty or kpi.time.column not in cut_monthly.columns:
         return empty
     ts = pd.to_datetime(cut_monthly[kpi.time.column])
+    if plan.anchor is None:
+        return empty
     at = cut_monthly.loc[ts == pd.Timestamp(plan.anchor)]
     if "_observed" in at.columns:
         at = at.loc[at["_observed"].astype(bool)]

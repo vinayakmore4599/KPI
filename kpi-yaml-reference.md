@@ -48,13 +48,16 @@ model: sotif                 # kpi_config/models/<kpi_group>/sotif.yaml (group i
 time:
   column: event_month        # date column on the extract
   grain: month               # day | week | month | quarter | year
-  filter_code: reporting_month   # context filter that carries the selected period
+  filter_code: reporting_month   # optional scalar; wins if present on the context
+  periods:                   # independent year/quarter/month/week/day predicates
+    year: year
+    month: "current month"
   calendar: gregorian        # gregorian | fiscal
   fiscal_start_month: 4      # only read when calendar: fiscal
 
 parameters:                  # optional; omit when the KPI has none
   time_grain: { type: string }   # reserved overlay: pick from time.grains
-  output_cut: { type: string, default: G, allowed: [G, R] }
+  output_cut: { type: string, default: G, allowed: [G, R] }  # walk root; YAML default does not lock
   Level: { type: string, allowed: [G, Y, R], map: { Green: G } }
 
 dimensions:
@@ -122,8 +125,8 @@ measures:                    # every measure_key the UI can send
 
 Understanding this makes the YAML obvious.
 
-1. The **anchor** is the single value of the `time.filter_code` filter, truncated to `time.grain`. It is never applied as `WHERE month IN (...)`.
-2. The engine reads the **requested** `measure_key`s, works out the deepest lookback among them, and scans `[anchor − lookback, anchor]` as a **date range**. Measures nobody asked for cost nothing.
+1. Time parts on the context are independent predicates on the period column. Together they define a **selection** S of `time.grain` buckets. `anchor = max(S)` (calendar end, not last observed). A scalar `time.filter_code` on the context still wins and is one bucket. Missing parts are simply not applied; no time filters at all means whole history (the engine probes min/max from data).
+2. The engine reads the **requested** `measure_key`s, works out the deepest lookback among them, and scans `[span_start, anchor + 1)` as a **date range**. Point measures fold every observed bucket in S; windows and trends measure from `anchor`. Measures nobody asked for cost nothing.
 3. DuckDB retrieves **model columns only** (time bucket, dimensions, and physical columns the row pipeline walks to). `filters:` with `apply: extract` become the extract `WHERE` (plus undeclared context `IN` lists). It does not run `agg:`, `op:`, named `expr:` steps, `lookup:`, or `over:`. A `kind: sql` model may still shape **this extract** (joins, filters, optional SQL math).
 4. After retrieve, the engine stable-sorts detail (time, grain dims, `over.order_by`) and assigns `_kpi_row_id`. Pandas then topo-sorts `base_measures` (helpers, `lookup:`, `expr:`, `over:`), folds bases that declare `agg:`, densifies, and computes combo measures (point / window / trend / `expr` / `fn` / `op: predicate`).
 5. Each cut re-aggregates that spine to its **effective group_by**. **HAVING** drops groups by measure predicates (per cut), optionally `then_group_by` re-folds survivors from filtered facts, then **all** cut-phase ops (`rank`, `percent_of_total`, …) run on what remains. `apply: result` is dim-only and runs after that. `green_when` stamps remaining rows; pagination `total` is remaining rows. Result filters on dims not in that cut’s grain skip (`not_in_grain`).
@@ -131,7 +134,7 @@ Understanding this makes the YAML obvious.
 The practical consequences:
 
 - A missing month stays missing. "Same month last year" cannot silently pick up the row that happens to sit 12 rows back.
-- One request can return several grains (`also_emit`) from a single scan.
+- One request can return several grains (`also_emit`) from a single scan. `parameters.output_cut` (when sent on the context) is the walk **root**, not a hard lock; set `pack_also_emit: false` on that cut to emit only that grain.
 - Adding a measure to YAML does not widen the scan until someone requests it.
 
 ---
@@ -144,19 +147,22 @@ The practical consequences:
 | `grain` | `day`, `week`, `month`, `quarter`, `year` | `month` | Default period every measure counts in. `week` is ISO Monday. |
 | `source_grain` | same set as `grain` | `time.grain` | Stored grain of the time column. A request pick **finer** than this is rejected (day < week < month < quarter < year). Monthly facts cannot become daily or weekly. |
 | `grains` | list of grains | omitted = `{grain}` only | Allowlist for `parameters.time_grain`. `time.grain` must appear in the list. |
-| `filter_code` | context filter key | required if `time:` is present | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month` — each KPI names its own filter. When `compose:` is set, this is the **synthetic** name after concat (need not exist on the context). |
-| `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal affects `quarter` and `year` only |
+| `filter_code` | context filter key | required unless `periods:` or `compose:` is set | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month`. When present on the context this scalar **wins** outright (legacy single-bucket); declared `periods` parts are skipped. When `compose:` is set, this is the **synthetic** name after concat. |
+| `periods` | map of part → context filter code | omitted | Independent predicates: `year`, `quarter` (1–4), `month` (1–12), `week` (ISO 1–53), `day` (1–31). Values parse as integers (`3`, `"03"`). Lists are a union. A missing part is not applied. Mutually exclusive with `compose.template`. A part finer than `time.grain` is a bind error. |
+| `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal affects `quarter` and `year` only (`year` / `quarter` parts use the fiscal calendar). `week` is ISO-only. |
 | `fiscal_start_month` | 1–12 | `4` | First month of the fiscal year |
 | `format` | `yyyy-mm-dd`, `yyyy-mm`, `yyyy/mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, or a strptime string | ISO `YYYY-MM` / `YYYY-MM-DD` | How the physical column and the context time filter are stored (`062026` → `format: mmyyyy`) |
-| `compose` | `{ template: "{year}{month:02}" }` | omitted | Build `filter_code` from segregated context keys. Literals between `{placeholders}` are kept (`{year}/{month:02}` → `2026/04`). `{month:02}` zero-pads. The part keys are then removed so they are not leftover `IN` filters. If `filter_code` is already on the context, that scalar wins. |
+| `compose` | `{ template: "{year}{month:02}" }` | omitted | **Superseded by `periods:`.** Build `filter_code` from segregated context keys. Literals between `{placeholders}` are kept (`{year}/{month:02}` → `2026/04`). `{month:02}` zero-pads. The part keys are then removed so they are not leftover `IN` filters. If `filter_code` is already on the context, that scalar wins. Cannot be set together with `periods:`. |
 
 Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Leftover host period filters (`reporting_month`, `month`, `year`, `as_of_period`, and compose year-month keys) are skipped with `reason: no_time` even if mapped — they are not IN-filters on a snapshot. Other unmapped valued filters stay FilterError. A snapshot measure may not use a nonzero `offset`, `trailing`, or any kind that needs time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not. Snapshot KPIs may still use `over:` with a non-time `order_by`.
 
 Rules the engine enforces:
 
-- When `time:` is declared, that filter must carry **exactly one** value. Two values or zero values is an error, not a range.
-- A missing time filter on a time-based KPI is an error. The engine never defaults to "latest data" or to `business_date`.
-- `parameters.time_grain` (context.parameters, not a filter, not `execution`) picks one allowlisted grain. The KPI must declare `parameters.time_grain`. Missing on the context → YAML `default` or `time.grain`. Not in `time.grains` (or not equal to `grain` when `grains` is omitted) → bind error. After bind, plan / DuckDB bucket / densify / `trailing.periods` use the pick. Response `parameters.time_grain` is the effective grain; bound request values are `request_parameters`.
+- Declared `periods` parts conjoin. Year alone is the full year; year + month is that month; month alone is every matching month across years (anchor = latest). Part values may be lists (`month: [1, 2, 3]`). Garbage values (`month: "March"`) still raise `TimePlanError`; only **absence** is lenient.
+- A scalar `time.filter_code` on the context is still **exactly one** value (two values is an error, not a range). That path is byte-identical to today's single-bucket KPIs.
+- Missing time filters on a time-based KPI are legal: the engine probes min/max under the part predicates and bound dimension filters. `validate()` reports `anchor: null` and `anchor_source: "data"` until compute fills them. An empty selection (impossible combo, or no matching data) sets `anchor` to null, returns null measures / empty trend axis, and adds a `notes` entry — it does not raise.
+- Point measures fold the observed buckets of S. An offset shifts **each** bucket (`years: 1` on a year-only 2026 selection is the full 2025 total). Windows and named ranges (`mtd`, `ytd`) measure from `anchor` (`trailing: 3` from June is Apr–Jun; `mtd` under `year=2026` is December).
+- `parameters.time_grain` (context.parameters, not a filter, not `execution`) picks one allowlisted grain. The KPI must declare `parameters.time_grain`. Missing on the context → YAML `default` or `time.grain`. Not in `time.grains` (or not equal to `grain` when `grains` is omitted) → bind error. After bind, plan / DuckDB bucket / densify / `trailing.periods` use the pick, then part predicates apply at that grain. Response `parameters.time_grain` is the effective grain; bound request values are `request_parameters`.
 - A day pick requires a full `YYYY-MM-DD` unless `time.format` says otherwise. Week / month / quarter / year may accept `YYYY-MM` and truncate to the pick.
 - Truncation happens in SQL (ISO Monday for `week`; otherwise `date_trunc` after the column is parsed with `time.format`), so a mid-period date anchors on the period start.
 - Top-level `data_points` is a positive int when `grains` is omitted or a single grain. More than one allowed grain requires a map with a positive int for **every** listed grain. `trailing: { from: data_points }` reads the pick's length.
@@ -175,7 +181,23 @@ time:
   fiscal_start_month: 4
 ```
 
-When the host sends `year` / `month` (and optionally `day`) instead of one period key, concatenate them. `time.format` must parse the **result**. Lookback still widens from requested measures.
+When the host sends independent year / quarter / month (and optionally week / day) filters, declare `time.periods`. Only those codes are read; they are not leftover `IN` filters. `parameters.time_grain` re-buckets first, then parts apply at the effective grain.
+
+```yaml
+time:
+  column: event_month
+  grain: month
+  calendar: gregorian
+  filter_code: reporting_month     # optional; still wins if present on the context
+  periods:
+    year: "year"
+    quarter: "quarter"
+    month: "current month"
+```
+
+`year=2026` alone folds Jan–Dec 2026 (`anchor` = Dec 2026). `year=2026` + `month=6` is June only. `month=3` with no year is every March in the data.
+
+When the host instead concatenates year + month into one period key, `compose` still works (`time.format` must parse the **result**). Lookback still widens from requested measures. Prefer `periods:` for new KPIs.
 
 ```yaml
 time:
@@ -206,7 +228,7 @@ Calculation controls are **not** filters and **not** `execution.*`. Send them as
 There are **four** overlays (not one grammar). Do not add a fifth (`select:`, `use:`, `{ from: param }`). **`selected_dimensions` is not a parameter.** Send it as top-level `context.selected_dimensions`. Declaring `parameters.selected_dimensions` is a bind error.
 
 1. Reserved `parameters.time_grain` — pick from `time.grains` (feeds `apply_request_time`).
-2. Reserved `parameters.output_cut` — emit that cut only; drop `also_emit`. 3004 does **not** declare this (so G still `also_emit`s R). Hosts that want one grain filter JSON `output_cut`. A KPI that declares the parameter accepts the lock.
+2. Reserved `parameters.output_cut` — start the `also_emit` walk at that cut. A YAML `default` is **not** a lock (G still packs R). Sending the parameter on the context is. Set `cuts[].pack_also_emit: false` to emit only that root. 3004 does **not** declare this. Hosts that want one grain send `output_cut` on the request.
 3. `when:` on `model`, `measures.<key>`, or `base_measures.<name>` only.
 4. `from_param:` on an allowlist (see below). Never the YAML key `from` (that stays `trailing.from: data_points` / `dimension.from`).
 
@@ -276,7 +298,7 @@ Rules:
 - A KPI with no `parameters:` block rejects a non-empty `context.parameters` (3004). Omit the object or send `{}`.
 - Unknown keys, missing keys (no default), and values not in `allowed` are bind errors.
 - Parameter names must not equal measure keys (`when:` may not add or remove measure **keys**, only bodies).
-- Response `parameters` remains the time plan (`anchor`, `time_grain`, `span_start`, `lookback_months`). Bound request values are `request_parameters`.
+- Response `parameters` is the time plan (`anchor`, `time_grain`, `span_start`, `lookback_months`, `time_selection`). `time_selection` is `{grain, start, end, parts, anchor_source}` where `anchor_source` is `context`, `data`, or `legacy`. Bound request values are `request_parameters`. Time parts appear on `applied_filters` as calc-stage. Result/trend rows keep their per-bucket `period`; only the headline carries the selection.
 
 ```json
 {
@@ -737,6 +759,7 @@ cuts:
     exclude_from_grain: [region]
     ignore_filters: [region]
     also_emit: [R]
+    pack_also_emit: true     # false = emit only this cut when it is the walk root
   - name: R
     group_by: [region]
     ignore_filters: []
@@ -751,11 +774,12 @@ default_cut: G
 | `exclude_from_grain` | Request dims this cut drops. Dim-named `ignore_filters` must match this list both ways |
 | `ignore_filters` | Filter codes or column names this cut ignores |
 | `also_emit` | Other cuts to return in the same response (chains are followed, cycles are safe) |
-| `default_cut` | The cut the walk starts from; defaults to the first declared cut |
+| `pack_also_emit` | Default `true`. When `false`, a walk that starts at this cut does not follow `also_emit` |
+| `default_cut` | The cut the walk starts from when `output_cut` is not on the context; defaults to the first declared cut |
 | `default_dimensions` | Grain when `selected_dimensions` is omitted. Required. `[]` is worldwide |
 | `identity_grain` | Optional. Subset of `dimensions`. Helpers may be `op: point` `of` only when every emitted cut equals this grain |
 
-**How `ignore_filters` works.** A filter ignored by *any* **emitted** cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Default `apply: extract` is legal with `ignore_filters`; at request time `split_filters` promotes it to calc when that cut is emitted. If only R is emitted (`parameters.output_cut: R` on a KPI that declares it), region can stay extract. Do not combine `ignore_filters` with `apply: result`. The response reports where each filter ran under `applied_filters`, cut-level skips under `ignored_filters`, and present-but-blank keys under `skipped_filters`. A dim-named ignore token must also appear in `exclude_from_grain`, and the reverse.
+**How `ignore_filters` works.** A filter ignored by *any* **emitted** cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Default `apply: extract` is legal with `ignore_filters`; at request time `split_filters` promotes it to calc when that cut is emitted. Sending `parameters.output_cut: G` still walks `also_emit` unless that cut sets `pack_also_emit: false`. If only R is emitted (`output_cut: R`, or G with `pack_also_emit: false`), region can stay extract. Do not combine `ignore_filters` with `apply: result`. The response reports where each filter ran under `applied_filters`, cut-level skips under `ignored_filters`, and present-but-blank keys under `skipped_filters`. A dim-named ignore token must also appear in `exclude_from_grain`, and the reverse.
 
 Every cut re-aggregates the spine from scratch, so a global average is a true weighted average, not a mean of regional averages. Non-additive ops (median, percentile, first, last, count_distinct) evaluate on fact rows at the cut keys, not on rolled sums.
 
@@ -772,7 +796,7 @@ Use `anchor_only` when the page should list only what is active now; use `span_u
 
 ## 7. Filters
 
-YEAR / MONTH belong on `time.filter_code` (one selected period → a date range plus lookback), or on `time.compose.template` when the host sends segregated keys (`year` + `month` → `202607` / `2026/04`). Do not also leave year and month as leftover `IN` filters — compose strips them.
+YEAR / MONTH belong on `time.periods` (independent predicates) or on `time.filter_code` (one selected period → a date range plus lookback). `time.compose.template` still concatenates segregated keys (`year` + `month` → `202607` / `2026/04`) but is superseded by `periods:`. Do not also leave year and month as leftover `IN` filters — both `periods` and `compose` strip them.
 
 Other predicates are **row filters**. Values come from the **context**. KPI YAML `filters:` says **how** and **at which of three stages**.
 
@@ -811,7 +835,7 @@ filters:
 
 Undeclared context codes stay `IN` at extract, unless an emitted cut lists them in `ignore_filters` (then calc). `filter_map` still remaps a code to a column (`op: in`, `apply: extract`).
 
-**All row filters are non-binding (breaking vs empty `IN` = FALSE).** Omit the key, send `[]`, or send all-null comparison values → skip; the key appears on `skipped_filters` when it was present but blank. `[""]`, `["ALL"]`, `["*"]` are real predicates. `optional: true` is accepted and ignored. `optional: false` is a bind error. `is_null` / `is_not_null` apply when the key is **present** (omit the key to skip). Row-filter `compose` with a missing or blank part skips; time `compose` still errors. The selected period (`time.filter_code`) is not a row filter — empty or missing month is still a TimePlanError.
+**All row filters are non-binding (breaking vs empty `IN` = FALSE).** Omit the key, send `[]`, or send all-null comparison values → skip; the key appears on `skipped_filters` when it was present but blank. `[""]`, `["ALL"]`, `["*"]` are real predicates. `optional: true` is accepted and ignored. `optional: false` is a bind error. `is_null` / `is_not_null` apply when the key is **present** (omit the key to skip). Row-filter `compose` with a missing or blank part skips; time `compose` still errors if a placeholder is missing. A scalar `time.filter_code` still requires exactly one value when the key is present. Missing period parts are not applied.
 
 `apply: result` may name **dimension** columns on the output row only, not measure keys. Dimensions not in a cut's effective grain are `null` on that cut. A result `IN` on those fields is skipped (`not_in_grain`) rather than hiding the cut by matching stamped null. G worldwide is `default_dimensions: [reason_code]` plus `exclude_from_grain: [region]` / `ignore_filters: [region]`; `selected_dimensions: []` makes G's grain empty.
 
@@ -1201,7 +1225,21 @@ measures:
 
 `suppliers_12m` is the distinct count across the whole year, not the sum of twelve monthly counts.
 
-### D. Ratio across two models
+### D. Independent year / month filters
+
+```yaml
+time:
+  column: event_month
+  grain: month
+  periods:
+    year: year
+    quarter: quarter
+    month: "current month"
+```
+
+Point `current_value` folds every selected month. `previous_year_value` with `offset: { years: 1 }` shifts each selected month. A trailing window still starts at `anchor` (December when only `year=2026` is sent).
+
+### E. Ratio across two models
 
 See §8.
 
@@ -1231,9 +1269,11 @@ pytest -q
 | Message | Cause | Fix |
 |---|---|---|
 | `Unknown measure_key(s) [...]` | Context asked for a key not under `measures:` | Add the measure, or correct metadata |
-| `Missing month filter '<code>'` | `time.filter_code` does not match the context filter | Set `time.filter_code` to the actual filter key, add `time.compose.template`, or omit `time:` for a snapshot KPI |
+| `Cannot parse month 'March'` | Time part was not an integer | Send `3` or `"03"`, not a month name |
+| `time.periods.week is finer than time.grain` | Part is finer than the KPI grain | Drop that part, or lower `time.grain` |
+| `time.periods and time.compose.template cannot both be set` | Mutually exclusive | Keep `periods:` (preferred) or `compose:`, not both |
 | `Compose placeholder 'year' is missing` | A `{placeholder}` was not on the context | Send that filter, or send the composed `filter_code` as one scalar |
-| `Month filter must contain exactly one value` | The page sent a multi-select for the period | Metadata — the anchor is a single period |
+| `Month filter must contain exactly one value` | The page sent a multi-select for scalar `filter_code` | Metadata — the legacy anchor is a single period; use `periods:` for lists |
 | `time.grain=day requires a full date` | Day-grain KPI received `YYYY-MM` | Send `YYYY-MM-DD` |
 | `Filter '<x>' has no column mapping` | No context mapping and no matching column | Add `filter_column_mappings` or `filter_map` |
 | `Unknown filter op '…'` | YAML `filters.*.op` is not in the operator table | Use a name or alias from §7 |

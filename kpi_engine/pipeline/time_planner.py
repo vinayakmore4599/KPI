@@ -1,4 +1,4 @@
-"""Anchor period and required_span. The time filter never becomes a generic IN.
+"""Anchor period and required_span. Time parts are predicates, never leftover INs.
 
 What this file provides
     plan_time, claim_month_filter, max_lookback_months, lookback_for.
@@ -8,17 +8,20 @@ Where it is used
     without scanning.
 
 Capabilities
-    - Finds time.filter_code on the context (name is per KPI YAML).
+    - Scalar time.filter_code on the context wins (legacy single-bucket).
+    - Else time.periods parts conjoin; a missing part is not applied.
+    - Year-bounded selections materialize S in-process; unbounded ones leave
+      anchor None for a later data probe.
     - Snapshot KPIs with no time: block skip the claim.
-    - Missing or multi-value time filter → TimePlanError (no silent default).
     - Lookback from requested measures only, in KPI grain periods.
     - Gregorian or fiscal truncate via dates.truncate_period.
-    - Returns remaining filters for IN binding (time filter and compose parts removed).
+    - Returns remaining filters for IN binding (time filter and parts removed).
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 
 from kpi_engine.contracts import (
     GRAIN_RANK,
@@ -27,59 +30,84 @@ from kpi_engine.contracts import (
     KpiSpec,
     OutputSpec,
     TimePlan,
+    TimeSelection,
     TimeSpec,
 )
 from kpi_engine.dates import (
-    add_days,
     add_periods,
     apply_offset,
     parse_date,
     periods_between,
     truncate_period,
-    year_start,
 )
 from kpi_engine.pipeline.binder import fold_measure_keys
 from kpi_engine.pipeline.compose import expand_compose, strip_compose_keys
+from kpi_engine.pipeline.period_select import (
+    empty_reason,
+    negate_offset,
+    parts_as_tuple,
+    read_period_parts,
+    selection_bounds,
+    selection_periods,
+    shift_selection,
+    strip_period_keys,
+)
 from kpi_engine.exceptions import BindError, TimePlanError
 from kpi_engine.runlog import traced
 
 
 @traced
 def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, tuple[IncomingFilter, ...]]:
-    """Claim the time filter as anchor, compute required_span, return remaining filters.
+    """Claim the time filter as a selection, compute required_span, return remaining filters.
 
     Snapshot KPIs (no YAML time:) skip the claim and leave every filter for IN binding.
     """
     if kpi.time is None:
         return None, request.filters
+    keys = fold_measure_keys(kpi, request.measure_keys)
     claimed, rest = claim_month_filter(request.filters, kpi.time.filter_code)
     template = kpi.time.compose_template
-    if claimed is None:
-        if not template:
-            raise TimePlanError(
-                f"Missing month filter {kpi.time.filter_code!r}. "
-                "Set time.filter_code in the KPI YAML to the context filter that "
-                "carries the selected period, set time.compose.template to build it "
-                "from year/month keys, or omit the time: block if this KPI "
-                "has no time column. The selected period is not defaulted."
-            )
+    if claimed is not None and kpi.time.filter_code:
+        return _legacy_scalar_plan(kpi, claimed, rest, keys, template)
+
+    if kpi.time.periods:
+        parts, rest = read_period_parts(request.filters, kpi.time.periods)
+        return _parts_plan(kpi, parts, rest, keys), rest
+
+    if template:
         try:
             composed, _consumed = expand_compose(template, request.filters, what="time.compose.template")
         except BindError as exc:
             raise TimePlanError(str(exc)) from exc
+        rest = strip_compose_keys(rest if claimed is None else rest, template)
         claimed = IncomingFilter(
-            raw_key=kpi.time.filter_code,
-            code=kpi.time.filter_code,
+            raw_key=kpi.time.filter_code or "composed",
+            code=kpi.time.filter_code or "composed",
             values=(composed,),
             input_text=None,
         )
-    elif len(claimed.values) != 1:
+        return _legacy_scalar_plan(kpi, claimed, rest, keys, template=None)
+
+    # No scalar, no parts, no compose: whole-history (probe later).
+    return _unbounded_plan(kpi, {}, keys), request.filters
+
+
+def _legacy_scalar_plan(
+    kpi: KpiSpec,
+    claimed: IncomingFilter,
+    rest: tuple[IncomingFilter, ...],
+    keys: tuple[str, ...],
+    template: str | None,
+) -> tuple[TimePlan, tuple[IncomingFilter, ...]]:
+    """Existing single-value filter_code / compose path. Numbers stay byte-identical."""
+    if len(claimed.values) != 1:
         raise TimePlanError(
             f"Month filter {claimed.code!r} must contain exactly one value "
             f"(got {len(claimed.values)})."
         )
     if template:
         rest = strip_compose_keys(rest, template)
+    rest = strip_period_keys(rest, kpi.time.periods)
     raw_anchor = parse_date(claimed.values[0], fmt=kpi.time.format)
     if (
         kpi.time.grain == "day"
@@ -90,21 +118,89 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, t
             f"time.grain=day requires a full date YYYY-MM-DD on {claimed.code!r}."
         )
     anchor = truncate_period(raw_anchor, kpi.time)
-    keys = fold_measure_keys(kpi, request.measure_keys)
-    lookback = max_lookback_months(kpi, keys, anchor=anchor)
-    forward = max_lookforward_periods(kpi, keys, anchor=anchor)
-    span_start = add_periods(anchor, -lookback, kpi.time)
-    span_end_exclusive = add_periods(anchor, 1 + forward, kpi.time)
-    return (
-        TimePlan(
-            anchor=anchor,
-            span_start=span_start,
-            span_end_exclusive=span_end_exclusive,
-            lookback_months=lookback,
-            claimed_filter_code=claimed.code,
-            lookback_forward=forward,
+    selection = TimeSelection(
+        parts=(),
+        start=anchor,
+        end=anchor,
+        periods=(anchor,),
+        anchor_source="legacy",
+    )
+    plan = TimePlan(
+        anchor=anchor,
+        span_start=anchor,
+        span_end_exclusive=add_periods(anchor, 1, kpi.time),
+        lookback_months=0,
+        claimed_filter_code=claimed.code,
+        lookback_forward=0,
+        selection=selection,
+    )
+    return span_for_keys(kpi, keys, plan), rest
+
+
+def _parts_plan(
+    kpi: KpiSpec,
+    parts: dict[str, tuple[int, ...]],
+    rest: tuple[IncomingFilter, ...],
+    keys: tuple[str, ...],
+) -> TimePlan:
+    """Independent year/month/… predicates. Year-bounded plans fill S now."""
+    del rest
+    bounds = selection_bounds(parts, kpi.time)
+    if bounds is None:
+        return _unbounded_plan(kpi, parts, keys)
+    periods = selection_periods(parts, bounds, kpi.time)
+    if not periods:
+        return TimePlan(
+            anchor=None,
+            span_start=None,
+            span_end_exclusive=None,
+            lookback_months=max_lookback_months(kpi, keys),
+            claimed_filter_code="",
+            selection=TimeSelection(
+                parts=parts_as_tuple(parts),
+                start=None,
+                end=None,
+                periods=(),
+                anchor_source="context",
+                empty_reason=empty_reason(parts),
+            ),
+        )
+    selection = TimeSelection(
+        parts=parts_as_tuple(parts),
+        start=periods[0],
+        end=periods[-1],
+        periods=periods,
+        anchor_source="context",
+    )
+    plan = TimePlan(
+        anchor=periods[-1],
+        span_start=periods[0],
+        span_end_exclusive=add_periods(periods[-1], 1, kpi.time),
+        lookback_months=0,
+        claimed_filter_code="",
+        selection=selection,
+    )
+    return span_for_keys(kpi, keys, plan)
+
+
+def _unbounded_plan(
+    kpi: KpiSpec, parts: dict[str, tuple[int, ...]], keys: tuple[str, ...]
+) -> TimePlan:
+    """No year (or no parts): probe the data for min/max after filters bind."""
+    return TimePlan(
+        anchor=None,
+        span_start=None,
+        span_end_exclusive=None,
+        lookback_months=max_lookback_months(kpi, keys),
+        claimed_filter_code="",
+        lookback_forward=max_lookforward_periods(kpi, keys),
+        selection=TimeSelection(
+            parts=parts_as_tuple(parts),
+            start=None,
+            end=None,
+            periods=(),
+            anchor_source="data",
         ),
-        rest,
     )
 
 
@@ -151,17 +247,84 @@ def _data_points_for(kpi: KpiSpec, grain: str) -> int:
 
 def span_for_keys(kpi: KpiSpec, keys: tuple[str, ...], plan: TimePlan | None) -> TimePlan | None:
     """Widen or shrink an already-claimed plan to this pipeline's measure keys."""
-    if plan is None or kpi.time is None:
+    if plan is None or kpi.time is None or plan.anchor is None:
         return plan
     lookback = max_lookback_months(kpi, keys, anchor=plan.anchor)
     forward = max_lookforward_periods(kpi, keys, anchor=plan.anchor)
+    from_anchor = add_periods(plan.anchor, -lookback, kpi.time)
+    periods = plan.selection.periods if plan.selection and plan.selection.periods else (plan.anchor,)
+    earliest = min(periods)
+    shifted = _earliest_shifted(kpi, keys, periods)
+    span_start = min(from_anchor, earliest)
+    if shifted is not None:
+        span_start = min(span_start, shifted)
     return replace(
         plan,
-        span_start=add_periods(plan.anchor, -lookback, kpi.time),
+        span_start=span_start,
         span_end_exclusive=add_periods(plan.anchor, 1 + forward, kpi.time),
         lookback_months=lookback,
         lookback_forward=forward,
     )
+
+
+def fill_probed_selection(
+    kpi: KpiSpec,
+    plan: TimePlan,
+    lo: date,
+    hi: date,
+    keys: tuple[str, ...],
+) -> TimePlan:
+    """Materialize S from a min/max probe and compute span. Empty if lo/hi missing."""
+    parts = dict(plan.selection.parts) if plan.selection else {}
+    parsed = {name: tuple(int(v) for v in values) for name, values in parts.items()}
+    periods = selection_periods(parsed, (lo, hi), kpi.time)
+    if not periods:
+        return replace(
+            plan,
+            anchor=None,
+            span_start=None,
+            span_end_exclusive=None,
+            selection=replace(
+                plan.selection or TimeSelection(anchor_source="data"),
+                periods=(),
+                start=None,
+                end=None,
+                empty_reason=empty_reason(parsed),
+            ),
+        )
+    selection = TimeSelection(
+        parts=parts_as_tuple(parsed),
+        start=periods[0],
+        end=periods[-1],
+        periods=periods,
+        anchor_source="data",
+    )
+    filled = replace(
+        plan,
+        anchor=periods[-1],
+        span_start=periods[0],
+        span_end_exclusive=add_periods(periods[-1], 1, kpi.time),
+        selection=selection,
+    )
+    return span_for_keys(kpi, keys, filled) or filled
+
+
+def _earliest_shifted(kpi: KpiSpec, keys: tuple[str, ...], periods: tuple[date, ...]) -> date | None:
+    """Earliest bucket of any requested offset measure's shifted selection."""
+    if kpi.time is None or not periods:
+        return None
+    earliest: date | None = None
+    by_key = {m.key: m for m in kpi.measures}
+    for key in keys:
+        spec = by_key.get(key)
+        if spec is None or spec.offset is None:
+            continue
+        shifted = shift_selection(periods, negate_offset(spec.offset), kpi.time)
+        if not shifted:
+            continue
+        low = min(shifted)
+        earliest = low if earliest is None else min(earliest, low)
+    return earliest
 
 
 def claim_month_filter(

@@ -132,12 +132,14 @@ def test_month_filter_must_carry_exactly_one_value(parquet_path, config_dir):
             plan_time(adapt(ctx), kpi)
 
 
-def test_missing_month_filter_never_defaults(parquet_path, config_dir):
-    """No selected period is an error; the engine does not fall back to today."""
+def test_missing_month_filter_is_whole_history(parquet_path, config_dir):
+    """No selected period means probe the data; the engine does not fall back to today."""
     ctx = make_context(parquet_path, measures=["current_value"])
     del ctx["filters"]["reporting_month"]
-    with pytest.raises(TimePlanError, match="Missing month filter"):
-        plan_time(adapt(ctx), load_kpi(3004, config_dir))
+    plan, _rest = plan_time(adapt(ctx), load_kpi(3004, config_dir))
+    assert plan.anchor is None
+    assert plan.selection is not None
+    assert plan.selection.anchor_source == "data"
 
 
 def test_day_grain_requires_a_full_date(parquet_path, extra_config):

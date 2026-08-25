@@ -261,7 +261,7 @@ def build() -> Document:
             "Model: reuse existing model or add kpi_config/models/<id>.yaml (physical or SQL).",
             "Copy template: cp kpi_config/kpis/sotif/3004.yaml kpi_config/kpis/<kpi_group>/<kpi_id>.yaml.",
             "Fill time, dimensions, base_measures, cuts, measures (every UI measure_key).",
-            "Align metadata: measures_required matches YAML; month filter = time.filter_code.",
+            "Align metadata: measures_required matches YAML; month filter = time.filter_code and/or time.periods.",
             "validate(sample_context) — bind + compile SQL without scanning ADLS.",
             "compute(sample_context) — full JSON; add local parquet test under tests/.",
             "Deploy: host module_path = kpi_engine.main (no per-KPI Python file).",

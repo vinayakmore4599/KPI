@@ -26,9 +26,30 @@ def effective_anchor(ctx) -> date:
     """Override from a shifted evaluate, else the request plan.anchor."""
     if ctx.anchor is not None:
         return ctx.anchor
-    if ctx.plan is not None:
+    if ctx.plan is not None and ctx.plan.anchor is not None:
         return ctx.plan.anchor
     raise CatalogError(f"{ctx.spec.key} needs a time plan (no effective anchor).")
+
+
+def effective_selection(ctx) -> tuple[date, ...]:
+    """Buckets this evaluation should fold. Explicit selection wins; else the plan.
+
+    A per-period walk passes `ctx.selection` as a one-bucket tuple so a year
+    selection does not leak into every trend point (filter-context replacement).
+    """
+    from kpi_engine.dates import truncate_period
+
+    if getattr(ctx, "selection", None) is not None:
+        return tuple(ctx.selection)
+    if ctx.plan is not None and ctx.plan.selection and ctx.plan.selection.periods:
+        return ctx.plan.selection.periods
+    if ctx.anchor is not None:
+        if ctx.kpi.time is not None:
+            return (truncate_period(ctx.anchor, ctx.kpi.time),)
+        return (ctx.anchor,)
+    if ctx.plan is not None and ctx.plan.anchor is not None:
+        return (ctx.plan.anchor,)
+    return ()
 
 
 def base_measure(kpi: KpiSpec, name: str | None):
@@ -271,6 +292,62 @@ def value_from_row(row: pd.Series, base) -> Any:
         return value
 
 
+def selection_value(
+    series: pd.DataFrame,
+    kpi: KpiSpec,
+    spec: OutputSpec,
+    periods: tuple[date, ...],
+    detail: pd.DataFrame | None = None,
+    combo: pd.Series | None = None,
+    group_dims: list[str] | None = None,
+) -> Any:
+    """Fold the base measure over the selected buckets. None if none are observed."""
+    if not periods:
+        return None
+    if len(periods) == 1:
+        base = base_measure(kpi, spec.of)
+        if base.agg in NON_ADDITIVE_AGGS:
+            return agg_detail(
+                detail, kpi, base, group_dims or [], combo, periods[0], periods[0]
+            )
+        return point_value(series, kpi, spec.of, periods[0])
+    base = base_measure(kpi, spec.of)
+    if base.agg in NON_ADDITIVE_AGGS:
+        return agg_detail(
+            detail,
+            kpi,
+            base,
+            group_dims or [],
+            combo,
+            min(periods),
+            max(periods),
+            periods=periods,
+        )
+    if kpi.time is None or series.empty or kpi.time.column not in series.columns:
+        return None
+    ts = pd.to_datetime(series[kpi.time.column])
+    wanted = {pd.Timestamp(p) for p in periods}
+    window = series[ts.isin(wanted)]
+    if "_observed" in window.columns:
+        window = window[window["_observed"].astype(bool)]
+    if window.empty:
+        return None
+    if base.agg == "avg":
+        total = window[f"{base.name}__sum"].sum()
+        count = window[f"{base.name}__count"].sum()
+        if count == 0:
+            return None
+        return float(total / count)
+    col = base.name
+    if col not in window.columns:
+        return None
+    if base.agg == "min":
+        return _num_or_none(window[col].min())
+    if base.agg == "max":
+        return _num_or_none(window[col].max())
+    return _num_or_none(window[col].sum())
+
+
 def window_value(
     series: pd.DataFrame, kpi: KpiSpec, spec: OutputSpec, start: date, end: date
 ) -> float | None:
@@ -302,8 +379,10 @@ def trend_values(
     detail: pd.DataFrame | None = None,
     combo: pd.Series | None = None,
     group_dims: list[str] | None = None,
-) -> tuple[list[str], list[float | None]]:
+) -> tuple[list[str], list[float | None] | None]:
     """Period series for a graph: fixed-length array aligned to a period axis."""
+    if plan is None or plan.anchor is None:
+        return [], None
     start, end = window_bounds(plan.anchor, spec, kpi)
     axis_dates = period_range_inclusive(start, end, kpi.time)
     axis = [iso_period(d, kpi.time) for d in axis_dates]
@@ -349,6 +428,7 @@ def agg_detail(
     combo: pd.Series | None,
     start: date,
     end: date,
+    periods: tuple[date, ...] | None = None,
 ) -> float | None:
     """count_distinct / median / percentile from row-level rows in [start, end]."""
     if detail is None or detail.empty:
@@ -356,7 +436,11 @@ def agg_detail(
     work = detail
     if kpi.time is not None:
         ts = pd.to_datetime(work[kpi.time.column]).dt.normalize()
-        work = work[(ts >= pd.Timestamp(start)) & (ts <= pd.Timestamp(end))]
+        if periods is not None:
+            wanted = {pd.Timestamp(p) for p in periods}
+            work = work[ts.isin(wanted)]
+        else:
+            work = work[(ts >= pd.Timestamp(start)) & (ts <= pd.Timestamp(end))]
     if combo is not None:
         for dim in group_dims:
             if dim in work.columns and dim in combo.index:

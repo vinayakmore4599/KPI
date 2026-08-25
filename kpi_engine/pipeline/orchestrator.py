@@ -56,7 +56,7 @@ from kpi_engine.pipeline.filters import (
     filters_on_all_cuts,
     split_filters,
 )
-from kpi_engine.pipeline.model_sql import NON_ADDITIVE, compile_extract, extract
+from kpi_engine.pipeline.model_sql import NON_ADDITIVE, compile_extract, compile_period_probe, extract
 from kpi_engine.pipeline.pipelines import (
     Pipeline,
     assert_named_cuts_compatible,
@@ -69,7 +69,7 @@ from kpi_engine.pipeline.pipelines import (
 )
 from kpi_engine.pipeline.relations import join_monthly
 from kpi_engine.pipeline.parameters import declared_time_grain
-from kpi_engine.pipeline.time_planner import apply_request_time, plan_time, span_for_keys
+from kpi_engine.pipeline.time_planner import apply_request_time, fill_probed_selection, plan_time, span_for_keys
 from kpi_engine.dates import add_periods, iso_period, parse_date, period_label
 from kpi_engine.exceptions import BindError, KPIEngineError
 from kpi_engine.identifiers import match_name, norm_name
@@ -144,6 +144,7 @@ def _compute(
     dropped_cuts: list[dict[str, str]] = []
     applied_emitted: list = []
     seen_applied: set[str] = set()
+    notes: list[dict[str, str]] = []
     log_step("extract")
     con, owned = acquire_connection(connection)
     rows: list[dict[str, Any]] = []
@@ -155,6 +156,17 @@ def _compute(
     trend_axes: dict[str, list[str]] = {}
     dropped_groups: list[dict[str, Any]] = []
     try:
+        time_plan, probe_notes = _resolve_time_plan(
+            time_plan,
+            kpi,
+            request,
+            bound,
+            models_by_id,
+            datasets,
+            pipelines,
+            con,
+        )
+        notes.extend(probe_notes)
         for pipe in pipelines:
             prepared = _prepare_pipeline(
                 pipe, kpi, request, models_by_id, bound, time_plan
@@ -173,6 +185,8 @@ def _compute(
                 joined=pipe.joined,
                 measure_keys=pipe.measure_keys,
             )
+            if not any(n.get("code") == "unobserved_anchor" for n in notes):
+                notes.extend(_unobserved_anchor_note(kpi, prepared["plan"], monthly))
             pipe_rows, axes, pipe_dropped = compute_cuts(
                 monthly,
                 kpi=replace(kpi, base_measures=pipe.bases),
@@ -215,7 +229,10 @@ def _compute(
         "request_id": request.request_id,
         "parameters": parameters,
         "request_parameters": dict(kpi.bound_parameters),
-        "applied_filters": _dedupe_applied(_applied(applied_src, applied_def, applied_res)),
+        "applied_filters": _dedupe_applied(
+            _applied(applied_src, applied_def, applied_res)
+            + _time_part_filters(kpi, time_plan)
+        ),
         "ignored_filters": _dedupe_ignored(ignored),
         "skipped_filters": list(skipped_filters),
         "selected_dimensions": list(kpi.request_grain),
@@ -223,6 +240,7 @@ def _compute(
         "dropped_cuts": _dedupe_dropped(dropped_cuts),
         "dropped_groups": dropped_groups,
         "grain_warnings": _grain_warnings(kpi),
+        "notes": notes + _time_notes(kpi, time_plan, rows),
         "trend_axes": trend_axes,
         "trend_labels": _trend_labels(trend_axes, kpi),
         "meta": _response_meta(kpi),
@@ -328,6 +346,7 @@ def _validate(
         "applied_cuts": _applied_cuts(kpi, tuple(applied_emitted)),
         "dropped_cuts": _dedupe_dropped(dropped_cuts),
         "grain_warnings": _grain_warnings(kpi),
+        "notes": _validate_time_notes(time_plan),
     }
     log_step("END validate", kpi_id=kpi.kpi_id, sql_count=len(sqls), param_count=param_count)
     return result
@@ -638,6 +657,11 @@ def _to_monthly(
         if "_observed" not in work.columns:
             work["_observed"] = True
         return work
+    if plan.anchor is None or plan.span_start is None:
+        work = frame.copy()
+        if "_observed" not in work.columns:
+            work["_observed"] = True
+        return work
     time_col = kpi.time.column
     keys = pandas_group_keys(kpi, grain)
     value_cols = _monthly_value_cols(kpi, measure_keys)
@@ -746,12 +770,28 @@ def _parameters(kpi: KpiSpec, time_plan: TimePlan | None) -> dict[str, Any]:
             "time_grain": None,
             "span_start": None,
             "lookback_months": 0,
+            "time_selection": None,
+        }
+    sel = time_plan.selection
+    time_selection = None
+    if sel is not None:
+        time_selection = {
+            "grain": kpi.time.grain,
+            "start": iso_period(sel.start, kpi.time) if sel.start is not None else None,
+            "end": iso_period(sel.end, kpi.time) if sel.end is not None else None,
+            "parts": {name: list(values) for name, values in sel.parts},
+            "anchor_source": sel.anchor_source,
         }
     return {
-        "anchor": iso_period(time_plan.anchor, kpi.time),
+        "anchor": iso_period(time_plan.anchor, kpi.time) if time_plan.anchor is not None else None,
         "time_grain": kpi.time.grain,
-        "span_start": iso_period(time_plan.span_start, kpi.time),
+        "span_start": (
+            iso_period(time_plan.span_start, kpi.time)
+            if time_plan.span_start is not None
+            else None
+        ),
         "lookback_months": time_plan.lookback_months,
+        "time_selection": time_selection,
     }
 
 
@@ -927,3 +967,207 @@ def _ignored(deferred, emitted) -> list[dict[str, Any]]:
                     }
                 )
     return rows
+
+
+def _resolve_time_plan(
+    time_plan: TimePlan | None,
+    kpi: KpiSpec,
+    request: AdaptedRequest,
+    bound,
+    models_by_id: dict[str, ModelSpec],
+    datasets: dict,
+    pipelines: list,
+    connection,
+) -> tuple[TimePlan | None, list[dict[str, str]]]:
+    """Fill unbounded selections from a min/max probe on the primary extract."""
+    notes: list[dict[str, str]] = []
+    if time_plan is None or kpi.time is None:
+        return time_plan, notes
+    if time_plan.anchor is not None:
+        notes.extend(_span_notes(time_plan))
+        return time_plan, notes
+    if time_plan.selection and time_plan.selection.empty_reason:
+        notes.append(
+            {"code": "empty_time_selection", "detail": time_plan.selection.empty_reason}
+        )
+        return time_plan, notes
+    from kpi_engine.pipeline.period_select import parts_from_tuple
+
+    parts = parts_from_tuple(time_plan.selection.parts) if time_plan.selection else {}
+    if not pipelines:
+        notes.append(
+            {
+                "code": "empty_time_selection",
+                "detail": "No extract pipeline to probe for a time selection.",
+            }
+        )
+        return time_plan, notes
+    pipe = pipelines[0]
+    model = models_by_id[norm_name(pipe.model_ids[0])]
+    bound_ds = bind_datasets(model, request)
+    extract_filters = tuple(item for item in bound if item.stage == "extract")
+    sql, params = compile_period_probe(
+        model=model,
+        kpi=kpi,
+        datasets=bound_ds,
+        source_filters=extract_filters,
+        parts=parts,
+    )
+    log_sql(sql, list(params), model=model.model_id, row_level=False)
+    frame = connection.execute(sql, list(params)).fetchdf()
+    lo = hi = None
+    if frame is not None and not frame.empty:
+        lo = _probe_date(frame.iloc[0].get("lo"))
+        hi = _probe_date(frame.iloc[0].get("hi"))
+    if lo is None or hi is None:
+        from kpi_engine.pipeline.period_select import empty_reason
+        from kpi_engine.contracts import TimeSelection
+
+        reason = empty_reason(parts)
+        notes.append({"code": "empty_time_selection", "detail": reason})
+        return (
+            replace(
+                time_plan,
+                selection=replace(
+                    time_plan.selection or TimeSelection(anchor_source="data"),
+                    empty_reason=reason,
+                ),
+            ),
+            notes,
+        )
+    filled = fill_probed_selection(kpi, time_plan, lo, hi, request.measure_keys)
+    if filled.selection and filled.selection.empty_reason:
+        notes.append(
+            {"code": "empty_time_selection", "detail": filled.selection.empty_reason}
+        )
+    notes.extend(_span_notes(filled))
+    return filled, notes
+
+
+def _probe_date(value) -> Any:
+    """Coerce a DuckDB min/max cell to date, or None."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.date()
+    from datetime import date as date_cls, datetime
+
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date_cls):
+        return value
+    try:
+        return parse_date(value)
+    except Exception:
+        return None
+
+
+def _span_notes(plan: TimePlan) -> list[dict[str, str]]:
+    """Warn when an unbounded selection densifies more than ten years."""
+    if plan.span_start is None or plan.anchor is None:
+        return []
+    if (plan.anchor - plan.span_start).days <= 3650:
+        return []
+    log_step(
+        "wide_time_span",
+        span_start=str(plan.span_start),
+        anchor=str(plan.anchor),
+        days=(plan.anchor - plan.span_start).days,
+    )
+    return [
+        {
+            "code": "wide_time_span",
+            "detail": (
+                f"Time span {plan.span_start.isoformat()} .. {plan.anchor.isoformat()} "
+                "exceeds 10 years."
+            ),
+        }
+    ]
+
+
+def _time_part_filters(kpi: KpiSpec, time_plan: TimePlan | None) -> list[dict[str, Any]]:
+    """Time parts applied as calc-stage predicates (not extract IN)."""
+    if kpi.time is None or time_plan is None or time_plan.selection is None:
+        return []
+    if time_plan.selection.anchor_source == "legacy":
+        return []
+    code_by_part = {part: code for part, code in kpi.time.periods}
+    rows: list[dict[str, Any]] = []
+    for part, values in time_plan.selection.parts:
+        rows.append(
+            {
+                "filter_code": code_by_part.get(part, part),
+                "column": kpi.time.column,
+                "op": "in",
+                "values": list(values),
+                "stage": "calc",
+                "apply": "calc",
+            }
+        )
+    return rows
+
+
+def _time_notes(
+    kpi: KpiSpec, time_plan: TimePlan | None, rows: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Empty selection and unobserved-anchor notes after calculation."""
+    del kpi, rows
+    if time_plan is None or time_plan.selection is None:
+        return []
+    if time_plan.selection.empty_reason:
+        return [
+            {
+                "code": "empty_time_selection",
+                "detail": time_plan.selection.empty_reason,
+            }
+        ]
+    return []
+
+
+def _validate_time_notes(time_plan: TimePlan | None) -> list[dict[str, str]]:
+    if time_plan is None or time_plan.selection is None:
+        return []
+    if time_plan.selection.empty_reason:
+        return [
+            {
+                "code": "empty_time_selection",
+                "detail": time_plan.selection.empty_reason,
+            }
+        ]
+    return []
+
+
+def _unobserved_anchor_note(
+    kpi: KpiSpec, plan: TimePlan | None, monthly: pd.DataFrame
+) -> list[dict[str, str]]:
+    """O4: selection-end anchor with no observed row at that bucket."""
+    if kpi.time is None or plan is None or plan.anchor is None:
+        return []
+    if monthly is None or monthly.empty or kpi.time.column not in monthly.columns:
+        return [
+            {
+                "code": "unobserved_anchor",
+                "detail": (
+                    f"Anchor {iso_period(plan.anchor, kpi.time)} has no observed data."
+                ),
+            }
+        ]
+    ts = pd.to_datetime(monthly[kpi.time.column])
+    hit = monthly.loc[ts == pd.Timestamp(plan.anchor)]
+    if hit.empty or (
+        "_observed" in hit.columns and not bool(hit["_observed"].astype(bool).any())
+    ):
+        return [
+            {
+                "code": "unobserved_anchor",
+                "detail": (
+                    f"Anchor {iso_period(plan.anchor, kpi.time)} has no observed data."
+                ),
+            }
+        ]
+    return []

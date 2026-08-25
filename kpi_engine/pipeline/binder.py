@@ -37,6 +37,7 @@ import yaml
 
 from kpi_engine.contracts import (
     GRAIN_NAMES,
+    PERIOD_PART_NAMES,
     OVER_FNS,
     AdaptedRequest,
     BaseMeasure,
@@ -1272,12 +1273,6 @@ def _parse_time(raw: Any) -> TimeSpec | None:
     if not column:
         raise BindError("time.column is required when time is declared.")
     filter_code = str(raw.get("filter_code") or "").strip()
-    if not filter_code:
-        raise BindError(
-            "time.filter_code is required when time is declared. "
-            "Set it to the context filter that carries the selected period, "
-            "or omit the time: block if this KPI has no time column."
-        )
     grain = raw.get("grain", "month")
     if grain not in GRAIN_NAMES:
         raise BindError(
@@ -1323,6 +1318,18 @@ def _parse_time(raw: Any) -> TimeSpec | None:
 
         resolve_time_format(time_format)
     compose_template = parse_compose_block(raw.get("compose"), what="time.compose")
+    periods = _parse_time_periods(raw.get("periods"), grain=str(grain))
+    if periods and compose_template:
+        raise BindError(
+            "time.periods and time.compose.template cannot both be set. "
+            "Use time.periods for independent year/month filters."
+        )
+    if not filter_code and not periods and not compose_template:
+        raise BindError(
+            "time.filter_code is required when time is declared, unless "
+            "time.periods maps year/month/… to context filters. "
+            "Omit the time: block if this KPI has no time column."
+        )
     return TimeSpec(
         column=require_ident(str(column), what="time.column"),
         grain=grain,  # type: ignore[arg-type]
@@ -1333,7 +1340,38 @@ def _parse_time(raw: Any) -> TimeSpec | None:
         compose_template=compose_template,
         source_grain=source_grain,
         grains=grains,  # type: ignore[arg-type]
+        periods=periods,
     )
+
+
+def _parse_time_periods(raw: Any, *, grain: str) -> tuple[tuple[str, str], ...]:
+    """Parse time.periods: {year: code, month: code, …}. Parts cannot be finer than grain."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict) or not raw:
+        raise BindError(
+            "time.periods must be an object mapping year/quarter/month/week/day "
+            "to a context filter code."
+        )
+    from kpi_engine.pipeline.period_select import assert_part_not_finer
+
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for key, code in raw.items():
+        part = str(key).strip().lower()
+        if part not in PERIOD_PART_NAMES:
+            raise BindError(
+                f"Unknown time.periods key {key!r}. Use year, quarter, month, week, or day."
+            )
+        if part in seen:
+            raise BindError(f"Duplicate time.periods key {part!r}.")
+        seen.add(part)
+        assert_part_not_finer(part, grain)
+        ident = str(code or "").strip()
+        if not ident:
+            raise BindError(f"time.periods.{part} must be a context filter code.")
+        out.append((part, ident))
+    return tuple(out)
 
 
 def measure_dependencies(spec: OutputSpec) -> tuple[str, ...]:
@@ -1518,12 +1556,20 @@ def _parse_cut(raw: Any, dimensions: tuple[str, ...] = ()) -> CutSpec:
     exclude = _dim_list("exclude_from_grain", "cut exclude_from_grain")
     ignore = tuple(str(x) for x in raw.get("ignore_filters") or [])
     also = tuple(str(x) for x in raw.get("also_emit") or [])
+    pack_also_emit = True
+    if "pack_also_emit" in raw:
+        if not isinstance(raw.get("pack_also_emit"), bool):
+            raise BindError(
+                f"cuts.{name}.pack_also_emit must be a bool."
+            )
+        pack_also_emit = bool(raw.get("pack_also_emit"))
     return CutSpec(
         name=name,
         group_by=group_by,
         ignore_filters=ignore,
         also_emit=also,
         exclude_from_grain=exclude,
+        pack_also_emit=pack_also_emit,
     )
 
 

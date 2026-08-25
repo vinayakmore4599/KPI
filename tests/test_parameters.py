@@ -126,7 +126,7 @@ def test_map_alias_then_allowed(parquet_path, extra_config):
     assert row["picked"] == 30.0
 
 
-def test_output_cut_skips_also_emit(parquet_path, extra_config):
+def test_output_cut_walks_also_emit(parquet_path, extra_config):
     spec = minimal_kpi(
         9805,
         parameters={"output_cut": {"type": "string", "default": "G", "allowed": ["G", "R"]}},
@@ -137,12 +137,16 @@ def test_output_cut_skips_also_emit(parquet_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     cuts = {row["output_cut"] for row in result["rows"]}
-    assert cuts == {"G"}
+    assert cuts == {"G", "R"}
     assert result["request_parameters"]["output_cut"] == "G"
 
     ctx["parameters"] = {"output_cut": "R"}
     result_r = compute(ctx, config_dir=extra_config)
     assert {row["output_cut"] for row in result_r["rows"]} == {"R"}
+
+    ctx["parameters"] = {"output_cut": "G"}
+    result_g = compute(ctx, config_dir=extra_config)
+    assert {row["output_cut"] for row in result_g["rows"]} == {"G", "R"}
 
 
 def test_time_grain_param_picks_week(parquet_path, extra_config):

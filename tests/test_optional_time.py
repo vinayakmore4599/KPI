@@ -16,7 +16,7 @@ import pytest
 
 from kpi_engine import compute
 from kpi_engine.pipeline.binder import load_kpi
-from kpi_engine.exceptions import BindError, TimePlanError
+from kpi_engine.exceptions import BindError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 
 
@@ -111,8 +111,8 @@ def test_time_filter_code_is_whatever_the_kpi_declares(parquet_path, extra_confi
     assert all(f["filter_code"] != "as_of_period" for f in result["applied_filters"])
 
 
-def test_declared_time_still_requires_its_filter(parquet_path, extra_config):
-    """Omitting the named period filter on a time-based KPI is still an error."""
+def test_declared_time_without_its_filter_probes_history(parquet_path, extra_config):
+    """Omitting the named period filter is whole-history, not an error."""
     spec = minimal_kpi(
         9704,
         time={
@@ -129,8 +129,10 @@ def test_declared_time_still_requires_its_filter(parquet_path, extra_config):
     ctx = make_context(
         parquet_path, measures=["current_value"], supplier=["ABC"], kpi_id=9704
     )
-    with pytest.raises(TimePlanError, match="fiscal_month"):
-        compute(ctx, config_dir=extra_config)
+    del ctx["filters"]["reporting_month"]
+    result = compute(ctx, config_dir=extra_config)
+    assert result["parameters"]["time_selection"]["anchor_source"] == "data"
+    assert result["parameters"]["anchor"] == "2026-03-01"
 
 
 def test_time_block_requires_column_and_filter_code(extra_config):

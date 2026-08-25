@@ -178,6 +178,10 @@ class AdaptedRequest:
     selected_dimensions: tuple[str, ...] | Mapping[str, bool] | None = None
 
 
+PERIOD_PART_NAMES = frozenset({"year", "quarter", "month", "week", "day"})
+AnchorSource = Literal["context", "data", "legacy"]
+
+
 @dataclass(frozen=True)
 class TimeSpec:
     """KPI time column, grain, and which context filter is the selected period.
@@ -194,6 +198,7 @@ class TimeSpec:
     compose_template: str | None = None
     source_grain: GrainName | None = None
     grains: tuple[GrainName, ...] = ()
+    periods: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -288,6 +293,7 @@ class CutSpec:
     ignore_filters: tuple[str, ...]
     also_emit: tuple[str, ...]
     exclude_from_grain: tuple[str, ...] = ()
+    pack_also_emit: bool = True
 
 
 @dataclass(frozen=True)
@@ -429,15 +435,28 @@ class ModelSpec:
 
 
 @dataclass(frozen=True)
+class TimeSelection:
+    """Independent time-part predicates and the materialized bucket set they select."""
+
+    parts: tuple[tuple[str, tuple[Any, ...]], ...] = ()
+    start: date | None = None
+    end: date | None = None
+    periods: tuple[date, ...] = ()
+    anchor_source: AnchorSource = "context"
+    empty_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class TimePlan:
     """Anchor month and the widened scan range needed for requested lookbacks."""
 
-    anchor: date
-    span_start: date
-    span_end_exclusive: date
+    anchor: date | None
+    span_start: date | None
+    span_end_exclusive: date | None
     lookback_months: int
     claimed_filter_code: str
     lookback_forward: int = 0
+    selection: TimeSelection | None = None
 
 
 @dataclass(frozen=True)

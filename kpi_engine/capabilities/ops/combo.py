@@ -5,7 +5,6 @@ Split this file by family when it is hard to review — never one file per name.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any
 
 from kpi_engine.capabilities.ops import support
@@ -88,29 +87,34 @@ class Point(OpPlugin):
                 spec, ctx.cut, combo, value, ctx.series, kpi, start=None, end=None
             )
             return value
-        anchor = support.effective_anchor(ctx)
-        target = support.truncate_period_safe(anchor, kpi)
-        if spec.offset:
-            from kpi_engine.dates import apply_offset, truncate_period
+        from kpi_engine.pipeline.period_select import negate_offset, shift_selection
 
-            lookback = replace(
-                spec.offset,
-                days=-spec.offset.days,
-                months=-spec.offset.months,
-                years=-spec.offset.years,
-                quarters=-spec.offset.quarters,
-                weeks=-spec.offset.weeks,
+        periods = support.effective_selection(ctx)
+        if spec.offset:
+            periods = shift_selection(periods, negate_offset(spec.offset), kpi.time)
+        if not periods:
+            support.log_base_calc(
+                spec, ctx.cut, combo, None, ctx.series, kpi, start=None, end=None
             )
-            target = truncate_period(apply_offset(anchor, lookback), kpi.time)
-        base = support.base_measure(kpi, spec.of) if spec.of else None
-        if base is not None and base.agg in NON_ADDITIVE_AGGS:
-            value = support.agg_detail(
-                ctx.detail, kpi, base, ctx.group_dims, ctx.combo, target, target
-            )
-        else:
-            value = support.point_value(ctx.series, kpi, spec.of, target)
+            return None
+        value = support.selection_value(
+            ctx.series,
+            kpi,
+            spec,
+            periods,
+            detail=ctx.detail,
+            combo=ctx.combo,
+            group_dims=ctx.group_dims,
+        )
         support.log_base_calc(
-            spec, ctx.cut, combo, value, ctx.series, kpi, start=target, end=target
+            spec,
+            ctx.cut,
+            combo,
+            value,
+            ctx.series,
+            kpi,
+            start=periods[0],
+            end=periods[-1],
         )
         return value
 
@@ -136,9 +140,10 @@ class Window(OpPlugin):
     def evaluate(self, ctx: EvalCtx) -> Any:
         if ctx.kpi.time is None or ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} is a window measure; this KPI has no time column.")
-        start, end = support.window_bounds(
-            support.effective_anchor(ctx), ctx.spec, ctx.kpi
-        )
+        sel = support.effective_selection(ctx)
+        if not sel:
+            return None
+        start, end = support.window_bounds(sel[-1], ctx.spec, ctx.kpi)
         base = support.base_measure(ctx.kpi, ctx.spec.of)
         if base.agg in NON_ADDITIVE_AGGS:
             value = support.agg_detail(
@@ -181,6 +186,8 @@ class Trend(OpPlugin):
     def evaluate(self, ctx: EvalCtx) -> Any:
         if ctx.kpi.time is None or ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} is a trend measure; this KPI has no time column.")
+        if ctx.plan.anchor is None:
+            return [], None
         return support.trend_values(
             ctx.series,
             ctx.kpi,

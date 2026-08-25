@@ -29,20 +29,18 @@ from kpi_engine.runlog import traced
 
 @traced
 def emitted_cuts(kpi: KpiSpec) -> tuple[CutSpec, ...]:
-    """Walk default_cut and also_emit to get the full set of cuts for this request."""
-    return emitted_cuts_from(kpi, (kpi.default_cut,))
+    """Walk default_cut (or locked output_cut) and also_emit."""
+    root = kpi.locked_cut or kpi.default_cut
+    return emitted_cuts_from(kpi, (root,))
 
 
 def emitted_cuts_from(kpi: KpiSpec, roots: tuple[str, ...]) -> tuple[CutSpec, ...]:
-    """Walk these cut names and also_emit. Used per extract pipeline."""
+    """Walk these cut names and also_emit. Used per extract pipeline.
+
+    A cut with pack_also_emit false is emitted without walking its also_emit.
+    parameters.output_cut (locked_cut) is a walk root, not a hard lock.
+    """
     by_name = {c.name: c for c in kpi.cuts}
-    if kpi.locked_cut is not None:
-        cut = by_name.get(kpi.locked_cut)
-        if cut is None:
-            raise BindError(
-                f"Unknown cut {kpi.locked_cut!r}. Declared: {sorted(by_name)}."
-            )
-        return (cut,)
     names: list[str] = []
 
     def walk(name: str) -> None:
@@ -53,6 +51,8 @@ def emitted_cuts_from(kpi: KpiSpec, roots: tuple[str, ...]) -> tuple[CutSpec, ..
         if cut is None:
             raise BindError(f"Unknown cut {name!r}. Declared: {sorted(by_name)}.")
         names.append(name)
+        if not cut.pack_also_emit:
+            return
         for extra in cut.also_emit:
             walk(extra)
 

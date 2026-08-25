@@ -7,7 +7,7 @@ run (``apply_request_time``, ``locked_cut``).
 Reserved names:
 
 - ``time_grain`` — same overlay as the old ``execution.time_grain`` (v1)
-- ``output_cut`` — emit that cut only; drop ``also_emit``
+- ``output_cut`` — walk that cut as the root of ``also_emit`` (YAML default does not lock)
 
 User names inject into measure expr / fn kwargs. Collision with a YAML
 ``measures:`` **key** is a bind error (keys are static; ``when:`` only
@@ -83,11 +83,18 @@ def bind_incoming(
         _reject_reserved_case_label(spec.name, values[spec.name])
 
     locked_cut = None
-    if RESERVED_OUTPUT_CUT in declared:
+    if RESERVED_OUTPUT_CUT in incoming:
         locked_cut = str(values[RESERVED_OUTPUT_CUT])
         if locked_cut not in cut_names:
             raise BindError(
                 f"parameters.output_cut {locked_cut!r} is not a declared cut "
+                f"(have {sorted(cut_names)})."
+            )
+    elif RESERVED_OUTPUT_CUT in declared:
+        locked_cut_default = str(values[RESERVED_OUTPUT_CUT])
+        if locked_cut_default not in cut_names:
+            raise BindError(
+                f"parameters.output_cut {locked_cut_default!r} is not a declared cut "
                 f"(have {sorted(cut_names)})."
             )
 

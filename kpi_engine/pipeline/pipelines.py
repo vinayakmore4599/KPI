@@ -104,7 +104,12 @@ def partition_request(kpi: KpiSpec, requested: tuple[str, ...]) -> list[Pipeline
 
 
 def cuts_for_keys(kpi: KpiSpec, keys: tuple[str, ...]) -> tuple[CutSpec, ...]:
-    """Cuts named by these measures (or default_cut), plus also_emit."""
+    """Cuts named by these measures (or default_cut), plus also_emit.
+
+    An explicit context ``output_cut`` is the sole walk root.
+    """
+    if kpi.locked_cut is not None:
+        return emitted_cuts_from(kpi, (kpi.locked_cut,))
     by_key = {m.key: m for m in kpi.measures}
     roots: list[str] = []
     for key in keys:

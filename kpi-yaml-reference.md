@@ -2,7 +2,7 @@
 
 Everything the engine can calculate, and how to declare it in YAML.
 
-Use this document while writing `udfs/config/kpis/<kpi_id>.yaml` and `udfs/config/models/<model_id>.yaml`.
+Use this document while writing `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml` and `udfs/config/models/<kpi_group>/<model_id>.yaml`.
 
 Related docs:
 
@@ -43,7 +43,7 @@ Hosts and YAML authors must treat these as breaks, not silent extras:
 ```yaml
 kpi_id: 3004                 # must match execution.kpi_id
 version: 1                   # optional, defaults to 1
-model: sotif                 # config/models/sotif.yaml
+model: sotif                 # config/models/<kpi_group>/sotif.yaml (group is authoring only)
 
 time:
   column: event_month        # date column on the extract
@@ -895,7 +895,7 @@ measures:
 
 ---
 
-## 9. Model YAML (`config/models/<model_id>.yaml`)
+## 9. Model YAML (`config/models/<kpi_group>/<model_id>.yaml`)
 
 The model says **what DuckDB reads**. Paths come from the context at runtime.
 

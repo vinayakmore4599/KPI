@@ -1,7 +1,7 @@
 """Shared test fixtures (local parquet only — no ADLS).
 
 What this file provides
-    config_dir — path to repo config/kpis and config/models.
+    config_dir — path to repo config/kpis and config/models (optional kpi_group folders).
     parquet_path — tiny Sotif-like fact table with a deliberate missing month.
     make_context — metadata-shaped JSON pointing at that parquet.
 

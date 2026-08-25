@@ -13,5 +13,5 @@ Capabilities
 
 When to use
     Edit a core module when engine behaviour changes. For a new KPI, edit
-    config/kpis/ instead.
+    config/kpis/<kpi_group>/ instead.
 """

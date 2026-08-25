@@ -209,7 +209,7 @@ def cover(wb: Workbook) -> None:
         [
             "YAML calculation patterns",
             "How to write typical KPI math (YoY, ratio, SLA, rank, …)",
-            "Copy the pattern into config/kpis/<id>.yaml",
+            "Copy the pattern into config/kpis/<kpi_group>/<id>.yaml",
             "If no pattern fits, add a catalog name — do not edit core/",
         ],
         [
@@ -272,7 +272,7 @@ def cover(wb: Workbook) -> None:
     ws.row_dimensions[last + 4].height = 80
 
     ws["A" + str(last + 8)] = (
-        "Host entry: udfs.kpi_engine.main   |   Routing: execution.kpi_id → config/kpis/<id>.yaml   |   "
+        "Host entry: udfs.kpi_engine.main   |   Routing: execution.kpi_id → config/kpis/<kpi_group>/<id>.yaml   |   "
         "AI brief: attach YAML preparation + catalogs + calculation intake (kpi-yaml-preparation-guide.md §0)."
     )
     ws["A" + str(last + 8)].font = Font(italic=True, size=10, color="44546A")
@@ -284,10 +284,17 @@ def convention_rows() -> list[list]:
     return [
         [
             "KPI YAML file",
-            "Path is exact: udfs/config/kpis/<kpi_id>.yaml. The stem must equal context.execution.kpi_id with no name-fold.",
-            "3004.yaml when execution.kpi_id is 3004 or \"3004\". Copy 3004.yaml to <new_id>.yaml.",
-            "sotif.yaml for kpi_id 3004. 3004.yml. kpis/Sotif.yaml when the host sends 3004. Spaces or extra folders.",
-            "load_kpi opens only f\"{kpi_id}.yaml\". A missing file is a bind error. Case on the filename is OS-dependent; treat it as exact.",
+            "Path: udfs/config/kpis/<kpi_group>/<kpi_id>.yaml or flat kpis/<kpi_id>.yaml. Stem equals execution.kpi_id exactly (no fold). kpi_id is unique across groups.",
+            "kpis/sotif/3004.yaml when execution.kpi_id is 3004. Copy to kpis/<kpi_group>/<new_id>.yaml.",
+            "sotif.yaml for kpi_id 3004. 3004.yml. Two groups both containing 3004.yaml. kpis/sotif/quality/3004.yaml (only one group folder).",
+            "load_kpi finds exactly one f\"{kpi_id}.yaml\" under kpis/ or kpis/*/. Zero or two files is a bind error. No execution.kpi_group field.",
+        ],
+        [
+            "kpi_group folder",
+            "One optional snake_case directory under kpis/ and models/. Authoring only; not sent on the context. Group names use the identifier alphabet.",
+            "kpis/sotif/, models/sotif/, models/freight/. A KPI in kpis/sotif/ may model: a file in models/freight/.",
+            "execution.kpi_group. Nested groups (kpis/a/b/id.yaml). Spaces or hyphens in the folder name.",
+            "The engine never reads the folder name. Duplicate kpi_id or model_id across groups is a bind error.",
         ],
         [
             "KPI yaml kpi_id:",
@@ -298,10 +305,10 @@ def convention_rows() -> list[list]:
         ],
         [
             "Model YAML file",
-            "Path: udfs/config/models/<model_id>.yaml. Prefer lowercase snake_case. Extension must be .yaml.",
-            "sotif.yaml, orders_sql.yaml, freight_lane.yaml.",
-            "sotif.yml. models/Sotif Model.yaml. Putting the file under kpis/.",
-            "load_model first tries <model_id>.yaml exactly. If missing, it accepts exactly one *.yaml whose stem folds to model_id (Sotif.yaml ↔ sotif). Two fold-matches is an error.",
+            "Path: udfs/config/models/<kpi_group>/<model_id>.yaml or flat models/<model_id>.yaml. Prefer lowercase snake_case. Extension must be .yaml. model_id is unique across groups.",
+            "models/sotif/sotif.yaml, models/freight/orders_sql.yaml.",
+            "sotif.yml. models/Sotif Model.yaml. Two groups both containing sotif.yaml. Putting the file under kpis/.",
+            "load_model finds exactly one file whose stem folds to model_id among models/*.yaml and models/*/*.yaml (Sotif.yaml ↔ sotif). Two fold-matches is an error.",
         ],
         [
             "Model yaml model_id:",
@@ -313,7 +320,7 @@ def convention_rows() -> list[list]:
         [
             "KPI model: pointer",
             "KPI YAML model: must name a model_id that exists. Same fold as model_id (case, spaces, underscores only).",
-            "model: sotif  with models/sotif.yaml. Per-base override base_measures.x.model: orders_sql when two extracts are needed.",
+            "model: sotif  with models/sotif/sotif.yaml (or models/freight/sotif.yaml). Per-base override base_measures.x.model: orders_sql when two extracts are needed.",
             "model: sotif pointing at sotif_sql.yaml. Embedding an ADLS path instead of a model id. Inventing a model that has no file.",
             "same_model_id folds Region/region and my_model/my model. It does not treat sotif as sotif_sql. Physical vs sql is kind: on the model file, not a suffix rule — but keep suffixes honest (orders_sql.yaml for kind: sql).",
         ],
@@ -403,7 +410,7 @@ def convention_rows() -> list[list]:
         ],
         [
             "Host UDF / module_path",
-            "One generic entry: udfs.kpi_engine.main. Routing is execution.kpi_id → config/kpis/<id>.yaml. Do not add a per-KPI Python module.",
+            "One generic entry: udfs.kpi_engine.main. Routing is execution.kpi_id → config/kpis/<kpi_group>/<id>.yaml (or flat kpis/<id>.yaml). Do not add a per-KPI Python module.",
             "Host module_path: udfs.kpi_engine.main. New KPI = new YAML (+ model YAML if the extract is new).",
             "udfs/<kpi_id>/main.py. Cloning the engine per metric. A second module_path per kpi_id.",
             "The UDF is stateless compute(context). KPI math lives in YAML; DuckDB shape lives in model YAML.",
@@ -418,7 +425,7 @@ def convention_rows() -> list[list]:
         [
             "File header comments (recommended)",
             "Match existing config files: what the file provides, where it is used, capabilities, when to copy it.",
-            "See udfs/config/kpis/3004.yaml and udfs/config/models/sotif.yaml headers.",
+            "See udfs/config/kpis/sotif/3004.yaml and udfs/config/models/sotif/sotif.yaml headers.",
             "Leaving a copied file with the old kpi_id / Sotif description. Putting secrets in comments.",
             "Comments are documentation only; the engine ignores them. Keep kpi_id / model_id in the body in sync with the filename.",
         ],
@@ -441,7 +448,7 @@ def preparation_rows() -> list[list]:
         ],
         [
             "AI output contract",
-            "Every generating response is: (1) entire kpis/<kpi_id>.yaml (2) entire models/<model_id>.yaml if extract is new, else 'reuses existing model' (3) Assumptions (4) Gaps.",
+            "Every generating response is: (1) entire kpis/<kpi_group>/<kpi_id>.yaml (2) entire models/<kpi_group>/<model_id>.yaml if extract is new, else 'reuses existing model' (3) Assumptions (4) Gaps.",
             "Full files with header comments updated for this kpi_id. Then a short assumptions/gaps list.",
             "A snippet, skeleton with blanks, # TODO, CHANGE_ME, or '...'. Partial measures: block.",
             "High confidence = completeness checklist all true. If any required key is unknown, ask numbered questions and emit no YAML.",
@@ -533,7 +540,7 @@ def preparation_rows() -> list[list]:
         [
             "Mandatory KPI keys",
             "kpi_id, model, default_dimensions, ≥1 cut, ≥1 measure. time: (period) or omit entirely (snapshot). row_set span_union|anchor_only.",
-            "See gold file udfs/config/kpis/3004.yaml — copy structure, not Sotif names, unless this KPI is Sotif.",
+            "See gold file udfs/config/kpis/sotif/3004.yaml — copy structure, not Sotif names, unless this KPI is Sotif.",
             "Missing default_dimensions. Empty measures:. cuts[].model:. parameters.selected_dimensions.",
             "cuts.group_by is extras only. Header comments must name this kpi_id, not leftover 3004 text.",
         ],
@@ -588,7 +595,7 @@ def component_rows() -> list[list]:
             "KPI YAML",
             "The definition file for one kpi_id",
             "Declares time, dimensions, base_measures, cuts, measures. This is what authors write.",
-            "config/kpis/<kpi_id>.yaml",
+            "config/kpis/<kpi_group>/<kpi_id>.yaml (or flat kpis/<kpi_id>.yaml)",
             "Not Python. Not a per-KPI UDF.",
             "When you have a new metric the UI will request.",
         ],
@@ -596,7 +603,7 @@ def component_rows() -> list[list]:
             "Model YAML",
             "What DuckDB reads (tables/joins or a SQL CTE)",
             "Shapes the extract. Does not own KPI math (YoY, rank, windows).",
-            "config/models/<id>.yaml  —  KPI model: pointer",
+            "config/models/<kpi_group>/<id>.yaml  —  KPI model: pointer",
             "Do not put YoY in model SQL as the default path.",
             "New source tables, eligibility CTE, timezone conversion.",
         ],
@@ -1136,15 +1143,15 @@ def extend_rows() -> list[list]:
         [
             "New KPI (existing catalog)",
             "Authoring",
-            "Copy config/kpis/3004.yaml → <kpi_id>.yaml. Fill time, dimensions, base_measures, cuts, measures. Host module_path stays udfs.kpi_engine.main.",
-            "udfs/config/kpis/<id>.yaml",
+            "Copy config/kpis/sotif/3004.yaml → <kpi_group>/<kpi_id>.yaml. Fill time, dimensions, base_measures, cuts, measures. Host module_path stays udfs.kpi_engine.main.",
+            "udfs/config/kpis/<kpi_group>/<id>.yaml",
             "Do not add udfs/<kpi>.py. Do not edit core/.",
         ],
         [
             "New extract / joins",
             "Model",
-            "Add config/models/<id>.yaml (kind: physical or sql). Point KPI model: at model_id. Paths stay on context.datasets.",
-            "udfs/config/models/<id>.yaml",
+            "Add config/models/<kpi_group>/<id>.yaml (kind: physical or sql). Point KPI model: at model_id. Paths stay on context.datasets.",
+            "udfs/config/models/<kpi_group>/<id>.yaml",
             "KPI formulas stay catalog ops; messy SQL belongs in the model.",
         ],
         [

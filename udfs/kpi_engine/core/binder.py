@@ -9,7 +9,9 @@ Where it is used
     orchestrator after adapt(). Tests load KPI 3004 via load_kpi.
 
 Capabilities
-    - Reads config/kpis/<kpi_id>.yaml and config/models/<model_id>.yaml.
+    - Reads config/kpis/<kpi_id>.yaml or config/kpis/<kpi_group>/<kpi_id>.yaml.
+    - Reads config/models/<model_id>.yaml or config/models/<kpi_group>/<model_id>.yaml.
+    - kpi_id / model_id are globally unique; the group folder is authoring only.
     - Validates identifiers, aggs, default_cut, measure keys.
     - `base_measures.sql` / `expr:` / `columns:` + `op` run in Pandas after retrieve.
     - DuckDB never receives KPI YAML formulas.
@@ -93,6 +95,62 @@ def default_config_dir() -> Path:
     return here.parents[1] / "config"
 
 
+def _resolve_yaml(root: Path, kind: str, file_id: str, *, fold: bool) -> Path:
+    """Return the unique YAML under kpis/ or models/ (flat or one group folder).
+
+    KPIs match the filename stem exactly. Models also fold case / spaces /
+    underscores (Sotif.yaml ↔ sotif). Two files for the same id is a bind error.
+    """
+    hits = _yaml_candidates(root, kind, file_id, fold=fold)
+    flat = root / kind / f"{file_id}.yaml"
+    nested = root / kind / "*" / f"{file_id}.yaml"
+    if not hits:
+        if kind == "kpis":
+            raise BindError(f"No KPI YAML for kpi_id={file_id} at {flat} or {nested}.")
+        raise BindError(f"No model YAML for model_id={file_id!r} at {flat} or {nested}.")
+    if len(hits) > 1:
+        listed = ", ".join(str(path) for path in sorted(hits))
+        label = "kpi_id" if kind == "kpis" else "model_id"
+        raise BindError(f"Multiple YAML files for {label}={file_id!r}: {listed}.")
+    return hits[0]
+
+
+def _yaml_candidates(root: Path, kind: str, file_id: str, *, fold: bool) -> list[Path]:
+    """Flat <id>.yaml plus one-level <group>/<id>.yaml (not nested further)."""
+    folder = root / kind
+    wanted_name = f"{file_id}.yaml"
+    wanted_fold = norm_name(str(file_id))
+    hits: list[Path] = []
+    seen: set[Path] = set()
+
+    def consider(path: Path) -> None:
+        if not path.is_file():
+            return
+        resolved = path.resolve()
+        if resolved in seen:
+            return
+        if fold:
+            if norm_name(path.stem) != wanted_fold:
+                return
+        elif path.name != wanted_name:
+            return
+        seen.add(resolved)
+        hits.append(path)
+
+    if not folder.is_dir():
+        consider(folder / wanted_name)
+        return hits
+
+    for candidate in folder.glob("*.yaml"):
+        consider(candidate)
+    for group in folder.iterdir():
+        if not group.is_dir() or group.name.startswith("."):
+            continue
+        for candidate in group.glob("*.yaml"):
+            consider(candidate)
+    return hits
+
+
 @traced
 def load_kpi(
     kpi_id: int | str,
@@ -114,9 +172,7 @@ def load_kpi(
     from kpi_engine.core.resolve import resolve_kpi, validate_when_cases, yaml_has_overlays
 
     root = config_dir or default_config_dir()
-    path = root / "kpis" / f"{kpi_id}.yaml"
-    if not path.exists():
-        raise BindError(f"No KPI YAML for kpi_id={kpi_id} at {path}.")
+    path = _resolve_yaml(root, "kpis", str(kpi_id), fold=False)
     raw = _read_yaml(path)
     schema = _parse_parameters(raw.get("parameters"))
     time = _parse_time(raw.get("time"))
@@ -288,20 +344,9 @@ def assert_pack_columns(kpi: KpiSpec, models: Mapping[str, ModelSpec]) -> None:
 
 @traced
 def load_model(model_id: str, config_dir: Path | None = None) -> ModelSpec:
-    """Load and parse config/models/<model_id>.yaml (name fold: Sotif → sotif.yaml)."""
+    """Load config/models/<model_id>.yaml or models/<group>/<model_id>.yaml (name fold)."""
     root = config_dir or default_config_dir()
-    path = root / "models" / f"{model_id}.yaml"
-    if not path.exists():
-        wanted = norm_name(model_id)
-        matches = [
-            candidate
-            for candidate in (root / "models").glob("*.yaml")
-            if norm_name(candidate.stem) == wanted
-        ]
-        if len(matches) == 1:
-            path = matches[0]
-        else:
-            raise BindError(f"No model YAML for model_id={model_id!r} at {path}.")
+    path = _resolve_yaml(root, "models", str(model_id), fold=True)
     return _parse_model(_read_yaml(path), expected_id=model_id)
 
 

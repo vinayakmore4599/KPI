@@ -6,7 +6,8 @@ What this file provides
 
 Where it is used
     Metadata calls module_path udfs.kpi_engine.main. This is the only function
-    the host should invoke. kpi_id on the context selects config/kpis/<id>.yaml.
+    the host should invoke. kpi_id on the context selects
+    config/kpis/<kpi_group>/<id>.yaml (or flat kpis/<id>.yaml).
 
 Capabilities
     Puts the udfs/ folder on sys.path so kpi_engine and config travel with this

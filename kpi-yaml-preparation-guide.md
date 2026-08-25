@@ -1,6 +1,6 @@
 # KPI YAML preparation guide
 
-How to write `udfs/config/kpis/<kpi_id>.yaml` (and the model it points at) so the host can request measures and the engine can compute them.
+How to write `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml` (and the model it points at) so the host can request measures and the engine can compute them.
 
 **Give this file to any AI together with the calculation spec** (intake block in §0.2, plus every `measure_key` formula). The AI must return **complete, bind-ready YAML files** — not snippets, not TODOs, not a skeleton with blanks. The same contract is on the **YAML preparation** sheet of `docs/KPI-Engine-Capabilities.xlsx`.
 
@@ -27,8 +27,8 @@ You are a KPI Engine YAML author for this repository. You emit configuration the
 
 **Every response that generates YAML must contain, in this order:**
 
-1. `udfs/config/kpis/<kpi_id>.yaml` — the **entire** file (header comments + every required block).
-2. `udfs/config/models/<model_id>.yaml` — the **entire** file **only if** the extract is new. If an existing model is reused, write one sentence: `Reuses existing model <model_id>. No new model file.` Do not invent a second model.
+1. `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml` — the **entire** file (header comments + every required block). Flat `kpis/<kpi_id>.yaml` is also legal.
+2. `udfs/config/models/<kpi_group>/<model_id>.yaml` — the **entire** file **only if** the extract is new. Group folders need not match the KPI’s group. If an existing model is reused, write one sentence: `Reuses existing model <model_id>. No new model file.` Do not invent a second model.
 3. **Assumptions** — only facts you had to infer (and how a reviewer can confirm them).
 4. **Gaps** — anything that would fail bind. If a required field is missing, **do not emit YAML**. Ask numbered questions instead.
 
@@ -47,7 +47,8 @@ You are a KPI Engine YAML author for this repository. You emit configuration the
 Copy this block, fill it, and attach it with this guide. Square brackets are placeholders.
 
 ```text
-kpi_id:                  # becomes udfs/config/kpis/<kpi_id>.yaml  (exact match to execution.kpi_id)
+kpi_id:                  # filename stem; udfs/config/kpis/<kpi_group>/<kpi_id>.yaml
+kpi_group:               # authoring folder only (snake_case). Not a context field. Ids stay globally unique.
 version: 1
 
 model_id:                # existing model to reuse, or new id (lowercase snake_case)
@@ -100,10 +101,10 @@ If `kpi_id`, at least one `measure_key` with a calculation, `model_id` (or reuse
 
 | File | Job | Never put here |
 |---|---|---|
-| `udfs/config/models/<model_id>.yaml` | What DuckDB reads (tables/joins or a SQL CTE) | KPI math, `agg:`, `op:`, measure `expr:` |
-| `udfs/config/kpis/<kpi_id>.yaml` | Time, dimensions, base facts, cuts, requestable measures | Dataset URIs, Python, free SQL, invented ops |
+| `udfs/config/models/<kpi_group>/<model_id>.yaml` | What DuckDB reads (tables/joins or a SQL CTE) | KPI math, `agg:`, `op:`, measure `expr:` |
+| `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml` | Time, dimensions, base facts, cuts, requestable measures | Dataset URIs, Python, free SQL, invented ops |
 
-`KPI model:` **must equal** model file `model_id:` after folding case / spaces / underscores. `sotif` ≠ `sotif_sql`. Filename: KPI stem equals `execution.kpi_id` **exactly** (no fold). Model filename: `udfs/config/models/<model_id>.yaml` (`.yaml` only). Identifiers: `^[A-Za-z_][A-Za-z0-9_]*$`. Reserved in formulas: `case when then else and or not is null in` (`end` is allowed).
+`KPI model:` **must equal** model file `model_id:` after folding case / spaces / underscores. `sotif` ≠ `sotif_sql`. Filename: KPI stem equals `execution.kpi_id` **exactly** (no fold). Model filename stem is `model_id` (fold allowed). One optional `<kpi_group>/` folder under `kpis/` and `models/` (not two levels). Ids are unique across groups; a KPI in `kpis/sotif/` may `model:` a file in `models/freight/`. Identifiers: `^[A-Za-z_][A-Za-z0-9_]*$`. Reserved in formulas: `case when then else and or not is null in` (`end` is allowed).
 
 ### 0.4 Two calculation layers (do not mix)
 
@@ -181,7 +182,7 @@ Emit this shape. Drop commented blocks only when the intake says they do not app
 #
 kpi_id: <kpi_id>              # must equal filename stem and execution.kpi_id
 version: 1
-model: <model_id>             # MUST equal models/<model_id>.yaml model_id:
+model: <model_id>             # MUST equal models/<kpi_group>/<model_id>.yaml model_id:
 
 time:                         # omit the whole block if snapshot: true
   column: <time_column>
@@ -231,11 +232,11 @@ joins: []
 # Prefer $alias_scan so Delta vs Parquet follows context.table_type.
 ```
 
-Gold pattern in-repo: `udfs/config/kpis/3004.yaml` + `udfs/config/models/sotif.yaml`. Copy structure, not Sotif names, unless this KPI is Sotif.
+Gold pattern in-repo: `udfs/config/kpis/sotif/3004.yaml` + `udfs/config/models/sotif/sotif.yaml`. Copy structure, not Sotif names, unless this KPI is Sotif.
 
 ### 0.7 Completeness checklist (all must be true before you emit)
 
-- [ ] Filename stem = `kpi_id:` = `execution.kpi_id` (exact). Extension `.yaml`.
+- [ ] Filename stem = `kpi_id:` = `execution.kpi_id` (exact). Extension `.yaml`. One optional `kpis/<kpi_group>/` folder; `kpi_id` unique across groups.
 - [ ] `model:` equals an existing or newly emitted `model_id:` (fold = case/space/underscore only).
 - [ ] `default_dimensions` is present (`[]` legal). At least one `cuts[]`. `default_cut` is a declared cut name.
 - [ ] `cuts[].group_by` lists extras only (no overlap with `default_dimensions`).
@@ -282,8 +283,8 @@ Host names fold onto YAML keys (case, spaces, underscores; measure keys also com
 
 | File | Job | Never put here |
 |---|---|---|
-| `udfs/config/models/<model_id>.yaml` | What DuckDB reads (physical tables/joins or a SQL/CTE extract) | KPI math, `agg:`, `op:`, `expr:` |
-| `udfs/config/kpis/<kpi_id>.yaml` | Time, dimensions, base facts, cuts, requestable measures | ADLS paths, Python, free SQL |
+| `udfs/config/models/<kpi_group>/<model_id>.yaml` | What DuckDB reads (physical tables/joins or a SQL/CTE extract) | KPI math, `agg:`, `op:`, `expr:` |
+| `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml` | Time, dimensions, base facts, cuts, requestable measures | ADLS paths, Python, free SQL |
 
 **KPI YAML never becomes DuckDB SQL for measure math.** DuckDB retrieves physical columns (time, dimensions, and columns the row pipeline walks to). Pandas then builds every base fact and every requested measure. A `kind: sql` model is optional **per KPI** to shape this extract (joins, filters, optional SQL windows). There is no ban on `SUM(` / `LAG(` in model SQL.
 
@@ -1031,7 +1032,7 @@ Two models with no `model_relations` is an error only when a requested graph spa
 
 ## 12. Model YAML (what DuckDB reads)
 
-File: `udfs/config/models/<model_id>.yaml`. The KPI `model:` value must match `model_id:`.
+File: `udfs/config/models/<kpi_group>/<model_id>.yaml` (or flat `models/<model_id>.yaml`). The KPI `model:` value must match `model_id:`. Group folders are authoring only; ids stay unique.
 
 ### Physical
 

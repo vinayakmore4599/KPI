@@ -15,7 +15,7 @@
 #   measures       — current, previous year, 3/6/12m windows, yoy, 12m trend
 #
 # When to use
-#   Copy this file to config/kpis/<new_id>.yaml to onboard a KPI. Do not put
+#   Copy this file to config/kpis/<kpi_group>/<new_id>.yaml to onboard a KPI. Do not put
 #   ADLS paths or Python here.
 #
 kpi_id: 3004

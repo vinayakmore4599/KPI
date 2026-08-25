@@ -9,7 +9,8 @@ Where it is used
     callers never need to know core module names.
 
 Capabilities
-    Single entry for any kpi_id once YAML exists under config/kpis/.
+    Single entry for any kpi_id once YAML exists under config/kpis/ (optional
+    one-level kpi_group folder).
 
 When to use
     Always call `compute` / `validate` from this package, not from orchestrator

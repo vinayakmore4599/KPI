@@ -29,16 +29,16 @@ udfs/                         Copy this folder into the platform
     registries/               YAML allowlist + generated CAPABILITIES.md
     contracts.py              Shared typed fields
   config/
-    kpis/                     One YAML per kpi_id
-    models/                   DuckDB extract (tables/joins or SQL)
+    kpis/<kpi_group>/         One YAML per kpi_id (group is authoring only)
+    models/<kpi_group>/       DuckDB extract (tables/joins or SQL)
 
 tests/                        Local parquet tests (no ADLS) — not deployed
 ```
 
 | You want to… | Open |
 |---|---|
-| Add or change a KPI | `udfs/config/kpis/<id>.yaml` |
-| Change how source tables join | `udfs/config/models/<name>.yaml` |
+| Add or change a KPI | `udfs/config/kpis/<kpi_group>/<id>.yaml` |
+| Change how source tables join | `udfs/config/models/<kpi_group>/<name>.yaml` |
 | Understand a request failure | `udfs/kpi_engine/core/` (adapter, binder, time_planner, loader) |
 | Add a reusable name (op / hook / function) | `udfs/kpi_engine/capabilities/` + `registries/` ([catalog](udfs/kpi_engine/registries/CAPABILITIES.md)) |
 | Add an `agg`, filter operator, or common YAML field | `udfs/kpi_engine/core/` (and `contracts.py` for a shared field) |
@@ -85,7 +85,7 @@ The file traces every pipeline step (adapt, bind, extract, calculate), logs the 
 
 ## KPI YAML (what the sections mean)
 
-Example: `udfs/config/kpis/3004.yaml`.
+Example: `udfs/config/kpis/sotif/3004.yaml`.
 
 **`dimensions`** — columns that split rows (`reason_code`, `region`). Not numbers.
 
@@ -119,7 +119,7 @@ Example: `udfs/config/kpis/3004.yaml`.
 
 ## Adding a KPI
 
-1. Copy `udfs/config/kpis/3004.yaml` to `udfs/config/kpis/<kpi_id>.yaml`.
+1. Copy `udfs/config/kpis/sotif/3004.yaml` to `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml`.
 2. Point `model` at an alias that exists in context datasets.
 3. Declare `dimensions`, `base_measures`, `cuts`, and `measures` (every `measure_key` the page can ask for).
 4. Run `validate(sample_context)` then `pytest`.

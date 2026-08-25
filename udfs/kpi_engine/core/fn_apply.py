@@ -20,6 +20,7 @@ import pandas as pd
 
 from kpi_engine.contracts import BaseMeasure, KpiSpec, MeasureWhere
 from kpi_engine.exceptions import CatalogError
+from kpi_engine.core.filter_ops import pandas_mask
 from kpi_engine.identifiers import (
     Binary,
     BoolOp,
@@ -45,7 +46,10 @@ from kpi_engine.identifiers import (
 )
 from kpi_engine.runlog import traced
 
-WHERE_OPS = {"in", "eq", "ne"}
+WHERE_OPS = {"in", "eq", "ne", "gt", "gte", "lt", "lte", "between"}
+WHERE_OPS_HELP = "in, eq, ne, gt, gte, lt, lte, or between"
+NUMERIC_WHERE_OPS = frozenset({"gt", "gte", "lt", "lte", "between"})
+COUNT_AGGS = frozenset({"count", "count_distinct"})
 
 ColumnFn = Callable[..., "pd.Series"]
 MeasureFn = Callable[..., Any]
@@ -346,7 +350,7 @@ def eval_expr_series(node: Expr, frame: pd.DataFrame, *, raw: bool = False) -> p
     if isinstance(node, Call):
         return _call_series(node, frame)
     if isinstance(node, Case):
-        return _case_series(node, frame)
+        return _case_series(node, frame, raw=raw)
     if isinstance(node, Binary):
         left = eval_expr_series(node.left, frame)
         right = eval_expr_series(node.right, frame)
@@ -501,17 +505,17 @@ def _call_series(node: Call, frame: pd.DataFrame) -> pd.Series:
     return result.reindex(frame.index) if not result.index.equals(frame.index) else result
 
 
-def _case_series(node: Case, frame: pd.DataFrame) -> pd.Series:
-    """First matching WHEN; ELSE or null."""
+def _case_series(node: Case, frame: pd.DataFrame, *, raw: bool = False) -> pd.Series:
+    """First matching WHEN; ELSE or null. `raw` keeps THEN/ELSE text for count."""
     result = (
-        eval_expr_series(node.else_, frame)
+        eval_expr_series(node.else_, frame, raw=raw)
         if node.else_ is not None
         else pd.Series(pd.NA, index=frame.index, dtype="object")
     )
     for cond, value in reversed(node.whens):
         numeric = pd.to_numeric(eval_expr_series(cond, frame), errors="coerce")
         pick = numeric.notna() & (numeric != 0)
-        result = eval_expr_series(value, frame).where(pick, result)
+        result = eval_expr_series(value, frame, raw=raw).where(pick, result)
     return result
 
 
@@ -800,19 +804,26 @@ def _base_measure_series(
             f"base_measures.{measure.name} needs columns {missing} on the extract."
         )
     cols = tuple(actual or col for col, actual in zip(cols, resolved))
+    keep_raw = measure.agg in COUNT_AGGS
     if measure.row_op is not None and measure.row_op not in PASSTHROUGH_OPS:
         series = apply_row_op(work, cols, measure.row_op, measure.column_params)
     elif measure.expr:
-        series = eval_expr_series(parse_expression(measure.expr, what="measure expr"), work)
+        series = eval_expr_series(
+            parse_expression(measure.expr, what="measure expr"), work, raw=keep_raw
+        )
     elif measure.sql and not is_simple_ident(measure.sql):
-        series = eval_expr_series(parse_expression(measure.sql, what="measure sql"), work)
+        series = eval_expr_series(
+            parse_expression(measure.sql, what="measure sql"), work, raw=keep_raw
+        )
     elif cols:
-        if measure.agg == "count_distinct":
+        if keep_raw:
             series = work[cols[0]]
         else:
             series = apply_row_op(work, cols[:1], "value")
     elif measure.name in work.columns:
-        series = pd.to_numeric(work[measure.name], errors="coerce")
+        series = work[measure.name] if keep_raw else pd.to_numeric(
+            work[measure.name], errors="coerce"
+        )
     else:
         raise CatalogError(f"base_measures.{measure.name} has no columns to compute.")
     if measure.where is not None:
@@ -821,21 +832,17 @@ def _base_measure_series(
 
 
 def apply_where_mask(frame: pd.DataFrame, spec: MeasureWhere) -> pd.Series:
-    """Boolean mask for where.column op values."""
+    """Boolean mask for where.column op values. Bind list is the allowed set."""
     actual = _frame_column(frame, spec.column)
     if actual is None:
         raise CatalogError(f"where.column {spec.column!r} is not on the extract.")
-    col = frame[actual]
     op = spec.op.lower()
-    if op == "in":
-        return col.isin(list(spec.values))
-    if op == "eq":
-        value = spec.values[0] if spec.values else None
-        return col == value
-    if op == "ne":
-        value = spec.values[0] if spec.values else None
-        return col != value
-    raise CatalogError(f"Unknown where.op {spec.op!r}. Use in, eq, or ne.")
+    if op not in WHERE_OPS:
+        raise CatalogError(f"Unknown where.op {spec.op!r}. Use {WHERE_OPS_HELP}.")
+    col = frame[actual]
+    if op in NUMERIC_WHERE_OPS:
+        col = pd.to_numeric(col, errors="coerce")
+    return pandas_mask(col, op, spec.values)
 
 
 def apply_row_op(

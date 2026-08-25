@@ -74,10 +74,11 @@ from kpi_engine.identifiers import (
 from kpi_engine.core.fn_apply import (
     COLUMN_FNS,
     WHERE_OPS,
+    WHERE_OPS_HELP,
     column_op_error,
 )
 from kpi_engine.core.compose import parse_compose_block
-from kpi_engine.core.filter_ops import canonicalize_op
+from kpi_engine.core.filter_ops import FILTER_ARITY, assert_filter_arity, canonicalize_op
 from kpi_engine.core.loader import ensure_loaded
 from kpi_engine.core.op_protocol import CommonMeasureFields
 from kpi_engine.core.op_registry import get_op, require_op
@@ -1148,17 +1149,26 @@ def _parse_where(name: str, raw: Any) -> MeasureWhere | None:
     if not isinstance(raw, dict):
         raise BindError(f"base_measures.{name}.where must be an object.")
     column = require_ident(str(raw.get("column") or ""), what="where.column")
-    op = str(raw.get("op") or "in").lower()
+    try:
+        op = canonicalize_op(raw.get("op") or "in")
+    except BindError:
+        op = str(raw.get("op") or "in").strip().lower()
     if op not in WHERE_OPS:
-        raise BindError(f"base_measures.{name}.where.op must be in, eq, or ne.")
+        raise BindError(f"base_measures.{name}.where.op must be {WHERE_OPS_HELP}.")
     values_raw = raw.get("values")
     if values_raw is None and "value" in raw:
+        if FILTER_ARITY.get(op) == 2:
+            raise BindError(
+                f"base_measures.{name}.where op={op} requires values: [lo, hi], not value:."
+            )
         values_raw = [raw["value"]]
     if values_raw is None:
         raise BindError(f"base_measures.{name}.where needs values:.")
     if not isinstance(values_raw, (list, tuple)):
         values_raw = [values_raw]
-    return MeasureWhere(column=column, op=op, values=tuple(values_raw))
+    values = tuple(values_raw)
+    assert_filter_arity(op, values, code=f"base_measures.{name}.where")
+    return MeasureWhere(column=column, op=op, values=values)
 
 
 def _parse_parameters(raw: Any) -> tuple[ParameterSpec, ...]:

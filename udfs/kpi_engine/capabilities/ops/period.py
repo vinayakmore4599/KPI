@@ -8,8 +8,9 @@ from __future__ import annotations
 from typing import Any
 
 from kpi_engine.capabilities.ops import support
-from kpi_engine.contracts import NON_ADDITIVE_AGGS, KpiSpec, OutputSpec
+from kpi_engine.contracts import KpiSpec, OutputSpec
 from kpi_engine.core.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
+from kpi_engine.core.op_registry import get_op
 from kpi_engine.exceptions import BindError, CatalogError
 from kpi_engine.runlog import log_measure_calc
 
@@ -24,6 +25,9 @@ def _combo(ctx: EvalCtx) -> dict[str, Any]:
 
 
 def _offset_nonzero(offset) -> bool:
+    # F20: weeks is counted in OpPlugin.offset_is_nonzero / combo Point, not here.
+    # Period ops still bind on months/years/days/quarters; leave weeks until a
+    # week-grain lag/lead test fails.
     if offset is None:
         return False
     return bool(offset.months or offset.years or offset.days or offset.quarters)
@@ -41,7 +45,7 @@ def _assert_shift_source(spec: OutputSpec, kpi: KpiSpec) -> None:
     if not of:
         raise BindError(
             f"measures.{spec.key} op={spec.kind} requires `of:` naming a base "
-            f"or a point/window measure."
+            f"or a shiftable measure."
         )
     if of in known and of not in by_key:
         helper = next(b for b in kpi.base_measures if b.name == of)
@@ -56,44 +60,46 @@ def _assert_shift_source(spec: OutputSpec, kpi: KpiSpec) -> None:
             f"measures.{spec.key} of={of!r} is not a base or measure. "
             f"Declared measures: {sorted(by_key)}; base_measures: {sorted(known)}."
         )
-    if child.kind not in {"point", "window"}:
-        raise BindError(
-            f"measures.{spec.key} op={spec.kind} can only shift a base, "
-            f"point, or window measure (got op={child.kind})."
-        )
+    leaf = _unshiftable_leaf(child, by_key, seen=frozenset())
+    if leaf is None:
+        return
+    leaf_spec, label = leaf
+    raise BindError(
+        f"measures.{spec.key} op={spec.kind} cannot shift {of!r}: "
+        f"{label} is not shiftable."
+    )
 
 
-def _recompute_at(ctx: EvalCtx, of: str, target) -> Any:
-    kpi, series = ctx.kpi, ctx.series
-    child = ctx.catalog.get(of)
-    bases = {b.name for b in kpi.base_measures}
-    if child is None or (of in bases and child.kind not in {"point", "window"}):
-        return support.point_value(series, kpi, of, target)
-    if child.kind == "point":
-        point_at = target
-        if child.offset:
-            point_at = support.shifted_anchor(target, child.offset, kpi, backward=True)
-        base = support.base_measure(kpi, child.of) if child.of else None
-        if base is not None and base.agg in NON_ADDITIVE_AGGS:
-            return support.agg_detail(
-                ctx.detail, kpi, base, ctx.group_dims, ctx.combo, point_at, point_at
-            )
-        return support.point_value(series, kpi, child.of, point_at)
-    if child.kind == "window":
-        start, end = support.window_bounds(target, child, kpi)
-        base = support.base_measure(kpi, child.of)
-        if base.agg in NON_ADDITIVE_AGGS:
-            return support.agg_detail(
-                ctx.detail, kpi, base, ctx.group_dims, ctx.combo, start, end
-            )
-        return support.window_value(series, kpi, child, start, end)
-    raise CatalogError(f"{ctx.spec.key} cannot recompute {of} op={child.kind} at a shifted anchor.")
+def _unshiftable_leaf(
+    spec: OutputSpec,
+    by_key: dict[str, OutputSpec],
+    seen: frozenset[str],
+) -> tuple[OutputSpec, str] | None:
+    """First non-shiftable descendant, named as the leaf for BindError."""
+    if spec.key in seen:
+        return None
+    plugin = get_op(spec.kind)
+    if not plugin.shiftable:
+        if spec.kind == "hook" and spec.hook:
+            return spec, f"hook {spec.hook}"
+        return spec, f"{spec.key} op={spec.kind}"
+    for name in plugin.dependencies(spec):
+        child = by_key.get(name)
+        if child is None:
+            continue
+        hit = _unshiftable_leaf(child, by_key, seen | {spec.key})
+        if hit is not None:
+            return hit
+    return None
 
 
-def _eval_named(ctx: EvalCtx, name: str) -> Any:
-    if name in ctx.catalog:
-        return ctx.evaluate(ctx.catalog[name])
-    return ctx.evaluate(OutputSpec(key=name, kind="point", of=name))
+def _eval_named(ctx: EvalCtx, name: str, *, anchor=None) -> Any:
+    spec = ctx.catalog.get(name)
+    if spec is None:
+        spec = OutputSpec(key=name, kind="point", of=name)
+    if anchor is not None:
+        return ctx.evaluate(spec, anchor=anchor)
+    return ctx.evaluate(spec)
 
 
 class _Shift(OpPlugin):
@@ -101,6 +107,7 @@ class _Shift(OpPlugin):
 
     requires_time = True
     backward = True
+    shiftable = True
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         _require_offset(spec)
@@ -145,9 +152,9 @@ class Lag(_Shift):
         if ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} op=lag needs a time plan.")
         target = support.shifted_anchor(
-            ctx.plan.anchor, ctx.spec.offset, ctx.kpi, backward=True
+            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=True
         )
-        value = _recompute_at(ctx, ctx.spec.of or "", target)
+        value = _eval_named(ctx, ctx.spec.of or "", anchor=target)
         log_measure_calc(
             cut=ctx.cut,
             key=ctx.spec.key,
@@ -168,9 +175,9 @@ class Lead(_Shift):
         if ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} op=lead needs a time plan.")
         target = support.shifted_anchor(
-            ctx.plan.anchor, ctx.spec.offset, ctx.kpi, backward=False
+            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=False
         )
-        value = _recompute_at(ctx, ctx.spec.of or "", target)
+        value = _eval_named(ctx, ctx.spec.of or "", anchor=target)
         log_measure_calc(
             cut=ctx.cut,
             key=ctx.spec.key,
@@ -192,9 +199,9 @@ class Index(_Shift):
             raise CatalogError(f"{ctx.spec.key} op=index needs a time plan.")
         current = _eval_named(ctx, ctx.spec.of or "")
         target = support.shifted_anchor(
-            ctx.plan.anchor, ctx.spec.offset, ctx.kpi, backward=True
+            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=True
         )
-        baseline = _recompute_at(ctx, ctx.spec.of or "", target)
+        baseline = _eval_named(ctx, ctx.spec.of or "", anchor=target)
         if current is None or baseline in (None, 0):
             value = None
         else:
@@ -214,6 +221,7 @@ class Index(_Shift):
 class VsTarget(OpPlugin):
     name = "vs_target"
     extra_keys = frozenset({"vs", "as", "value"})
+    shiftable = True
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -294,6 +302,7 @@ class VsTarget(OpPlugin):
 class Threshold(OpPlugin):
     name = "threshold"
     extra_keys = frozenset({"cmp", "value", "vs"})
+    shiftable = True
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -378,9 +387,9 @@ class Diff(_Shift):
             raise CatalogError(f"{ctx.spec.key} op=diff needs a time plan.")
         current = _eval_named(ctx, ctx.spec.of or "")
         target = support.shifted_anchor(
-            ctx.plan.anchor, ctx.spec.offset, ctx.kpi, backward=True
+            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=True
         )
-        baseline = _recompute_at(ctx, ctx.spec.of or "", target)
+        baseline = _eval_named(ctx, ctx.spec.of or "", anchor=target)
         if current is None or baseline is None:
             value = None
         else:
@@ -406,9 +415,9 @@ class PctChange(_Shift):
             raise CatalogError(f"{ctx.spec.key} op=pct_change needs a time plan.")
         current = _eval_named(ctx, ctx.spec.of or "")
         target = support.shifted_anchor(
-            ctx.plan.anchor, ctx.spec.offset, ctx.kpi, backward=True
+            support.effective_anchor(ctx), ctx.spec.offset, ctx.kpi, backward=True
         )
-        baseline = _recompute_at(ctx, ctx.spec.of or "", target)
+        baseline = _eval_named(ctx, ctx.spec.of or "", anchor=target)
         if current is None or baseline in (None, 0):
             value = None
         else:

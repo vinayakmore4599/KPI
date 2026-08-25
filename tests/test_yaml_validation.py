@@ -433,3 +433,33 @@ def _time(**overrides) -> dict:
 def _write(extra_config, kpi_id: int, **overrides) -> None:
     """Write a test-only KPI YAML with the given top-level overrides."""
     write_yaml(extra_config / "kpis" / f"{kpi_id}.yaml", minimal_kpi(kpi_id, **overrides))
+
+
+def test_where_between_requires_values_list_not_value(extra_config):
+    """Arity-2 where: cannot use singular value: (F16)."""
+    spec = minimal_kpi(9401)
+    spec["base_measures"] = {
+        "mid": {
+            "sql": "amount",
+            "agg": "sum",
+            "where": {"column": "amount", "op": "between", "value": 10},
+        }
+    }
+    write_yaml(extra_config / "kpis" / "9401.yaml", spec)
+    with pytest.raises(BindError, match="values: \\[lo, hi\\]"):
+        load_kpi(9401, extra_config)
+
+
+def test_where_rejects_like_even_if_pandas_mask_knows_it(extra_config):
+    """Bind list is source of truth; like is not a base-measure where op (F17)."""
+    spec = minimal_kpi(9402)
+    spec["base_measures"] = {
+        "mid": {
+            "sql": "amount",
+            "agg": "sum",
+            "where": {"column": "reason_code", "op": "like", "value": "%LATE%"},
+        }
+    }
+    write_yaml(extra_config / "kpis" / "9402.yaml", spec)
+    with pytest.raises(BindError, match="where.op must be"):
+        load_kpi(9402, extra_config)

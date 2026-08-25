@@ -148,12 +148,15 @@ Do not mix `expr:` with `columns:` / `op:` / `sql:` on the same base measure.
 | Fixed target / goal | `op: constant` + `value:` |
 | Echo a dimension as a requestable column | `op: dimension` |
 | qty × price **per row**, then SUM | helper `expr:` then a later base with `agg: sum` |
+| Last period's ratio / OEE / other composite | `op: lag` / `diff` / `index` / `pct_change` of that measure (`fn`/`expr`/`window` are shiftable). Not of `trend`/`hook`/`rank` or a row helper |
 | Per-customer lag / running sum **on order rows** | `over:` on a **pre-fold** base (not calendar `op: lag`) |
 | Static code→fee map | `lookup:` on a base |
 | No period column (point-in-time snapshot) | **Omit** `time:`. Only `point` at offset 0 and `constant`. No window/trend/nonzero offset |
 | Math no row in this table covers | **Stop.** Name the missing catalog entry. Do not fake it with `expr:` or Python |
 
-**Aggregations (`agg:`):** `sum`, `avg`, `count`, `count_distinct`, `min`, `max`, `median`, `percentile` (needs `percentile: 0–100`), `first`, `last`.
+**Aggregations (`agg:`):** `sum`, `avg`, `count`, `count_distinct`, `min`, `max`, `median`, `percentile` (needs `percentile: 0–100`), `first`, `last`. `count` on a text id counts rows. `first`/`last` on text still coerce to numeric.
+
+**Base `where:` ops:** `in`, `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `between`. `between` needs `values: [lo, hi]`. `ne` excludes nulls. Not `like` / `is_null`.
 
 **Time grains:** `day`, `week`, `month`, `quarter`, `year` only. Default `month`. `week` is ISO Monday.
 
@@ -657,8 +660,8 @@ Identifiers must be simple SQL names: `[A-Za-z_][A-Za-z0-9_]*`. `CASE`, `WHEN`, 
 | `count_distinct` | no — re-reads rows | null | null | Distinct suppliers, SKUs |
 | `median` | no | null | null | Typical value |
 | `percentile` | no | null | null | Needs `percentile: 90` (or `0.9`) |
-| `first` | no | null | null | First event in the period |
-| `last` | no | null | null | Snapshot balance (not a sum of days) |
+| `first` | no | null | null | First event in the period (text columns still coerce to numeric) |
+| `last` | no | null | null | Snapshot balance (text columns still coerce to numeric) |
 
 `avg` travels as SUM and COUNT and divides at the end. A 3-month average over months of 2, 1, and 1 rows is `total / 4`, not `(a+b+c)/3`.
 
@@ -673,11 +676,11 @@ base_measures:
     agg: sum
     where:
       column: status
-      op: in                 # in | eq | ne
+      op: in                 # in | eq | ne | gt | gte | lt | lte | between
       values: [O]
 ```
 
-`eq` / `ne` also accept `value:` (singular).
+`eq` / `ne` / `gt` / `gte` / `lt` / `lte` also accept `value:` (singular). `between` requires `values: [lo, hi]` (exactly two); a singular `value:` is BindError. Numeric ops (`gt`/`gte`/`lt`/`lte`/`between`) coerce the compare column; `in`/`eq`/`ne` stay identity so status codes remain strings. `ne` is SQL-style: a null in the compared column does **not** pass. `like` / `is_null` are not legal on base-measure `where:`.
 
 ### 7.7 Multi-model facts
 

@@ -122,3 +122,46 @@ def _agg_kpi(kpi_id: int) -> dict:
             },
         },
     }
+
+
+def test_count_on_text_column_is_row_count(tmp_path, extra_config):
+    """agg: count on a string id must count rows, not coerce to NaN and return 0."""
+    rows = [
+        _fact(date(2026, 3, 1), 10) | {"line_id": "L1"},
+        _fact(date(2026, 3, 1), 20) | {"line_id": "L2"},
+        _fact(date(2026, 3, 1), 0) | {"line_id": "L3"},
+    ]
+    path = tmp_path / "lines.parquet"
+    pd.DataFrame(rows).to_parquet(path, index=False)
+    spec = _agg_kpi(9011)
+    spec["base_measures"] = {
+        "line_rows": {"sql": "line_id", "agg": "count"},
+        "billed_rows": {
+            "sql": "CASE WHEN amount > 0 THEN line_id END",
+            "agg": "count",
+        },
+    }
+    spec["measures"] = {
+        "lines": {"of": "line_rows", "op": "point", "offset": {"months": 0}},
+        "billed": {"of": "billed_rows", "op": "point", "offset": {"months": 0}},
+    }
+    write_yaml(extra_config / "kpis" / "9011.yaml", spec)
+    ctx = make_context(
+        path,
+        measures=["lines", "billed"],
+        supplier=["ABC"],
+        kpi_id=9011,
+    )
+    ctx["datasets"]["Sotif"]["columns"] = [
+        "event_month",
+        "region",
+        "reason_code",
+        "supplier_name",
+        "amount",
+        "line_id",
+    ]
+    result = compute(ctx, config_dir=extra_config)
+    assert len(result["rows"]) == 1
+    row = result["rows"][0]
+    assert row["lines"] == pytest.approx(3.0)
+    assert row["billed"] == pytest.approx(2.0)

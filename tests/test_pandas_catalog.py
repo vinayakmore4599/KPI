@@ -260,6 +260,139 @@ def test_filtered_agg_where_status_in(tmp_path, extra_config):
     assert row["current_value"] == 30.0
 
 
+def _where_frame(tmp_path) -> str:
+    """Mixed status / amount / object-typed amount for where: tests."""
+    frame = pd.DataFrame(
+        [
+            {
+                "event_month": "2026-03-01",
+                "region": "NA",
+                "reason_code": "LATE_SUPPLIER",
+                "supplier_name": "ABC",
+                "account_id": "A1",
+                "status": "O",
+                "amount": "30",
+            },
+            {
+                "event_month": "2026-03-01",
+                "region": "NA",
+                "reason_code": "LATE_SUPPLIER",
+                "supplier_name": "ABC",
+                "account_id": "A2",
+                "status": "F",
+                "amount": "9",
+            },
+            {
+                "event_month": "2026-03-01",
+                "region": "NA",
+                "reason_code": "LATE_SUPPLIER",
+                "supplier_name": "ABC",
+                "account_id": "A3",
+                "status": None,
+                "amount": "0",
+            },
+        ]
+    )
+    path = tmp_path / "where.parquet"
+    frame.to_parquet(path, index=False)
+    return path
+
+
+def _where_columns() -> list[str]:
+    return [
+        "event_month",
+        "region",
+        "reason_code",
+        "supplier_name",
+        "account_id",
+        "status",
+        "amount",
+    ]
+
+
+def test_where_numeric_ops_and_count_distinct(tmp_path, extra_config):
+    """gt/lt/between on object-dtype amount; active accounts with amount > 0."""
+    path = _where_frame(tmp_path)
+    spec = minimal_kpi(
+        9806,
+        measures={
+            "above_ten": {"of": "gt_amt", "op": "point", "offset": {"months": 0}},
+            "below_ten": {"of": "lt_amt", "op": "point", "offset": {"months": 0}},
+            "mid_band": {"of": "between_amt", "op": "point", "offset": {"months": 0}},
+            "active_accounts": {"of": "live_ids", "op": "point", "offset": {"months": 0}},
+        },
+    )
+    spec["base_measures"] = {
+        "gt_amt": {
+            "sql": "amount",
+            "agg": "sum",
+            "where": {"column": "amount", "op": "gt", "value": 10},
+        },
+        "lt_amt": {
+            "sql": "amount",
+            "agg": "sum",
+            "where": {"column": "amount", "op": "lt", "value": 10},
+        },
+        "between_amt": {
+            "sql": "amount",
+            "agg": "sum",
+            "where": {"column": "amount", "op": "between", "values": [5, 40]},
+        },
+        "live_ids": {
+            "sql": "account_id",
+            "agg": "count_distinct",
+            "where": {"column": "amount", "op": "gt", "value": 0},
+        },
+    }
+    write_yaml(extra_config / "kpis" / "9806.yaml", spec)
+    ctx = make_context(
+        path,
+        measures=["above_ten", "below_ten", "mid_band", "active_accounts"],
+        supplier=["ABC"],
+        kpi_id=9806,
+    )
+    ctx["datasets"]["Sotif"]["columns"] = _where_columns()
+    row = find_row(
+        compute(ctx, config_dir=extra_config),
+        cut="R",
+        reason="LATE_SUPPLIER",
+        region="NA",
+    )
+    assert row["above_ten"] == pytest.approx(30.0)
+    assert row["below_ten"] == pytest.approx(9.0)
+    assert row["mid_band"] == pytest.approx(39.0)
+    assert row["active_accounts"] == pytest.approx(2.0)
+
+
+def test_where_ne_excludes_null_status(tmp_path, extra_config):
+    """SQL-style ne: null status does not pass (F13)."""
+    path = _where_frame(tmp_path)
+    spec = minimal_kpi(
+        9807,
+        measures={
+            "not_open": {"of": "ne_amt", "op": "point", "offset": {"months": 0}},
+        },
+    )
+    spec["base_measures"] = {
+        "ne_amt": {
+            "sql": "amount",
+            "agg": "count",
+            "where": {"column": "status", "op": "ne", "value": "O"},
+        }
+    }
+    write_yaml(extra_config / "kpis" / "9807.yaml", spec)
+    ctx = make_context(path, measures=["not_open"], supplier=["ABC"], kpi_id=9807)
+    ctx["datasets"]["Sotif"]["columns"] = _where_columns()
+    row = find_row(
+        compute(ctx, config_dir=extra_config),
+        cut="R",
+        reason="LATE_SUPPLIER",
+        region="NA",
+    )
+    # Only status F matches; null is excluded.
+    assert row["not_open"] == pytest.approx(1.0)
+
+
 def test_dimension_map_rewrites_extract_codes(tmp_path, extra_config):
     """Extract O becomes JSON Open via dimensions.map."""
     frame = pd.DataFrame(

@@ -22,6 +22,15 @@ from kpi_engine.exceptions import BindError, CatalogError
 from kpi_engine.identifiers import norm_name, require_ident
 
 
+def effective_anchor(ctx) -> date:
+    """Override from a shifted evaluate, else the request plan.anchor."""
+    if ctx.anchor is not None:
+        return ctx.anchor
+    if ctx.plan is not None:
+        return ctx.plan.anchor
+    raise CatalogError(f"{ctx.spec.key} needs a time plan (no effective anchor).")
+
+
 def base_measure(kpi: KpiSpec, name: str | None):
     """Look up a base_measures entry by name."""
     if not name:

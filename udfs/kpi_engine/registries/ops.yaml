@@ -235,7 +235,7 @@ lag:
   role: addon
   enabled: true
   aliases: []
-  description: Value of a base, point, or window measure at offset before the anchor.
+  description: Value of a base or shiftable measure at offset before the anchor.
   example: |
     value_3m_ly:
       op: lag
@@ -248,7 +248,7 @@ lead:
   role: addon
   enabled: true
   aliases: []
-  description: Value of a base, point, or window measure at offset after the anchor.
+  description: Value of a base or shiftable measure at offset after the anchor.
   example: |
     next_month:
       op: lead
@@ -261,7 +261,7 @@ index:
   role: addon
   enabled: true
   aliases: []
-  description: of / lagged of × 100. 100 means unchanged vs the offset period.
+  description: of / lagged of × 100. Source is a base or shiftable measure. 100 means unchanged vs the offset period.
   example: |
     volume_index:
       op: index
@@ -378,7 +378,7 @@ diff:
   role: addon
   enabled: true
   aliases: []
-  description: of minus the same measure at offset before the anchor.
+  description: of minus the same measure at offset before the anchor. Source is a base or shiftable measure.
   example: |
     vs_last_year:
       op: diff
@@ -391,7 +391,7 @@ pct_change:
   role: addon
   enabled: true
   aliases: []
-  description: growth_pct(of, lagged of) at offset. Same scale as fn growth_pct.
+  description: growth_pct(of, lagged of) at offset. Source is a base or shiftable measure. Same scale as fn growth_pct.
   example: |
     yoy:
       op: pct_change

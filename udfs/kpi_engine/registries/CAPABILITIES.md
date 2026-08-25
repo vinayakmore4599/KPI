@@ -225,7 +225,7 @@ yoy_contrib:
 
 ### `lag`
 
-Value of a base, point, or window measure at offset before the anchor.  
+Value of a base or shiftable measure at offset before the anchor.  
 `role: addon` · `enabled: on`
 
 ```yaml
@@ -237,7 +237,7 @@ value_3m_ly:
 
 ### `lead`
 
-Value of a base, point, or window measure at offset after the anchor.  
+Value of a base or shiftable measure at offset after the anchor.  
 `role: addon` · `enabled: on`
 
 ```yaml
@@ -249,7 +249,7 @@ next_month:
 
 ### `index`
 
-of / lagged of × 100. 100 means unchanged vs the offset period.  
+of / lagged of × 100. Source is a base or shiftable measure. 100 means unchanged vs the offset period.  
 `role: addon` · `enabled: on`
 
 ```yaml
@@ -357,7 +357,7 @@ top_reason:
 
 ### `diff`
 
-of minus the same measure at offset before the anchor.  
+of minus the same measure at offset before the anchor. Source is a base or shiftable measure.  
 `role: addon` · `enabled: on`
 
 ```yaml
@@ -369,7 +369,7 @@ vs_last_year:
 
 ### `pct_change`
 
-growth_pct(of, lagged of) at offset. Same scale as fn growth_pct.  
+growth_pct(of, lagged of) at offset. Source is a base or shiftable measure. Same scale as fn growth_pct.  
 `role: addon` · `enabled: on`
 
 ```yaml

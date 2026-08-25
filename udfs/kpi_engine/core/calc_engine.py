@@ -440,20 +440,24 @@ def evaluate(
     memo: dict[str, Any] | None = None,
     cut: str = "",
     source_only: bool = False,
+    anchor: date | None = None,
 ) -> Any:
     """Dispatch one measure op against a single partition's monthly series.
 
-    `memo` caches results for this partition so a measure named by several
-    parents is computed once. Trends are not cached (they return an axis pair).
+    `memo` is keyed by (spec.key, effective_anchor) so a parent can hold the
+    same child at two periods in one combo pass. `source_only` is never cached.
+    `_child` inherits this call's effective anchor unless `anchor=` is passed.
     """
     try:
         plugin = get_op(spec.kind)
     except CatalogError as exc:
         raise CatalogError(f"Cannot evaluate {spec.key} kind={spec.kind}.") from exc
-    if memo is not None and spec.key in memo and not source_only:
-        return memo[spec.key]
+    effective = anchor if anchor is not None else (plan.anchor if plan else None)
+    memo_key = (spec.key, effective)
+    if memo is not None and memo_key in memo and not source_only:
+        return memo[memo_key]
 
-    def _child(child: OutputSpec) -> Any:
+    def _child(child: OutputSpec, *, anchor: date | None = None) -> Any:
         return evaluate(
             child,
             series,
@@ -465,6 +469,17 @@ def evaluate(
             group_dims,
             memo=memo,
             cut=cut,
+            anchor=anchor if anchor is not None else effective,
+        )
+
+    if (
+        effective is not None
+        and plan is not None
+        and effective != plan.anchor
+        and not plugin.shiftable
+    ):
+        raise CatalogError(
+            f"{spec.key} op={spec.kind} cannot be evaluated at a shifted anchor."
         )
 
     ctx = EvalCtx(
@@ -479,10 +494,11 @@ def evaluate(
         memo=memo if memo is not None else {},
         cut=cut,
         evaluate=_child,
+        anchor=effective,
     )
     value = plugin.source_for_cut(ctx) if source_only else plugin.evaluate(ctx)
     if memo is not None and not plugin.emits_trend and not source_only:
-        memo[spec.key] = value
+        memo[memo_key] = value
     return value
 
 

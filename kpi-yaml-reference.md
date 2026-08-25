@@ -323,9 +323,11 @@ base_measures:
     agg: sum
     where:
       column: status
-      op: in           # in | eq | ne
+      op: in           # in | eq | ne | gt | gte | lt | lte | between
       values: [O]
 ```
+
+`eq` / `ne` / `gt` / `gte` / `lt` / `lte` also accept `value:` (singular). `between` requires `values: [lo, hi]` (exactly two). Numeric compare ops coerce the column; `in`/`eq`/`ne` do not (status codes stay strings). `ne` is SQL-style: nulls do not pass. `like` / `is_null` are not legal on base-measure `where:`. `first`/`last` on a text column still coerce to numeric (unlike `count` / `count_distinct`).
 
 `sql: amount` + `agg: sum` names the physical column DuckDB retrieves. Pandas then sums it. KPI YAML formulas never appear in the DuckDB SQL.
 
@@ -719,7 +721,7 @@ See §10.3. The function must be listed in `registries/hooks.yaml`.
 
 ### 5.9 Add-on kinds
 
-Cut-phase (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_share`, `running_total`, `running_avg`, `contribution`, `gap_to_leader`, `gap_to_avg`, `zscore`, `top_n`) and period-phase (`lag`, `lead`, `index`, `vs_target`, `threshold`, `diff`, `pct_change`) ops are allowlisted add-ons. YAML keys are kind-specific (`tiles`, `n`, `vs`, `cmp`, `offset`). Copy the example from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md). Do not invent a name that is not in the registry.
+Cut-phase (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_share`, `running_total`, `running_avg`, `contribution`, `gap_to_leader`, `gap_to_avg`, `zscore`, `top_n`) and period-phase (`lag`, `lead`, `index`, `vs_target`, `threshold`, `diff`, `pct_change`) ops are allowlisted add-ons. YAML keys are kind-specific (`tiles`, `n`, `vs`, `cmp`, `offset`). `lag` / `lead` / `index` / `diff` / `pct_change` may `of:` a base or a shiftable measure (`point`, `window`, `fn`, `expr`, …). They cannot shift `trend`, `hook`, `rank`, or a row helper (`agg` omitted). Copy the example from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md). Do not invent a name that is not in the registry.
 
 ---
 

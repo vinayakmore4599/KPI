@@ -45,6 +45,7 @@ def _offset_nonzero(offset) -> bool:
 
 class Point(OpPlugin):
     name = "point"
+    shiftable = True
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         support.require_base_of(spec, kpi)
@@ -87,7 +88,8 @@ class Point(OpPlugin):
                 spec, ctx.cut, combo, value, ctx.series, kpi, start=None, end=None
             )
             return value
-        target = support.truncate_period_safe(plan.anchor, kpi)
+        anchor = support.effective_anchor(ctx)
+        target = support.truncate_period_safe(anchor, kpi)
         if spec.offset:
             from kpi_engine.dates import apply_offset, truncate_period
 
@@ -99,7 +101,7 @@ class Point(OpPlugin):
                 quarters=-spec.offset.quarters,
                 weeks=-spec.offset.weeks,
             )
-            target = truncate_period(apply_offset(plan.anchor, lookback), kpi.time)
+            target = truncate_period(apply_offset(anchor, lookback), kpi.time)
         base = support.base_measure(kpi, spec.of) if spec.of else None
         if base is not None and base.agg in NON_ADDITIVE_AGGS:
             value = support.agg_detail(
@@ -116,6 +118,7 @@ class Point(OpPlugin):
 class Window(OpPlugin):
     name = "window"
     requires_time = True
+    shiftable = True
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         support.require_base_of(spec, kpi)
@@ -133,7 +136,9 @@ class Window(OpPlugin):
     def evaluate(self, ctx: EvalCtx) -> Any:
         if ctx.kpi.time is None or ctx.plan is None:
             raise CatalogError(f"{ctx.spec.key} is a window measure; this KPI has no time column.")
-        start, end = support.window_bounds(ctx.plan.anchor, ctx.spec, ctx.kpi)
+        start, end = support.window_bounds(
+            support.effective_anchor(ctx), ctx.spec, ctx.kpi
+        )
         base = support.base_measure(ctx.kpi, ctx.spec.of)
         if base.agg in NON_ADDITIVE_AGGS:
             value = support.agg_detail(
@@ -190,6 +195,7 @@ class Trend(OpPlugin):
 class Arithmetic(OpPlugin):
     name = "arithmetic"
     extra_keys = frozenset({"fn", "left", "right"})
+    shiftable = True
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -229,6 +235,7 @@ class Arithmetic(OpPlugin):
 class Fn(OpPlugin):
     name = "fn"
     extra_keys = frozenset({"fn", "inputs", "params"})
+    shiftable = True
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -284,6 +291,7 @@ class Fn(OpPlugin):
 class Expr(OpPlugin):
     name = "expr"
     extra_keys = frozenset({"expr", "inputs"})
+    shiftable = True
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -345,6 +353,7 @@ class Expr(OpPlugin):
 class Constant(OpPlugin):
     name = "constant"
     extra_keys = frozenset({"value"})
+    shiftable = True
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -388,6 +397,7 @@ class Dimension(OpPlugin):
 class Predicate(OpPlugin):
     name = "predicate"
     extra_keys = frozenset({"match", "predicates"})
+    shiftable = True
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)

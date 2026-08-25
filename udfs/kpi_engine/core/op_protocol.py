@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from datetime import date
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import pandas as pd
 
@@ -18,6 +19,13 @@ from kpi_engine.contracts import (
     TimePlan,
     TimeSpec,
 )
+
+
+@runtime_checkable
+class EvaluateFn(Protocol):
+    """Child evaluator. Keyword-only `anchor` overrides the inherited period."""
+
+    def __call__(self, spec: OutputSpec, *, anchor: date | None = None) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -34,7 +42,8 @@ class EvalCtx:
     group_dims: list[str]
     memo: dict[str, Any]
     cut: str
-    evaluate: Callable[[OutputSpec], Any]
+    evaluate: EvaluateFn
+    anchor: date | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +84,7 @@ class OpPlugin:
     emits_trend: bool = False
     echo_dimension: bool = False
     extra_keys: frozenset[str] = frozenset()
+    shiftable: bool = False
 
     def needs_time(self, spec: OutputSpec) -> bool:
         """True when this measure cannot run on a snapshot KPI (no time: block)."""

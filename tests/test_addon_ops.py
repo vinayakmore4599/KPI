@@ -65,7 +65,8 @@ def test_unknown_key_on_each_addon_hook(extra_config, row):
         load_kpi(9900, extra_config)
 
 
-def test_lag_of_fn_measure_is_bind_error(extra_config):
+def test_lag_of_fn_measure_matches_prior_month_ratio(parquet_path, extra_config):
+    """lag of a fn composite is last month's ratio, not this month's (F1)."""
     spec = minimal_kpi(9901)
     spec["measures"]["ratio"] = {
         "op": "fn",
@@ -74,8 +75,137 @@ def test_lag_of_fn_measure_is_bind_error(extra_config):
     }
     spec["measures"]["lagged"] = {"op": "lag", "of": "ratio", "offset": {"months": 1}}
     write_yaml(extra_config / "kpis" / "9901.yaml", spec)
-    with pytest.raises(BindError, match="point, or window"):
-        load_kpi(9901, extra_config)
+    load_kpi(9901, extra_config)
+
+    march = compute(
+        make_context(
+            parquet_path,
+            measures=["ratio", "lagged"],
+            supplier=["ABC"],
+            kpi_id=9901,
+            month="2026-03",
+        ),
+        config_dir=extra_config,
+    )
+    feb = compute(
+        make_context(
+            parquet_path,
+            measures=["ratio"],
+            supplier=["ABC"],
+            kpi_id=9901,
+            month="2026-02",
+        ),
+        config_dir=extra_config,
+    )
+    march_row = find_row(march, cut="R", reason="LATE_SUPPLIER", region="NA")
+    feb_row = find_row(feb, cut="R", reason="LATE_SUPPLIER", region="NA")
+    assert march_row["lagged"] == pytest.approx(feb_row["ratio"])
+    assert march_row["lagged"] != pytest.approx(march_row["ratio"])
+
+
+def test_lag_of_point_offset_equals_double_offset(parquet_path, extra_config):
+    """lag of (point offset 1) equals point offset 2 on the same base."""
+    spec = minimal_kpi(9910)
+    spec["measures"]["one_back"] = {
+        "of": "sotif_value",
+        "op": "point",
+        "offset": {"months": 1},
+    }
+    spec["measures"]["lagged_one"] = {"op": "lag", "of": "one_back", "offset": {"months": 1}}
+    spec["measures"]["two_back"] = {
+        "of": "sotif_value",
+        "op": "point",
+        "offset": {"months": 2},
+    }
+    write_yaml(extra_config / "kpis" / "9910.yaml", spec)
+    row = find_row(
+        compute(
+            make_context(
+                parquet_path,
+                measures=["lagged_one", "two_back"],
+                supplier=["ABC"],
+                kpi_id=9910,
+            ),
+            config_dir=extra_config,
+        ),
+        cut="R",
+        reason="LATE_SUPPLIER",
+        region="NA",
+    )
+    assert row["lagged_one"] == pytest.approx(row["two_back"])
+
+
+def test_lag_of_helper_is_bind_error(extra_config):
+    spec = minimal_kpi(9911)
+    spec["base_measures"]["rate"] = {
+        "lookup": {"column": "region", "map": {"NA": 1.0}, "default": 0},
+    }
+    spec["measures"]["lagged"] = {"op": "lag", "of": "rate", "offset": {"months": 1}}
+    write_yaml(extra_config / "kpis" / "9911.yaml", spec)
+    with pytest.raises(BindError, match="row helper"):
+        load_kpi(9911, extra_config)
+
+
+def test_lag_of_fn_of_hook_names_the_leaf(extra_config):
+    spec = minimal_kpi(9915)
+    spec["measures"]["smoothed"] = {
+        "op": "hook",
+        "hook": "ewma",
+        "of": "sotif_value",
+        "trailing": {"months": 3},
+    }
+    spec["measures"]["scaled"] = {
+        "op": "fn",
+        "fn": "multiply",
+        "inputs": ["smoothed", "current_value"],
+    }
+    spec["measures"]["lagged"] = {"op": "lag", "of": "scaled", "offset": {"months": 1}}
+    write_yaml(extra_config / "kpis" / "9915.yaml", spec)
+    with pytest.raises(BindError, match="hook ewma"):
+        load_kpi(9915, extra_config)
+
+
+def test_lag_of_rank_is_bind_error(extra_config):
+    spec = minimal_kpi(9913)
+    spec["measures"]["reason_rank"] = {
+        "op": "rank",
+        "of": "current_value",
+        "order": "desc",
+        "cuts": ["G"],
+    }
+    spec["measures"]["lagged"] = {"op": "lag", "of": "reason_rank", "offset": {"months": 1}}
+    write_yaml(extra_config / "kpis" / "9913.yaml", spec)
+    with pytest.raises(BindError, match="op=rank"):
+        load_kpi(9913, extra_config)
+
+
+def test_lag_of_ratio_on_missing_prior_month_is_not_current(parquet_path, extra_config):
+    """NA LATE_SUPPLIER has no 2025-03 row; lag at 2025-04 must not copy April."""
+    spec = minimal_kpi(9914)
+    spec["measures"]["ratio"] = {
+        "op": "fn",
+        "fn": "divide",
+        "inputs": ["current_value", "value_3m"],
+    }
+    spec["measures"]["lagged"] = {"op": "lag", "of": "ratio", "offset": {"months": 1}}
+    write_yaml(extra_config / "kpis" / "9914.yaml", spec)
+    row = find_row(
+        compute(
+            make_context(
+                parquet_path,
+                measures=["ratio", "lagged"],
+                supplier=["ABC"],
+                kpi_id=9914,
+                month="2025-04",
+            ),
+            config_dir=extra_config,
+        ),
+        cut="R",
+        reason="LATE_SUPPLIER",
+        region="NA",
+    )
+    assert row["ratio"] is not None
+    assert row["lagged"] != pytest.approx(row["ratio"])
 
 
 def test_ntile_tiles_must_be_int_at_least_two(extra_config):

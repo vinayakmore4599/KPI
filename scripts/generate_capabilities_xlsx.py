@@ -150,7 +150,7 @@ def cover(wb: Workbook) -> None:
             "YAML preparation",
             "AI authoring contract: intake, calculation→YAML map, completeness checklist",
             "Attach this sheet + catalogs + filled intake; AI must emit entire KPI YAML",
-            "kpi-yaml-preparation-guide.md §0 — do not invent ops; ask if intake is incomplete",
+            "kpi-yaml-ai-prep.md — do not invent ops; ask if intake is incomplete",
         ],
         [
             "Decision guide",
@@ -274,7 +274,7 @@ def cover(wb: Workbook) -> None:
     ws["A" + str(last + 8)] = (
         "Host entry: kpi_engine.main   |   YAML root: KPI_ENGINE_CONFIG_DIR or sibling kpi_config/   |   "
         "Routing: execution.kpi_id → kpis/<kpi_group>/<id>.yaml   |   "
-        "AI brief: attach YAML preparation + catalogs + calculation intake (kpi-yaml-preparation-guide.md §0)."
+        "AI brief: attach kpi-yaml-ai-prep.md + catalogs + calculation intake."
     )
     ws["A" + str(last + 8)].font = Font(italic=True, size=10, color="44546A")
     ws.merge_cells(f"A{last + 8}:D{last + 8}")
@@ -442,7 +442,7 @@ def preparation_rows() -> list[list]:
     return [
         [
             "How to brief an AI",
-            "Attach this workbook (Naming conventions, this sheet, Measure ops, Column/Measure functions, Hooks, YAML patterns) plus kpi-yaml-preparation-guide.md §0 plus a filled intake.",
+            "Attach this workbook (Naming conventions, this sheet, Measure ops, Column/Measure functions, Hooks, YAML patterns) plus kpi-yaml-ai-prep.md plus a filled intake.",
             "One message: catalogs + intake + 'emit complete YAML, no TODOs'.",
             "A one-line 'write YAML for fill rate' with no kpi_id, columns, or measure_keys.",
             "The AI may only use names on the catalog sheets. If intake is incomplete it must ask, not guess.",
@@ -568,7 +568,7 @@ def preparation_rows() -> list[list]:
         ],
         [
             "Completeness checklist",
-            "Emit YAML only when every box is true (same list as kpi-yaml-preparation-guide.md §0.7).",
+            "Emit YAML only when every box is true (same list as kpi-yaml-ai-prep.md §8).",
             "Filename=kpi_id=execution.kpi_id; model matches; every host measure_key declared; every of:/expr ident exists; identifiers legal; time xor snapshot rules; no URIs; no invented names.",
             "Shipping 'best effort' YAML with guessed columns. Leaving one measure_key unimplemented.",
             "If any box is false: numbered questions, no files. Closed-world names below (catalog sheets win if they disagree).",

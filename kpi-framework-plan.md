@@ -4,7 +4,7 @@ This document is the working architecture for a reusable, config-driven KPI engi
 
 It supersedes earlier drafts. Decisions recorded here are locked unless explicitly marked as a recommendation.
 
-Authoring docs that follow this architecture: [README.md](README.md), [kpi-onboarding-guide.md](kpi-onboarding-guide.md), [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md), [kpi-yaml-reference.md](kpi-yaml-reference.md), and the live name list [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md).
+Runtime flow (how code executes): [kpi-system-architecture.md](kpi-system-architecture.md). Authoring docs: [README.md](README.md), [kpi-onboarding-guide.md](kpi-onboarding-guide.md), [kpi-yaml-ai-prep.md](kpi-yaml-ai-prep.md) (AI brief), [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) (human deep-dive), [kpi-yaml-reference.md](kpi-yaml-reference.md), and the live name list [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md).
 
 ---
 

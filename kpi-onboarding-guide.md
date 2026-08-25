@@ -5,8 +5,10 @@ This is the playbook for adding a KPI to the engine, and for deciding **which fi
 Related docs:
 
 - [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) — **live list of every op, function, and hook**
-- [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — **write a KPI YAML** (attach §0 + calculations to an AI for a complete file; functions, columns vs expressions, when to use what, limits)
+- [kpi-yaml-ai-prep.md](kpi-yaml-ai-prep.md) — **AI YAML authoring** (attach this + calculations; compact bind-ready contract)
+- [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — **human deep-dive** (functions, columns vs expressions, when to use what, limits)
 - [kpi-yaml-reference.md](kpi-yaml-reference.md) — **every YAML key, op and aggregation the engine supports**
+- [kpi-system-architecture.md](kpi-system-architecture.md) — **how a request runs** (stages, DuckDB vs Pandas, diagrams)
 - [README.md](README.md) — folders, install, YAML meaning
 - [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions
 
@@ -223,6 +225,8 @@ No engine change.
 Check [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) first — the name may already exist.
 
 A new **name** is not an engine change. Add the body under `capabilities/` and the allowlist key under `registries/`. Then regenerate `registries/CAPABILITIES.md`. KPI YAML can name it immediately (section 4.3).
+
+Why this is the scaling path (freeze `pipeline/`, grow the catalog), and the exact files per op / hook / function: [kpi-system-architecture.md](kpi-system-architecture.md) §20–§21.
 
 | Change | Do not change |
 |---|---|

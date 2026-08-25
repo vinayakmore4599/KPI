@@ -2,14 +2,16 @@
 
 How to write `kpi_config/kpis/<kpi_group>/<kpi_id>.yaml` (and the model it points at) so the host can request measures and the engine can compute them.
 
-**Give this file to any AI together with the calculation spec** (intake block in §0.2, plus every `measure_key` formula). The AI must return **complete, bind-ready YAML files** — not snippets, not TODOs, not a skeleton with blanks. The same contract is on the **YAML preparation** sheet of `docs/KPI-Engine-Capabilities.xlsx`.
+This is the **human deep-dive**: what to declare, which function to pick, how columns and expressions work, and what the engine will not do.
 
-This is the **write-it** document: what to declare, which function to pick, how columns and expressions work, and what the engine will not do. Sections after §0 are the human deep-dive.
+**For AI authoring, attach [kpi-yaml-ai-prep.md](kpi-yaml-ai-prep.md)** plus the calculation spec — not this file. This guide exhausts model context. The compact file has the same bind-ready contract (output order, intake, map, closed names, checklist). Catalogs also live on the **YAML preparation** sheet of `docs/KPI-Engine-Capabilities.xlsx`.
 
 Related docs:
 
+- [kpi-yaml-ai-prep.md](kpi-yaml-ai-prep.md) — compact AI authoring contract (use that, not this file, with a model)
 - [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) — live list of every op, function, and hook
 - [kpi-onboarding-guide.md](kpi-onboarding-guide.md) — process (which files to change)
+- [kpi-system-architecture.md](kpi-system-architecture.md) — runtime flow and diagrams
 - [kpi-yaml-reference.md](kpi-yaml-reference.md) — full key-by-key reference
 - [README.md](README.md) — folders and request path
 - [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions
@@ -19,7 +21,7 @@ Related docs:
 
 ## 0. AI authoring contract
 
-Paste **this entire file** (or at least this §0 plus the catalogs) into the model, then paste the filled intake from §0.2.
+Humans: use this §0 plus the catalogs below. **AIs: use [kpi-yaml-ai-prep.md](kpi-yaml-ai-prep.md)** instead of this file. If you are filling intake by hand, copy §0.2.
 
 ### 0.1 Role and output
 

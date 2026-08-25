@@ -6,13 +6,15 @@ You onboard a KPI by adding YAML. You should not need to change engine code for 
 
 **Onboarding playbook (steps + which files to change):** [kpi-onboarding-guide.md](kpi-onboarding-guide.md)
 
-**YAML preparation (AI brief + human deep-dive):** [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — attach §0 plus the calculation intake to any AI; it must emit a complete KPI YAML. Same contract on the **YAML preparation** sheet of `docs/KPI-Engine-Capabilities.xlsx`.
+**YAML preparation for AI (give this to a model):** [kpi-yaml-ai-prep.md](kpi-yaml-ai-prep.md) — short bind-ready contract. Human deep-dive: [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md). Catalogs also on `docs/KPI-Engine-Capabilities.xlsx`.
 
 **YAML reference (every op, aggregation and key):** [kpi-yaml-reference.md](kpi-yaml-reference.md)
 
 **Live catalog** (every registered name): [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md)
 
-Full architecture: [kpi-framework-plan.md](kpi-framework-plan.md).
+**How the engine runs (end-to-end flow + diagrams):** [kpi-system-architecture.md](kpi-system-architecture.md)
+
+Locked architecture decisions: [kpi-framework-plan.md](kpi-framework-plan.md).
 
 Every Python and YAML file starts with a header covering **what it provides**, **where it is used**, **capabilities**, and **when to change it**.
 

@@ -7,8 +7,10 @@ Use this document while writing `kpi_config/kpis/<kpi_group>/<kpi_id>.yaml` and 
 Related docs:
 
 - [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) — live catalog of every op, function, and hook. New names go in `capabilities/` + `registries/` only; do not edit `pipeline/`.
-- [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — write a KPI YAML: **§0 is the AI authoring contract** (intake + completeness checklist). Then function catalog, columns vs expressions, when to use what, current limits
+- [kpi-yaml-ai-prep.md](kpi-yaml-ai-prep.md) — **AI YAML authoring** (compact bind-ready contract + checklist)
+- [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — human deep-dive: function catalog, columns vs expressions, when to use what, limits
 - [kpi-onboarding-guide.md](kpi-onboarding-guide.md) — the step-by-step process and which files to change
+- [kpi-system-architecture.md](kpi-system-architecture.md) — runtime flow, stages, and diagrams
 - [README.md](README.md) — folders, install, request path
 - [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions
 

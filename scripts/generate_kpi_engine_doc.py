@@ -418,8 +418,10 @@ def build() -> Document:
         doc,
         [
             "kpi-framework-plan.md — locked architecture decisions",
+            "kpi-system-architecture.md — runtime flow and execution diagrams",
             "kpi-onboarding-guide.md — step-by-step onboarding playbook",
-            "kpi-yaml-preparation-guide.md — YAML authoring, limits, when to use what",
+            "kpi-yaml-ai-prep.md — compact AI YAML authoring contract",
+            "kpi-yaml-preparation-guide.md — human YAML authoring, limits, when to use what",
             "kpi-yaml-reference.md — every YAML key and op",
             "kpi_engine/registries/CAPABILITIES.md — live capability catalog",
             "README.md — install, run, folder map",

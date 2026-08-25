@@ -134,8 +134,8 @@ def test_percent_of_cut_total_hint(extra_config):
         raise AssertionError("expected BindError")
 
 
-def test_percent_of_total_cannot_feed_arithmetic(extra_config):
-    """percent_of_total is assigned after the cut; it cannot be left/right of arithmetic."""
+def test_percent_of_total_feeds_arithmetic(extra_config):
+    """percent_of_total can feed arithmetic/fn/expr via the cut-derived pass."""
     spec = minimal_kpi(9856)
     spec["measures"]["percent_gt"] = {
         "op": "percent_of_total",
@@ -149,13 +149,9 @@ def test_percent_of_total_cannot_feed_arithmetic(extra_config):
         "right": "current_value",
     }
     write_yaml(extra_config / "kpis" / "9856.yaml", spec)
-    try:
-        load_kpi(9856, extra_config)
-    except BindError as exc:
-        assert "percent_gt" in str(exc)
-        assert "percent_of_total" in str(exc)
-    else:
-        raise AssertionError("expected BindError")
+    kpi = load_kpi(9856, extra_config)
+    scaled = next(m for m in kpi.measures if m.key == "scaled")
+    assert scaled.cut_derived is True
 
 
 def test_percent_of_total_unknown_partition_by(extra_config):

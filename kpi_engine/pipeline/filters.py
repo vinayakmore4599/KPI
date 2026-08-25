@@ -67,6 +67,8 @@ def columns_for_source_filters(
         cols.update(measure.columns)
         if measure.where is not None:
             cols.add(measure.where.column)
+        for extra in measure.also_where:
+            cols.add(extra.column)
     cols.update(model.output_schema)
     if kpi.time is not None:
         cols.add(kpi.time.column)
@@ -145,10 +147,14 @@ def _is_time_like_filter(code: str, kpi: KpiSpec) -> bool:
 
 @traced
 def split_filters(
-    bound: tuple[BoundFilter, ...], emitted: tuple[CutSpec, ...]
+    bound: tuple[BoundFilter, ...],
+    emitted: tuple[CutSpec, ...],
+    extra_ignored: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[tuple[BoundFilter, ...], tuple[BoundFilter, ...], tuple[BoundFilter, ...]]:
     """Split into DuckDB extract, Pandas calc, and post-cut result filters."""
     ignored = {code for cut in emitted for code in _ignore_names(cut)}
+    ignored.update(extra_ignored)
+    ignored.update(norm_name(c) for c in extra_ignored)
     extract: list[BoundFilter] = []
     calc: list[BoundFilter] = []
     result: list[BoundFilter] = []

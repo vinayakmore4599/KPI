@@ -57,7 +57,7 @@ period_min:
 period_median:
   role: addon
   enabled: true
-  aliases: []
+  aliases: [rolling_median]
   description: Median of period values in the trailing window.
   example: |
     typical_month:
@@ -273,3 +273,33 @@ slope:
       trailing: { months: 12 }
   module: kpi_engine.capabilities.hooks.impl
   attr: slope
+
+mad:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Median absolute deviation of period values in the trailing window.
+  example: |
+    robust_spread:
+      op: hook
+      hook: mad
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: mad
+
+projection:
+  role: addon
+  enabled: true
+  aliases: []
+  extra_keys: [periods_ahead]
+  description: Linear forecast — last observed value plus slope times periods_ahead (default 1).
+  example: |
+    next_month:
+      op: hook
+      hook: projection
+      of: sotif_value
+      trailing: { months: 12 }
+      periods_ahead: 1
+  module: kpi_engine.capabilities.hooks.impl
+  attr: projection

@@ -87,10 +87,11 @@ def _year_month_context(parquet_path, kpi_id, *, year=None, month=None, measures
     return ctx
 
 
-def test_parse_part_values_accepts_padded_ints():
+def test_parse_part_values_accepts_padded_ints_and_month_names():
     assert parse_part_values("month", ("03", 3, "3")) == (3,)
+    assert parse_part_values("month", ("March", "Mar")) == (3,)
     with pytest.raises(TimePlanError, match="integer"):
-        parse_part_values("month", ("March",))
+        parse_part_values("month", ("banana",))
 
 
 def test_year_only_materializes_calendar_year():

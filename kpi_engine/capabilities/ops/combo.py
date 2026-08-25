@@ -472,6 +472,7 @@ class Predicate(OpPlugin):
 class Hook(OpPlugin):
     name = "hook"
     extra_keys = frozenset({"hook", "fn", "value"})
+    shiftable = True
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         raw = common.raw
@@ -544,12 +545,21 @@ class Hook(OpPlugin):
         return 0
 
     def evaluate(self, ctx: EvalCtx) -> Any:
+        from dataclasses import replace as dc_replace
+
         from kpi_engine.pipeline.hook_registry import run
 
         name = ctx.spec.hook or ctx.spec.fn
         if not name:
             raise CatalogError(f"measures.{ctx.spec.key} op=hook requires `hook:`.")
-        value = run(name, ctx.series, kpi=ctx.kpi, plan=ctx.plan, spec=ctx.spec)
+        plan = ctx.plan
+        if plan is not None:
+            try:
+                anchor = support.effective_anchor(ctx)
+                plan = dc_replace(plan, anchor=anchor)
+            except CatalogError:
+                pass
+        value = run(name, ctx.series, kpi=ctx.kpi, plan=plan, spec=ctx.spec)
         log_measure_calc(
             cut=ctx.cut, key=ctx.spec.key, op="hook", combo=_combo(ctx), result=value, hook=name
         )

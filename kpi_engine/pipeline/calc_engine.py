@@ -130,13 +130,63 @@ def compute_cuts(
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]], list[dict[str, Any]]]:
     """Evaluate requested measures at each cut; return JSON rows, trend axes, dropped_groups."""
     measures = {m.key: m for m in kpi.measures}
-    need = [k for k in requested if not get_op(measures[k].kind).echo_dimension]
-    dim_keys = [k for k in requested if get_op(measures[k].kind).echo_dimension]
+    requested_keys = [k for k in requested if k in measures]
+    need = [k for k in requested_keys if not get_op(measures[k].kind).echo_dimension]
+    dim_keys = [k for k in requested_keys if get_op(measures[k].kind).echo_dimension]
+    hidden = _combo_inputs_for(need, measures)
+    eval_need = list(dict.fromkeys([*hidden, *need]))
     rows: list[dict[str, Any]] = []
     trend_axes: dict[str, list[str]] = {}
     dropped_groups: list[dict[str, Any]] = []
+    totals: dict[tuple[str, str], float] = {}
 
-    for cut in emitted:
+    versus_targets = {measures[k].versus_cut for k in need if measures[k].versus_cut}
+    by_cut = {c.name: c for c in kpi.cuts}
+    emitted_names = {c.name for c in emitted}
+    for name in versus_targets:
+        if name in emitted_names or name not in by_cut:
+            continue
+        silent = by_cut[name]
+        silent_monthly = _cut_monthly(monthly, silent, deferred_filters, kpi)
+        silent_detail = (
+            apply_cut_filters(detail, silent, deferred_filters)
+            if detail is not None
+            else None
+        )
+        silent_dims = list(cut_group_dims(silent, kpi.time.column if kpi.time else "", kpi))
+        if silent_monthly.empty:
+            combo_frame = pd.DataFrame([{}]) if not silent_dims else pd.DataFrame()
+        else:
+            combo_frame = (
+                silent_monthly[silent_dims].drop_duplicates()
+                if silent_dims
+                else pd.DataFrame([{}])
+            )
+        of_keys = sorted(
+            {
+                measures[k].of
+                for k in need
+                if measures[k].versus_cut == name and measures[k].of
+            }
+        )
+        silent_rows = _evaluate_combos(
+            combo_frame,
+            silent_monthly,
+            silent_detail,
+            silent,
+            silent_dims,
+            kpi,
+            plan,
+            measures,
+            of_keys,
+            [],
+            {},
+        )
+        _store_versus_totals(silent_rows, name, need, measures, totals)
+
+    ordered = _order_cuts_by_versus(emitted, need, measures)
+
+    for cut in ordered:
         cut_monthly = _cut_monthly(monthly, cut, deferred_filters, kpi)
         cut_detail = apply_cut_filters(detail, cut, deferred_filters) if detail is not None else None
         group_dims = list(cut_group_dims(cut, kpi.time.column if kpi.time else "", kpi))
@@ -156,7 +206,7 @@ def compute_cuts(
             if combo_frame.empty:
                 continue
 
-        trend_keys, cut_phase_keys = _phase_keys(need, measures, cut, kpi)
+        trend_keys, cut_phase_keys = _phase_keys(eval_need, measures, cut, kpi)
         _guard_trend_payload(len(combo_frame), trend_keys, measures, cut, kpi)
 
         cut_rows = _evaluate_combos(
@@ -168,7 +218,7 @@ def compute_cuts(
             kpi,
             plan,
             measures,
-            need,
+            eval_need,
             dim_keys,
             trend_axes,
         )
@@ -193,15 +243,32 @@ def compute_cuts(
                     kpi,
                     plan,
                     measures,
-                    need,
+                    eval_need,
                     dim_keys,
                     deferred_filters,
                 )
                 trend_axes.update(extra_axes)
                 group_dims = list(kpi.having.then_group_by)
-                trend_keys, cut_phase_keys = _phase_keys(need, measures, cut, kpi)
+                trend_keys, cut_phase_keys = _phase_keys(eval_need, measures, cut, kpi)
+        _store_versus_totals(cut_rows, cut.name, eval_need, measures, totals)
         for key in cut_phase_keys:
-            get_op(measures[key].kind).apply_to_cut(cut_rows, measures[key], group_dims)
+            spec = measures[key]
+            if spec.kind == "percent_of_total":
+                src = f"__cut_src_{key}"
+                values = [
+                    v
+                    for v in (_numeric_row(r.get(src)) for r in cut_rows)
+                    if v is not None
+                ]
+                totals[(cut.name, spec.of or spec.key)] = float(sum(values))
+            get_op(spec.kind).apply_to_cut(
+                cut_rows, spec, group_dims, totals=totals
+            )
+        _apply_cut_derived(cut_rows, eval_need, measures)
+        if hidden:
+            for row in cut_rows:
+                for key in hidden:
+                    row.pop(key, None)
         rows.extend(cut_rows)
     return rows, trend_axes, dropped_groups
 
@@ -261,6 +328,8 @@ def _evaluate_combos(
         for key in need:
             spec = measures[key]
             plugin = get_op(spec.kind)
+            if spec.cut_derived:
+                continue
             if plugin.cut_restricted and not cut_limited_applies(spec, cut, kpi):
                 continue
             if plugin.phase == "cut":
@@ -386,7 +455,11 @@ def _rollup_after_having(
         time_col = kpi.time.column
         keys = pandas_group_keys(kpi, grain)
         value_cols = monthly_fact_columns(kpi, tuple(need))
-        fill_zero = [m.name for m in kpi.base_measures if m.agg in {"sum", "count"}]
+        fill_zero = [
+            m.name
+            for m in kpi.base_measures
+            if m.agg in {"sum", "count"} and m.where is None and not m.also_where
+        ]
         densify_end = plan.anchor
         if plan.lookback_forward:
             densify_end = add_periods(plan.anchor, plan.lookback_forward, kpi.time)
@@ -454,13 +527,25 @@ def evaluate(
         plugin = get_op(spec.kind)
     except CatalogError as exc:
         raise CatalogError(f"Cannot evaluate {spec.key} kind={spec.kind}.") from exc
-    effective = anchor if anchor is not None else (plan.anchor if plan else None)
     inherited_selection = selection
+    if anchor is not None:
+        effective = anchor
+    elif inherited_selection:
+        effective = inherited_selection[-1]
+    else:
+        effective = plan.anchor if plan else None
     memo_key = (spec.key, effective, inherited_selection)
     if memo is not None and memo_key in memo and not source_only:
         return memo[memo_key]
 
     def _child(child: OutputSpec, *, anchor: date | None = None, selection: tuple[date, ...] | None = None) -> Any:
+        next_selection = selection if selection is not None else inherited_selection
+        if anchor is not None:
+            next_anchor = anchor
+        elif selection is not None:
+            next_anchor = None
+        else:
+            next_anchor = effective
         return evaluate(
             child,
             series,
@@ -472,8 +557,8 @@ def evaluate(
             group_dims,
             memo=memo,
             cut=cut,
-            anchor=anchor if anchor is not None else effective,
-            selection=selection if selection is not None else inherited_selection,
+            anchor=next_anchor,
+            selection=next_selection,
         )
 
     if (
@@ -559,9 +644,23 @@ def _cut_monthly(
     if time_col is not None and time_col not in work.columns:
         return work.iloc[0:0].copy()
     rollup = _rollup_funcs(kpi)
-    agg: dict[str, str] = {}
+    where_cols = {
+        m.name
+        for m in kpi.base_measures
+        if m.where is not None or m.also_where
+    }
+
+    def _sum_or_null_col(series: pd.Series):
+        return series.sum(min_count=1)
+
+    agg: dict[str, Any] = {}
     for col in cols:
-        agg[col] = "max" if col == "_observed" else rollup.get(col, "sum")
+        if col == "_observed":
+            agg[col] = "max"
+        elif col in where_cols and rollup.get(col, "sum") == "sum":
+            agg[col] = _sum_or_null_col
+        else:
+            agg[col] = rollup.get(col, "sum")
     group = [*dims, time_col] if time_col is not None else list(dims)
     if not group:
         out = work[list(agg)].agg(agg)
@@ -633,3 +732,117 @@ def _json_value(value: Any) -> Any:
         except (ValueError, AttributeError):
             return value
     return value
+
+
+def _numeric_row(value: Any) -> float | None:
+    """Coerce a result-row cell to float, or None."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _combo_inputs_for(need, measures) -> list[str]:
+    """Combo-phase measure keys that requested cut_derived / cut ops need on the row."""
+    extra: list[str] = []
+    seen = set(need)
+
+    def walk(key: str) -> None:
+        spec = measures.get(key)
+        if spec is None:
+            return
+        for dep in get_op(spec.kind).dependencies(spec):
+            child = measures.get(dep)
+            if child is None or dep in seen:
+                continue
+            if get_op(child.kind).echo_dimension:
+                continue
+            seen.add(dep)
+            extra.append(dep)
+            walk(dep)
+
+    for key in list(need):
+        walk(key)
+    return extra
+
+
+def _store_versus_totals(cut_rows, cut_name, need, measures, totals) -> None:
+    """Record this cut's of-measure totals for percent_of_total.versus_cut."""
+    of_keys = {
+        measures[k].of
+        for k in need
+        if getattr(measures.get(k), "versus_cut", None) == cut_name and measures[k].of
+    }
+    for of_key in of_keys:
+        values = [
+            v for v in (_numeric_row(r.get(of_key)) for r in cut_rows) if v is not None
+        ]
+        totals[(cut_name, of_key)] = float(sum(values))
+
+
+def _order_cuts_by_versus(emitted, need, measures) -> list:
+    """Emit versus_cut targets before consumers. Cycles keep original order."""
+    targets = {measures[k].versus_cut for k in need if measures[k].versus_cut}
+    first = [c for c in emitted if c.name in targets]
+    rest = [c for c in emitted if c.name not in targets]
+    return first + rest
+
+
+def _apply_cut_derived(cut_rows, need, measures) -> None:
+    """Fill arithmetic/fn/expr that consume cut-phase ops from finished row values."""
+    derived = [k for k in need if measures[k].cut_derived]
+    if not derived:
+        return
+    from kpi_engine.pipeline.fn_apply import call_measure_fn, eval_expr_scalar
+
+    pending = list(derived)
+    seen: set[str] = set()
+    while pending:
+        progress = False
+        leftover: list[str] = []
+        for key in pending:
+            spec = measures[key]
+            deps = [n for n in _cut_derived_deps(spec) if n in measures]
+            if any(d in pending or (measures[d].cut_derived and d not in seen) for d in deps):
+                leftover.append(key)
+                continue
+            for row in cut_rows:
+                row[key] = _eval_cut_derived_row(row, spec, call_measure_fn, eval_expr_scalar)
+            seen.add(key)
+            progress = True
+        if not progress:
+            for key in leftover:
+                spec = measures[key]
+                for row in cut_rows:
+                    row[key] = _eval_cut_derived_row(
+                        row, spec, call_measure_fn, eval_expr_scalar
+                    )
+            break
+        pending = leftover
+
+
+def _cut_derived_deps(spec: OutputSpec) -> tuple[str, ...]:
+    if spec.kind in {"fn", "expr"}:
+        return spec.inputs
+    if spec.operands:
+        return spec.operands
+    return tuple(n for n in (spec.left, spec.right) if n)
+
+
+def _eval_cut_derived_row(row, spec, call_measure_fn, eval_expr_scalar):
+    names = list(_cut_derived_deps(spec))
+    values = [row.get(n) for n in names]
+    if spec.kind == "expr" and spec.expr:
+        env = {n: row.get(n) for n in names}
+        from kpi_engine.identifiers import parse_expression
+
+        return eval_expr_scalar(parse_expression(spec.expr, what="measure expr"), env)
+    fn = spec.fn or "divide"
+    return call_measure_fn(fn, values, spec.input_params)

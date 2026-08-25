@@ -140,6 +140,8 @@ class OpPlugin:
             "inclusive",
             "cuts",
             "range",
+            "where",
+            "ignore_filters",
         }
         unknown = [name for name in common.raw if name not in allowed]
         if unknown:
@@ -204,6 +206,8 @@ class OpPlugin:
         cut_rows: list[dict[str, Any]],
         spec: OutputSpec,
         cut_dims: list[str],
+        *,
+        totals: dict | None = None,
     ) -> None:
         """Write cut-phase results onto every row of one cut."""
         raise NotImplementedError(f"{self.name} does not implement apply_to_cut.")

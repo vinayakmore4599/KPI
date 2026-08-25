@@ -152,13 +152,15 @@ Do not mix `expr:` with `columns:` / `op:` / `sql:` on the same base measure.
 | Fixed target / goal | `op: constant` + `value:` |
 | Echo a dimension as a requestable column | `op: dimension` |
 | qty × price **per row**, then SUM | helper `expr:` then a later base with `agg: sum` |
-| Last period's ratio / OEE / other composite | `op: lag` / `diff` / `index` / `pct_change` of that measure (`fn`/`expr`/`window` are shiftable). Not of `trend`/`hook`/`rank` or a row helper |
+| Last period's ratio / OEE / other composite | `op: lag` / `diff` / `index` / `pct_change` of that measure (`fn`/`expr`/`window`/`hook` are shiftable). Not of `trend`/`rank` or a row helper. Rank a lagged measure (`rank of lag`). Offset a trend with `offset:` on the trend |
+| Per-measure row mask / ignore a context filter | `where:` / `ignore_filters:` on the measure when `of:` is a **base** |
+| Share of another cut's total | `op: percent_of_total` + `versus_cut:` |
 | Per-customer lag / running sum **on order rows** | `over:` on a **pre-fold** base (not calendar `op: lag`) |
 | Static code→fee map | `lookup:` on a base |
 | No period column (point-in-time snapshot) | **Omit** `time:`. Only `point` at offset 0 and `constant`. No window/trend/nonzero offset |
 | Math no row in this table covers | **Stop.** Name the missing catalog entry. Do not fake it with `expr:` or Python |
 
-**Aggregations (`agg:`):** `sum`, `avg`, `count`, `count_distinct`, `min`, `max`, `median`, `percentile` (needs `percentile: 0–100`), `first`, `last`. `count` on a text id counts rows. `first`/`last` on text still coerce to numeric.
+**Aggregations (`agg:`):** `sum`, `avg`, `count`, `count_distinct`, `min`, `max`, `median`, `percentile` (needs `percentile: 0–100`), `first`, `last`, `stddev`, `variance`, `mode`. `count` on a text id counts rows. `first`/`last` on text still coerce to numeric. `stddev`/`variance` are sample (ddof=1); one row → null. `mode` ties → smallest.
 
 **Base `where:` ops:** `in`, `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `between`. `between` needs `values: [lo, hi]`. `ne` excludes nulls. Not `like` / `is_null`.
 
@@ -264,7 +266,7 @@ If the attached Excel / `CAPABILITIES.md` disagrees with a list below, **the cat
 
 - **Measure functions (`op: fn` / `arithmetic`):** `growth_pct`, `divide`, `percent`, `sum`, `subtract`, `multiply`, `min`, `max`, `avg`, `abs`, `clamp`, `attainment`, `coalesce`, `if_null`, `nullif`, `null_if_zero`, `zero_if_null`, `is_null`, `is_not_null`, `if_else`, `sign_label`, `round`, `floor`, `ceil`, `power`, `log`, `log10`, `sqrt`, `date_diff`, `date_add`, `epoch_day`.
 - **Column functions (`base_measures` `columns:`+`op:`):** `value`, `abs`, `sum`, `subtract`, `multiply`, `divide`, `percent_of`, `min`, `max`, `avg`, `coalesce`, `if_null`, `nullif`, `null_if_zero`, `zero_if_null`, `is_null`, `is_not_null`, `if_else`, `round`, `floor`, `ceil`, `power`, `log`, `log10`, `sqrt`, `date_diff`, `date_add`, `epoch_day`.
-- **Hooks (`op: hook`):** `seasonal_index`, `ewma`, `period_max`, `period_min`, `period_median`, `period_avg`, `period_sum`, `hit_rate`, `streak`, `period_stdev`, `period_var`, `period_cv`, `period_range`, `period_count`, `miss_rate`, `miss_streak`, `longest_streak`, `cagr`, `slope`.
+- **Hooks (`op: hook`):** `seasonal_index`, `ewma`, `period_max`, `period_min`, `period_median` (alias `rolling_median`), `period_avg`, `period_sum`, `hit_rate`, `streak`, `period_stdev`, `period_var`, `period_cv`, `period_range`, `period_count`, `miss_rate`, `miss_streak`, `longest_streak`, `cagr`, `slope`, `mad`, `projection`.
 
 Host names fold onto YAML keys (case, spaces, underscores; measure keys also compact-fold). Do not create two YAML keys that collide after fold.
 
@@ -682,6 +684,9 @@ Identifiers must be simple SQL names: `[A-Za-z_][A-Za-z0-9_]*`. `CASE`, `WHEN`, 
 | `percentile` | no | null | null | Needs `percentile: 90` (or `0.9`) |
 | `first` | no | null | null | First event in the period (text columns still coerce to numeric) |
 | `last` | no | null | null | Snapshot balance (text columns still coerce to numeric) |
+| `stddev` | no | null | null | Sample stdev (ddof=1); one row → null |
+| `variance` | no | null | null | Sample variance (ddof=1); one row → null |
+| `mode` | no | null | null | Most frequent value; ties → smallest |
 
 `avg` travels as SUM and COUNT and divides at the end. A 3-month average over months of 2, 1, and 1 rows is `total / 4`, not `(a+b+c)/3`.
 
@@ -701,6 +706,8 @@ base_measures:
 ```
 
 `eq` / `ne` / `gt` / `gte` / `lt` / `lte` also accept `value:` (singular). `between` requires `values: [lo, hi]` (exactly two); a singular `value:` is BindError. Numeric ops (`gt`/`gte`/`lt`/`lte`/`between`) coerce the compare column; `in`/`eq`/`ne` stay identity so status codes remain strings. `ne` is SQL-style: a null in the compared column does **not** pass. `like` / `is_null` are not legal on base-measure `where:`.
+
+The same `where:` shape (and `ignore_filters:`) is legal on a **measure** whose `of:` is a base: the binder clones that base with the extra mask. Filtering a derived `of:` is BindError.
 
 ### 7.7 Multi-model facts
 
@@ -1198,17 +1205,17 @@ Design around these; they are intentional.
 
 **Product boundary (not a later engine version)**
 
-- Regex, JSON, geospatial, ML, and arbitrary Python stay **hooks** or `kind: sql`. The closed catalog is existing ops/fns plus named steps / lookup / over / having / predicate / date+numeric fns.
+- Regex, JSON, geospatial, ML, timezone conversion, result caching, hierarchy expansion, and cross-KPI measure references stay **hooks**, `kind: sql`, or the host. The closed catalog is existing ops/fns plus named steps / lookup / over / having / predicate / date+numeric fns.
 - Host ADLS, auth, jobs, and the context builder stay outside `compute(context)`.
 - Extracts larger than `OVER_ROW_CAP` / densify `TREND_CELL_CAP` fail fast. Mitigation is narrower filters, coarser retrieve, or a SQL model that pre-aggregates — not a distributed Pandas rewrite.
 
 **Time**
 
 - No timezone conversion; `time.timezone` is rejected.
-- `calendar: fiscal` affects `quarter` and `year` only. Fiscal months are calendar months.
-- Time filter is a single anchor, not a range.
+- `calendar: fiscal` affects `quarter` and `year` only. Fiscal months are calendar months. There is no fiscal-week grain.
+- `time.anchor: last_observed` (opt-in) clamps the anchor to the last observed bucket; default remains selection end. `time.max_span_years` is a hard cap after the span is final.
 - Snapshot KPIs (no `time:`) cannot use windows, trends, nonzero offsets, trailing, or time-requiring add-ons (`lag`, period hooks, …).
-- `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) keep that meaning after `parameters.time_grain` changes. `periods` and `from: data_points` follow the pick.
+- `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) keep that meaning after `parameters.time_grain` changes. `periods` and `from: data_points` follow the pick. Month names (`March`/`Mar`) are accepted for the month part only.
 - A pick finer than `time.source_grain` is rejected. Monthly facts cannot become daily or weekly.
 - `wtd` needs the effective grain `day`. Other named PTD / `full_*` ranges stay valid on a coarser pick.
 - Multi-grain KPIs require a `data_points` map covering every listed grain. A day pick plus a large `data_points` widens the spine; the 50,000 trend-cell cap still applies.
@@ -1216,7 +1223,9 @@ Design around these; they are intentional.
 **Cuts and payload**
 
 - `measures.*.cuts` restricts **trend**, **rank**, and **percent_of_total** only; other ops ignore it.
-- Trends default to `default_cut` only (high-cardinality trends explode the payload).
+- Trends default to `default_cut` only (high-cardinality trends explode the payload). `offset:` on a trend shifts the axis; do not `lag { of: trend }`.
+- Rank a lagged measure (`rank of lag`); do not `lag { of: rank }`.
+- `percent_of_total.versus_cut` takes another declared cut's total as the denominator. Arithmetic/fn/expr may consume rank and percent_of_total.
 - Trend cells capped at 50,000 per cut.
 - Physical joins: `inner`, `left`, `right` only.
 
@@ -1225,14 +1234,14 @@ Design around these; they are intentional.
 - Hierarchies (`input_text: heir`) are not expanded here.
 - `business_date` is ignored.
 - Unmapped filters error; they are never silently dropped.
-- YEAR / MONTH is `time.periods` (independent predicates), `time.filter_code` (one scalar), or `time.compose.template` (concat year+month, superseded). Other predicates use `filters:` (`extract` / `calc` / `result`); there is no per-measure filter block.
+- YEAR / MONTH is `time.periods` (independent predicates), `time.filter_code` (one scalar), or `time.compose.template` (concat year+month, superseded). Other predicates use `filters:` (`extract` / `calc` / `result`). A measure whose `of:` is a base may add `where:` / `ignore_filters:`.
 - Exactly one `execution.view_details` entry.
 
 **Aggregation**
 
-- Non-additive aggs (`count_distinct`, `median`, `percentile`, `first`, `last`) re-read row-level data.
+- Non-additive aggs (`count_distinct`, `median`, `percentile`, `first`, `last`, `stddev`, `variance`, `mode`) re-read row-level data.
 - `percentile` requires `percentile:`.
-- Pandas fold of a column `op` only supports `sum`, `avg`, `count`, `min`, `max`, `first`, `last` when collapsing detail; `count_distinct` / `median` / `percentile` stay on the row path.
+- Pandas fold of a column `op` only supports `sum`, `avg`, `count`, `min`, `max`, `first`, `last` when collapsing detail; non-additive names stay on the row path.
 
 **Extensions**
 

@@ -273,3 +273,38 @@ def slope(series, *, kpi, plan, spec, **_):
     if den == 0:
         return None
     return (n * sum_xy - sum_x * sum_y) / den
+
+
+def mad(series, *, kpi, plan, spec, **_):
+    """Median absolute deviation of observed period values in the trailing window."""
+    values = [v for _, v in _observed_pairs(series, kpi, plan, spec)]
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        centre = float(ordered[mid])
+    else:
+        centre = float(ordered[mid - 1] + ordered[mid]) / 2.0
+    deviations = sorted(abs(v - centre) for v in values)
+    dmid = len(deviations) // 2
+    if len(deviations) % 2:
+        return float(deviations[dmid])
+    return float(deviations[dmid - 1] + deviations[dmid]) / 2.0
+
+
+def projection(series, *, kpi, plan, spec, **_):
+    """Linear forecast: last observed value + slope * periods_ahead (default 1)."""
+    pairs = _observed_pairs(series, kpi, plan, spec)
+    if len(pairs) < 2:
+        return None
+    fitted = slope(series, kpi=kpi, plan=plan, spec=spec)
+    if fitted is None:
+        return None
+    ahead = spec.params.get("periods_ahead", 1) if spec.params else 1
+    try:
+        ahead = int(ahead)
+    except (TypeError, ValueError):
+        ahead = 1
+    last = pairs[-1][1]
+    return float(last) + float(fitted) * float(ahead)

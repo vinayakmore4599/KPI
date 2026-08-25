@@ -53,7 +53,7 @@ class Rank(OpPlugin):
     def evaluate(self, ctx: EvalCtx) -> Any:
         raise CatalogError(f"{ctx.spec.key} op=rank is assigned after every combo on the cut.")
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(
             cut_rows,
             spec,
@@ -66,7 +66,7 @@ class PercentOfTotal(OpPlugin):
     name = "percent_of_total"
     phase = "cut"
     cut_restricted = True
-    extra_keys = frozenset({"partition_by", "group_by", "order_by"})
+    extra_keys = frozenset({"partition_by", "group_by", "order_by", "versus_cut"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -101,8 +101,10 @@ class PercentOfTotal(OpPlugin):
             f"{ctx.spec.key} op=percent_of_total is assigned after every combo on the cut."
         )
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
-        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_share)
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
+        _apply_partitioned(
+            cut_rows, spec, cut_dims, write=_write_share, totals=totals
+        )
 
 
 def _cut_source(ctx: EvalCtx) -> Any:
@@ -112,7 +114,9 @@ def _cut_source(ctx: EvalCtx) -> Any:
     return ctx.evaluate(OutputSpec(key=of or ctx.spec.key, kind="point", of=of))
 
 
-def _apply_partitioned(cut_rows, spec: OutputSpec, cut_dims: list[str], *, write) -> None:
+def _apply_partitioned(
+    cut_rows, spec: OutputSpec, cut_dims: list[str], *, write, totals=None
+) -> None:
     src = f"__cut_src_{spec.key}"
     partition_keys = spec.rank_group_by
     if {norm_name(n) for n in partition_keys} == {norm_name(n) for n in cut_dims}:
@@ -122,10 +126,10 @@ def _apply_partitioned(cut_rows, spec: OutputSpec, cut_dims: list[str], *, write
         part = support.rank_partition(row, partition_keys)
         partitions.setdefault(part, []).append(i)
     for indexes in partitions.values():
-        write(cut_rows, spec, src, indexes)
+        write(cut_rows, spec, src, indexes, totals=totals)
 
 
-def _write_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int], *, totals=None) -> None:
     values = [cut_rows[i].get(src) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
     ranks = support.sql_rank(
@@ -145,9 +149,13 @@ def _write_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> Non
         )
 
 
-def _write_share(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_share(cut_rows, spec: OutputSpec, src: str, indexes: list[int], *, totals=None) -> None:
     values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
     total = sum(v for v in values if v is not None)
+    if spec.versus_cut and totals is not None:
+        vs = totals.get((spec.versus_cut, spec.of or spec.key))
+        if vs is not None:
+            total = vs
     for i, source in zip(indexes, values):
         if source is None or total == 0:
             share = None
@@ -239,35 +247,35 @@ class Ntile(_CutBase):
             )
         return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "tiles": tiles}})
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_ntile)
 
 
 class DenseRank(_CutBase):
     name = "dense_rank"
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_dense_rank)
 
 
 class RowNumber(_CutBase):
     name = "row_number"
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_row_number)
 
 
 class CumulativeShare(_CutBase):
     name = "cumulative_share"
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_cumulative_share)
 
 
 class RunningTotal(_CutBase):
     name = "running_total"
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_running_total)
 
 
@@ -316,42 +324,42 @@ class Contribution(_CutBase):
             vs_val = ctx.evaluate(OutputSpec(key=str(vs), kind="point", of=str(vs)))
         return of_val, vs_val
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_contribution)
 
 
 class PercentRank(_CutBase):
     name = "percent_rank"
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_percent_rank)
 
 
 class GapToLeader(_CutBase):
     name = "gap_to_leader"
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_gap_to_leader)
 
 
 class GapToAvg(_CutBase):
     name = "gap_to_avg"
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_gap_to_avg)
 
 
 class ZScore(_CutBase):
     name = "zscore"
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_zscore)
 
 
 class RunningAvg(_CutBase):
     name = "running_avg"
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_running_avg)
 
 
@@ -366,7 +374,7 @@ class TopN(_CutBase):
             raise BindError(f"measures.{key} op=top_n requires integer n: >= 1.")
         return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "n": n}})
 
-    def apply_to_cut(self, cut_rows, spec, cut_dims) -> None:
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
         _apply_partitioned(cut_rows, spec, cut_dims, write=_write_top_n)
 
 
@@ -374,7 +382,7 @@ def _tie_key(row: dict[str, Any], spec: OutputSpec) -> tuple[Any, ...]:
     return (spec.key, tuple((dim, row.get(dim)) for dim in spec.rank_group_by), id(row))
 
 
-def _write_ntile(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_ntile(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [cut_rows[i].get(src) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
     ranks = support.sql_rank(values, descending=descending)
@@ -393,7 +401,7 @@ def _write_ntile(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> No
         )
 
 
-def _write_dense_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_dense_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [cut_rows[i].get(src) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
     ranks = support.dense_rank(values, descending=descending)
@@ -411,7 +419,7 @@ def _write_dense_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) 
         )
 
 
-def _write_row_number(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_row_number(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [cut_rows[i].get(src) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
     ties = [_tie_key(cut_rows[i], spec) for i in indexes]
@@ -459,7 +467,7 @@ def _ordered_indexes(
     return sorted(range(len(indexes)), key=sort_key)
 
 
-def _write_cumulative_share(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_cumulative_share(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
     total = sum(v for v in values if v is not None)
     descending = (spec.rank_order or "desc") == "desc"
@@ -487,7 +495,7 @@ def _write_cumulative_share(cut_rows, spec: OutputSpec, src: str, indexes: list[
         )
 
 
-def _write_running_total(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_running_total(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
     running = 0.0
@@ -514,7 +522,7 @@ def _write_running_total(cut_rows, spec: OutputSpec, src: str, indexes: list[int
         )
 
 
-def _write_contribution(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_contribution(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     deltas: list[float | None] = []
     for i in indexes:
         pair = cut_rows[i].get(src)
@@ -545,7 +553,7 @@ def _write_contribution(cut_rows, spec: OutputSpec, src: str, indexes: list[int]
         )
 
 
-def _write_percent_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_percent_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [cut_rows[i].get(src) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
     ranks = support.sql_rank(values, descending=descending)
@@ -570,7 +578,7 @@ def _write_percent_rank(cut_rows, spec: OutputSpec, src: str, indexes: list[int]
         )
 
 
-def _write_gap_to_leader(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_gap_to_leader(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
     observed = [v for v in values if v is not None]
     leader = max(observed) if observed else None
@@ -589,7 +597,7 @@ def _write_gap_to_leader(cut_rows, spec: OutputSpec, src: str, indexes: list[int
         )
 
 
-def _write_gap_to_avg(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_gap_to_avg(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
     observed = [v for v in values if v is not None]
     mean = sum(observed) / float(len(observed)) if observed else None
@@ -608,7 +616,7 @@ def _write_gap_to_avg(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) 
         )
 
 
-def _write_zscore(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_zscore(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
     observed = [v for v in values if v is not None]
     moments = support.sample_mean_var(observed)
@@ -634,7 +642,7 @@ def _write_zscore(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> N
         )
 
 
-def _write_running_avg(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_running_avg(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
     running = 0.0
@@ -663,7 +671,7 @@ def _write_running_avg(cut_rows, spec: OutputSpec, src: str, indexes: list[int])
         )
 
 
-def _write_top_n(cut_rows, spec: OutputSpec, src: str, indexes: list[int]) -> None:
+def _write_top_n(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
     values = [cut_rows[i].get(src) for i in indexes]
     descending = (spec.rank_order or "desc") == "desc"
     ranks = support.sql_rank(values, descending=descending)

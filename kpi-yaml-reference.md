@@ -148,17 +148,19 @@ The practical consequences:
 | `source_grain` | same set as `grain` | `time.grain` | Stored grain of the time column. A request pick **finer** than this is rejected (day < week < month < quarter < year). Monthly facts cannot become daily or weekly. |
 | `grains` | list of grains | omitted = `{grain}` only | Allowlist for `parameters.time_grain`. `time.grain` must appear in the list. |
 | `filter_code` | context filter key | required unless `periods:` or `compose:` is set | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month`. When present on the context this scalar **wins** outright (legacy single-bucket); declared `periods` parts are skipped. When `compose:` is set, this is the **synthetic** name after concat. |
-| `periods` | map of part → context filter code | omitted | Independent predicates: `year`, `quarter` (1–4), `month` (1–12), `week` (ISO 1–53), `day` (1–31). Values parse as integers (`3`, `"03"`). Lists are a union. A missing part is not applied. Mutually exclusive with `compose.template`. A part finer than `time.grain` is a bind error. |
+| `periods` | map of part → context filter code | omitted | Independent predicates: `year`, `quarter` (1–4), `month` (1–12), `week` (ISO 1–53), `day` (1–31). Values parse as integers (`3`, `"03"`). The **month** part also accepts English names and 3-letter abbreviations (`March`, `Mar`, case-insensitive). Lists are a union. A missing part is not applied. Mutually exclusive with `compose.template`. A part finer than `time.grain` is a bind error. |
 | `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal affects `quarter` and `year` only (`year` / `quarter` parts use the fiscal calendar). `week` is ISO-only. |
 | `fiscal_start_month` | 1–12 | `4` | First month of the fiscal year |
 | `format` | `yyyy-mm-dd`, `yyyy-mm`, `yyyy/mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, or a strptime string | ISO `YYYY-MM` / `YYYY-MM-DD` | How the physical column and the context time filter are stored (`062026` → `format: mmyyyy`) |
 | `compose` | `{ template: "{year}{month:02}" }` | omitted | **Superseded by `periods:`.** Build `filter_code` from segregated context keys. Literals between `{placeholders}` are kept (`{year}/{month:02}` → `2026/04`). `{month:02}` zero-pads. The part keys are then removed so they are not leftover `IN` filters. If `filter_code` is already on the context, that scalar wins. Cannot be set together with `periods:`. |
+| `anchor` | `selection_end`, `last_observed` | `selection_end` | `selection_end` is `max(S)`. `last_observed` probes the extract and sets `anchor = min(selection end, last observed bucket)`. `validate()` reports `anchor: null` and `anchor_source: "data"` in this mode. Suppresses the `unobserved_anchor` note. |
+| `max_span_years` | positive int | omitted | After the span is final, a span longer than this many years is `TimePlanError` (narrow the time filters). Uncapped KPIs still get a `wide_time_span` note above 10 years. |
 
 Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Leftover host period filters (`reporting_month`, `month`, `year`, `as_of_period`, and compose year-month keys) are skipped with `reason: no_time` even if mapped — they are not IN-filters on a snapshot. Other unmapped valued filters stay FilterError. A snapshot measure may not use a nonzero `offset`, `trailing`, or any kind that needs time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not. Snapshot KPIs may still use `over:` with a non-time `order_by`.
 
 Rules the engine enforces:
 
-- Declared `periods` parts conjoin. Year alone is the full year; year + month is that month; month alone is every matching month across years (anchor = latest). Part values may be lists (`month: [1, 2, 3]`). Garbage values (`month: "March"`) still raise `TimePlanError`; only **absence** is lenient.
+- Declared `periods` parts conjoin. Year alone is the full year; year + month is that month; month alone is every matching month across years (anchor = latest). Part values may be lists (`month: [1, 2, 3]`). Month names (`March`, `Mar`) are accepted for the month part only. Garbage (`month: "banana"`) still raises `TimePlanError`; only **absence** is lenient.
 - A scalar `time.filter_code` on the context is still **exactly one** value (two values is an error, not a range). That path is byte-identical to today's single-bucket KPIs.
 - Missing time filters on a time-based KPI are legal: the engine probes min/max under the part predicates and bound dimension filters. `validate()` reports `anchor: null` and `anchor_source: "data"` until compute fills them. An empty selection (impossible combo, or no matching data) sets `anchor` to null, returns null measures / empty trend axis, and adds a `notes` entry — it does not raise.
 - Point measures fold the observed buckets of S. An offset shifts **each** bucket (`years: 1` on a year-only 2026 selection is the full 2025 total). Windows and named ranges (`mtd`, `ytd`) measure from `anchor` (`trailing: 3` from June is Apr–Jun; `mtd` under `year=2026` is December).
@@ -442,6 +444,9 @@ Caps: `OVER_ROW_CAP` (500,000 detail rows) and `OVER_PARTITION_CAP` (50,000 dist
 | `percentile` | Pandas over raw rows | recomputing from rows | `null` |
 | `first` | Pandas over raw rows | taking the first event | `null` |
 | `last` | Pandas over raw rows | taking the last event | `null` |
+| `stddev` | Pandas over raw rows | recomputing from rows | `null` (also `null` on a single row) |
+| `variance` | Pandas over raw rows | recomputing from rows | `null` (also `null` on a single row) |
+| `mode` | Pandas over raw rows | recomputing from rows | `null` (ties → smallest) |
 
 Three behaviours worth knowing before you pick an aggregation:
 
@@ -449,7 +454,7 @@ Three behaviours worth knowing before you pick an aggregation:
 
 **`min` and `max` are recomputed at every cut.** A global cut takes the minimum across regions; it does not add regional minima together.
 
-**`count_distinct`, `median`, `percentile`, `first` and `last` are non-additive**, so Pandas keeps the retrieved rows and recomputes over the window. `last` on a balance is the latest snapshot in the period — it does not add daily balances. This costs more memory than an additive measure; keep the dimensionality sensible.
+**`count_distinct`, `median`, `percentile`, `first`, `last`, `stddev`, `variance` and `mode` are non-additive**, so Pandas keeps the retrieved rows and recomputes over the window. `stddev` / `variance` are the sample (ddof=1) statistics; a single row is `null`. `mode` is the first of pandas `Series.mode()` after numeric coerce (ties → smallest). `last` on a balance is the latest snapshot in the period — it does not add daily balances. This costs more memory than an additive measure; keep the dimensionality sensible.
 
 `percentile` requires the `percentile:` key. Values above 1 are read as percentages (`90` → `0.9`); values must land in 0–1 or 0–100.
 
@@ -471,7 +476,7 @@ Every `measures_required[].measure_key` the UI can send must be a key here. Unkn
 
 `op:` and `kind:` are interchangeable spellings.
 
-Platform kinds are documented below. Add-on kinds (`ntile`, `lag`, `diff`, `top_n`, …) and hooks (`ewma`, `hit_rate`, `cagr`, …) are listed with examples in [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). A new name is `capabilities/` + `registries/` — not `pipeline/`.
+Platform kinds are documented below. Add-on kinds (`ntile`, `lag`, `diff`, `top_n`, …) and hooks (`ewma`, `hit_rate`, `cagr`, `mad`, `projection`, `period_median` / alias `rolling_median`, …) are listed with examples in [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). A new name is `capabilities/` + `registries/` — not `pipeline/`.
 
 ### 5.1 `point` — one period
 
@@ -487,9 +492,25 @@ previous_year_value:
   offset: { years: 1 }     # 1 year BEFORE the anchor
 ```
 
-`offset` counts **backwards** from the anchor. Available units: `days`, `months`, `quarters`, `years`; they add together, so `{ years: 1, months: 2 }` is 14 months back. Month-end dates clamp (31 Mar − 1 month = 28/29 Feb).
+`offset` counts **backwards** from the anchor. Available units: `days`, `weeks`, `months`, `quarters`, `years`; they add together, so `{ years: 1, months: 2 }` is 14 months back. `offset.weeks` is a calendar 7-day shift (also valid on `lag` / `lead` / `index` / `diff` / `pct_change`). Month-end dates clamp (31 Mar − 1 month = 28/29 Feb).
 
 Returns `null` when that period has no rows for this dimension combination.
+
+Opt-in **per-measure filters** (CALCULATE-lite) on a point (or any measure whose `of:` is a **base**):
+
+```yaml
+late_only:
+  of: sotif_value
+  op: point
+  where: { column: reason_code, op: eq, value: LATE_SUPPLIER }
+
+worldwide:
+  of: sotif_value
+  op: point
+  ignore_filters: [region]
+```
+
+`where:` is the same shape as `base_measures.where:` (AND-merged onto a hidden clone of that base). `ignore_filters:` lists context filter codes this one measure skips (reported as `ignored_filters` reason `measure_<key>`). Both keys are bind errors when `of:` is another measure — filter the base instead. Hooks may be lagged (`lag { of: smoothed }`); they evaluate at the shifted anchor.
 
 ### 5.2 `window` — trailing, leading, period-to-date, or full period
 
@@ -557,6 +578,7 @@ trend_12m:
 - A period with no rows keeps its slot: `0` for `sum`/`count`, `null` for everything else.
 - Trends are emitted **only on the default cut** unless `cuts:` lists more. This is deliberate — a trend on a high-cardinality cut multiplies the payload.
 - Guardrail: rows × array length may not exceed **50,000 cells** per cut, otherwise the request fails and asks you to narrow `cuts`.
+- `offset:` on a trend shifts the axis window (last year's 12-month trend is `op: trend` + `offset: { years: 1 }`). `lag { of: trend }` stays a bind error; put `offset:` on the trend.
 
 `cuts:` is honoured for **trend**, **rank**, and **percent_of_total**. On other ops it is ignored.
 
@@ -583,6 +605,8 @@ reason_code_rank:
 
 Pandas `RANK()` after the cut (ties share a rank; the next rank skips). Rank is across the whole cut when `partition_by` is omitted or equals that cut's keys. A **subset** of the cut keys restarts the rank inside each group. Null sources stay null. Defaults to `default_cut` unless `cuts:` lists more.
 
+To rank last period's value, rank a lagged measure (`rank { of: lagged }`). `lag { of: rank }` is a bind error.
+
 `order_by: [order_date]` on cut ops (`rank`, `row_number`, `running_total`, `percent_of_total`, …) sorts groups by those dim columns **after** the existing `of` measure order. Default remains sort-by-measure. Final tiebreak: original combo index.
 
 
@@ -602,6 +626,7 @@ This is `value * 100 / SUM(value) OVER ()` on the **emitted cut rows** (after ex
 | `cuts[].group_by` | Which rows exist (`GROUP BY reason_code, site_category`) |
 | `op: percent_of_total` | Share of those rows × 100 |
 | `partition_by` | Optional `OVER (PARTITION BY …)`. Omit for the whole cut. |
+| `versus_cut` | Optional. Divide by another **declared** cut's total of `of` instead of this cut's partition sum. The target is computed even if that cut is not emitted. Cycles are bind errors. |
 | `measures.*.cuts` | Emit this column on these cuts (default: `default_cut` only) |
 
 ```yaml
@@ -612,7 +637,15 @@ percent_within_site:
   cuts: [R]
 ```
 
-Null source → null. Zero or null total → null (never `inf`). Scale is 0–100. Same two-phase pass as `rank`; cannot be `left` / `inputs` / `expr` of another measure in the same request. `group_by:` is accepted as an alias for `partition_by`.
+Null source → null. Zero or null total → null (never `inf`). Scale is 0–100. Same two-phase pass as `rank`. `arithmetic` / `fn` / `expr` may consume rank and `percent_of_total` (a post-cut derived pass). Trends and hooks cannot. `group_by:` is accepted as an alias for `partition_by`.
+
+```yaml
+share_of_global:
+  op: percent_of_total
+  of: current_value
+  versus_cut: G
+  cuts: [R]
+```
 
 ### 5.3d `having:` — drop groups by measure predicates
 
@@ -1269,7 +1302,9 @@ pytest -q
 | Message | Cause | Fix |
 |---|---|---|
 | `Unknown measure_key(s) [...]` | Context asked for a key not under `measures:` | Add the measure, or correct metadata |
-| `Cannot parse month 'March'` | Time part was not an integer | Send `3` or `"03"`, not a month name |
+| `Cannot parse month 'banana'` | Time part was not an integer or month name | Send `3`, `"03"`, `March`, or `Mar` |
+| `time.max_span_years` | Densified span exceeds the KPI cap | Narrow the time filters or raise the cap |
+| `time.anchor must be` | Unknown `time.anchor` | Use `selection_end` or `last_observed` |
 | `time.periods.week is finer than time.grain` | Part is finer than the KPI grain | Drop that part, or lower `time.grain` |
 | `time.periods and time.compose.template cannot both be set` | Mutually exclusive | Keep `periods:` (preferred) or `compose:`, not both |
 | `Compose placeholder 'year' is missing` | A `{placeholder}` was not on the context | Send that filter, or send the composed `filter_code` as one scalar |
@@ -1311,18 +1346,17 @@ pytest -q
 Known boundaries, so you do not design around something that is not there:
 
 - Timestamps are bucketed as stored; there is no timezone conversion, and `time.timezone` is rejected at bind rather than silently ignored. Convert the column in a `kind: sql` model if you need it.
-- `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months.
+- `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months. There is no fiscal-week grain (DAX has none either).
+- Regex, JSON, geospatial, ML, timezone conversion, result caching, hierarchy expansion, and cross-KPI measure references remain architecture boundaries: hooks, `kind: sql` models, or the host.
 - `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) do not change meaning when `parameters.time_grain` changes. `periods` and `from: data_points` follow the pick (§5.2).
 - `over:` detail is capped at 500,000 rows and 50,000 partitions; densify trends still use the 50,000 cell cap. Larger extracts fail fast — narrow filters, coarsen retrieve, or pre-aggregate in a SQL model.
 - `measures.*.cuts` restricts **trend**, **rank**, **percent_of_total**, and other cut-phase kinds (`ntile`, `top_n`, …).
-- `percent_of_total` windows **this cut's** rows only (after having). Share of a different cut's total is a different problem (`ignore_filters` / `also_emit`, or a later op).
-- `filters:` is one mask for the pipeline (then cuts / `ignore_filters`). There is no per-measure filter block. KPI `having:` is the measure-predicate drop.
-- `rank` and `percent_of_total` cannot feed `arithmetic` / `fn` / `expr` in the same request.
+- `percent_of_total` defaults to **this cut's** rows (after having). Cross-cut share is `versus_cut:` naming another declared cut.
+- `filters:` is the pipeline mask (then cuts / `ignore_filters`). A single measure may add `where:` / `ignore_filters:` when `of:` is a base. KPI `having:` is the measure-predicate drop.
+- Rank a lagged measure (`rank of lag`); do not `lag { of: rank }`. Put `offset:` on a trend rather than `lag { of: trend }`.
 - Physical joins support `inner`, `left` and `right`. Anything else belongs in a `kind: sql` model.
 - KPI `base_measures.sql` is a column name or a Pandas formula. DuckDB `SUM(` / `LAG(` belong in a `kind: sql` **model** when you opt into SQL extract shaping — not in KPI YAML.
-- Regex, JSON, geospatial, ML, and arbitrary Python remain **hooks** or `kind: sql`. The closed catalog is the ops/fns in this document plus [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md).
-- KPI YAML cannot reference another KPI's measures.
-- Non-additive aggregations (`median` / `percentile` / `count_distinct`) fold the **post-pipeline** fact series, not the pre-CASE columns.
+- Non-additive aggregations (`median` / `percentile` / `count_distinct` / `stddev` / `variance` / `mode`) fold the **post-pipeline** fact series, not the pre-CASE columns.
 - `expr:` CASE is Pandas, not DuckDB. No `SUM(CASE)`, `LIKE`, `IN ('A','B')`, or simple `CASE status WHEN 'O'`. `columns:` + `op:` stays numeric.
 - Host ownership (ADLS, auth, jobs, context builder) stays outside `compute(context)`.
 - We do not claim identical IEEE bits across pandas versions; post-extract stable sort + `_kpi_row_id` makes window order deterministic.

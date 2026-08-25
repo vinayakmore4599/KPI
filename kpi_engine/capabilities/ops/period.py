@@ -25,12 +25,11 @@ def _combo(ctx: EvalCtx) -> dict[str, Any]:
 
 
 def _offset_nonzero(offset) -> bool:
-    # F20: weeks is counted in OpPlugin.offset_is_nonzero / combo Point, not here.
-    # Period ops still bind on months/years/days/quarters; leave weeks until a
-    # week-grain lag/lead test fails.
     if offset is None:
         return False
-    return bool(offset.months or offset.years or offset.days or offset.quarters)
+    return bool(
+        offset.months or offset.years or offset.days or offset.quarters or offset.weeks
+    )
 
 
 def _require_offset(spec: OutputSpec) -> None:
@@ -64,9 +63,22 @@ def _assert_shift_source(spec: OutputSpec, kpi: KpiSpec) -> None:
     if leaf is None:
         return
     leaf_spec, label = leaf
+    hint = ""
+    if leaf_spec.kind in {
+        "rank",
+        "dense_rank",
+        "percent_rank",
+        "ntile",
+        "row_number",
+        "top_n",
+        "percent_of_total",
+    }:
+        hint = " Rank a lagged measure (rank of lag), do not lag a rank."
+    if leaf_spec.kind == "trend":
+        hint = " Put offset: on the trend measure itself."
     raise BindError(
         f"measures.{spec.key} op={spec.kind} cannot shift {of!r}: "
-        f"{label} is not shiftable."
+        f"{label} is not shiftable.{hint}"
     )
 
 
@@ -80,8 +92,6 @@ def _unshiftable_leaf(
         return None
     plugin = get_op(spec.kind)
     if not plugin.shiftable:
-        if spec.kind == "hook" and spec.hook:
-            return spec, f"hook {spec.hook}"
         return spec, f"{spec.key} op={spec.kind}"
     for name in plugin.dependencies(spec):
         child = by_key.get(name)

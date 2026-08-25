@@ -565,6 +565,9 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
             f"Parameter name(s) {clash} collide with measure keys. "
             "Rename the parameter."
         )
+    measures, bases = _rewrite_measure_filters(
+        measures, bases, cuts, filter_specs, dimensions
+    )
     _assert_measure_graph(measures, tuple(bases), dimensions)
     if time is None:
         _assert_snapshot_measures(measures)
@@ -947,7 +950,19 @@ def _parse_base_measure(
     else:
         agg = spec.get("agg")
     allowed = {
-        "sum", "avg", "count", "min", "max", "count_distinct", "median", "percentile", "first", "last"
+        "sum",
+        "avg",
+        "count",
+        "min",
+        "max",
+        "count_distinct",
+        "median",
+        "percentile",
+        "first",
+        "last",
+        "stddev",
+        "variance",
+        "mode",
     }
     if agg is not None and agg not in allowed:
         raise BindError(f"Unknown agg {agg!r} on {name}.")
@@ -1165,8 +1180,147 @@ def _parse_column_args(name: str, raw: Any) -> tuple[tuple[str, ...], tuple[str,
     return tuple(require_ident(str(c), what="base_measures.columns") for c in raw), ()
 
 
+def _rewrite_measure_filters(
+    measures: tuple[OutputSpec, ...],
+    bases: list[BaseMeasure],
+    cuts: tuple,
+    filter_specs: tuple,
+    dimensions: tuple[str, ...],
+) -> tuple[tuple[OutputSpec, ...], list[BaseMeasure]]:
+    """Clone bases for per-measure where:/ignore_filters: and mark cut_derived."""
+    by_base = {b.name: b for b in bases}
+    cut_names = {c.name for c in cuts}
+    declared_codes = {norm_name(f.code) for f in filter_specs}
+    declared_codes.update(norm_name(c) for c in dimensions)
+    for spec in measures:
+        if spec.versus_cut and spec.versus_cut not in cut_names:
+            raise BindError(
+                f"measures.{spec.key} versus_cut {spec.versus_cut!r} is not a declared cut."
+            )
+    _assert_versus_cut_acyclic(measures, cut_names)
+    rewritten: list[OutputSpec] = []
+    for spec in measures:
+        extra_where = spec.where
+        skip = spec.ignore_filters
+        if skip:
+            for code in skip:
+                if declared_codes and norm_name(code) not in declared_codes:
+                    # Allow column names and filter codes the cuts already know.
+                    cut_tokens = {
+                        norm_name(tok)
+                        for cut in cuts
+                        for tok in (*cut.ignore_filters, *cut.group_by, *cut.exclude_from_grain)
+                    }
+                    if norm_name(code) not in cut_tokens:
+                        raise BindError(
+                            f"measures.{spec.key}.ignore_filters names unknown "
+                            f"filter {code!r}."
+                        )
+        if extra_where is None and not skip:
+            rewritten.append(spec)
+            continue
+        of = spec.of
+        if not of or of not in by_base:
+            raise BindError(
+                f"measures.{spec.key} where:/ignore_filters: requires of: a base "
+                "measure (clone the fact you want to mask)."
+            )
+        if of in {m.key for m in measures}:
+            raise BindError(
+                f"measures.{spec.key} where:/ignore_filters: requires of: a base "
+                "measure, not another measure. Filter the base and point of: at it."
+            )
+        source = by_base[of]
+        clone_name = f"__{spec.key}__of"
+        if clone_name in by_base:
+            raise BindError(f"base_measures.{clone_name} collides with a generated clone.")
+        also = source.also_where
+        where = source.where
+        if extra_where is not None:
+            if where is None:
+                where = extra_where
+            else:
+                also = also + (extra_where,)
+        clone = replace(
+            source,
+            name=clone_name,
+            where=where,
+            also_where=also,
+            skip_filter_codes=tuple(str(c) for c in skip),
+        )
+        bases.append(clone)
+        by_base[clone_name] = clone
+        rewritten.append(replace(spec, of=clone_name))
+    marked = _mark_cut_derived(tuple(rewritten))
+    return marked, bases
+
+
+def _assert_versus_cut_acyclic(measures: tuple[OutputSpec, ...], cut_names: set[str]) -> None:
+    """Reject versus_cut cycles (A uses B's total while B uses A's)."""
+    deps: dict[str, set[str]] = {}
+    for spec in measures:
+        if not spec.versus_cut:
+            continue
+        consumers = spec.cuts or tuple(cut_names)
+        for name in consumers:
+            if name == spec.versus_cut:
+                continue
+            deps.setdefault(name, set()).add(spec.versus_cut)
+    state: dict[str, int] = {}
+
+    def walk(node: str, trail: list[str]) -> None:
+        if state.get(node) == 2:
+            return
+        if state.get(node) == 1:
+            cycle = trail[trail.index(node) :] + [node]
+            raise BindError(
+                f"percent_of_total versus_cut cycle: {' -> '.join(cycle)}."
+            )
+        state[node] = 1
+        trail.append(node)
+        for nxt in deps.get(node, ()):
+            walk(nxt, trail)
+        trail.pop()
+        state[node] = 2
+
+    for name in list(deps):
+        walk(name, [])
+
+
+def _mark_cut_derived(measures: tuple[OutputSpec, ...]) -> tuple[OutputSpec, ...]:
+    """Flag arithmetic/fn/expr that consume a cut-phase op (or another cut_derived)."""
+    by_key = {m.key: m for m in measures}
+    derived: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for spec in measures:
+            if spec.key in derived:
+                continue
+            if spec.kind not in {"arithmetic", "fn", "expr"}:
+                continue
+            for name in measure_dependencies(spec):
+                child = by_key.get(name)
+                if child is None:
+                    continue
+                if get_op(child.kind).phase == "cut" or child.key in derived:
+                    derived.add(spec.key)
+                    changed = True
+                    break
+    if not derived:
+        return measures
+    return tuple(
+        replace(spec, cut_derived=True) if spec.key in derived else spec
+        for spec in measures
+    )
+
+
 def _parse_where(name: str, raw: Any) -> MeasureWhere | None:
     """Parse where: { column, op, values } for a Pandas mask."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise BindError(f"base_measures.{name}.where must be an object.")
     if raw is None:
         return None
     if not isinstance(raw, dict):
@@ -1330,6 +1484,19 @@ def _parse_time(raw: Any) -> TimeSpec | None:
             "time.periods maps year/month/… to context filters. "
             "Omit the time: block if this KPI has no time column."
         )
+    anchor_mode = str(raw.get("anchor") or "selection_end").strip()
+    if anchor_mode not in {"selection_end", "last_observed"}:
+        raise BindError(
+            "time.anchor must be selection_end or last_observed."
+        )
+    max_span_years = raw.get("max_span_years")
+    if max_span_years is not None:
+        try:
+            max_span_years = int(max_span_years)
+        except (TypeError, ValueError) as exc:
+            raise BindError("time.max_span_years must be a positive integer.") from exc
+        if max_span_years < 1:
+            raise BindError("time.max_span_years must be a positive integer.")
     return TimeSpec(
         column=require_ident(str(column), what="time.column"),
         grain=grain,  # type: ignore[arg-type]
@@ -1341,6 +1508,8 @@ def _parse_time(raw: Any) -> TimeSpec | None:
         source_grain=source_grain,
         grains=grains,  # type: ignore[arg-type]
         periods=periods,
+        anchor_mode=anchor_mode,  # type: ignore[arg-type]
+        max_span_years=max_span_years,
     )
 
 
@@ -1393,11 +1562,16 @@ def _assert_measure_graph(
             if name in by_key:
                 dep = by_key[name]
                 if get_op(dep.kind).phase == "cut" and get_op(spec.kind).phase != "cut":
-                    raise BindError(
-                        f"measures.{spec.key} cannot use {name!r} (op={dep.kind}) as an "
-                        "input. Rank and percent_of_total are assigned after every row "
-                        "on the cut."
-                    )
+                    if spec.kind in {"trend", "hook"}:
+                        raise BindError(
+                            f"measures.{spec.key} cannot use {name!r} (op={dep.kind}) as an "
+                            "input. Trends and hooks cannot consume cut-phase ops."
+                        )
+                    if spec.kind not in {"arithmetic", "fn", "expr"}:
+                        raise BindError(
+                            f"measures.{spec.key} cannot use {name!r} (op={dep.kind}) as an "
+                            "input. Rank and percent_of_total feed arithmetic, fn, or expr."
+                        )
                 continue
             if get_op(spec.kind).phase == "cut" and name in known_bases:
                 continue
@@ -1681,7 +1855,7 @@ def _parse_measure(
     elif of_raw is not None:
         of = str(of_raw)
     cuts = tuple(raw["cuts"]) if raw.get("cuts") is not None else None
-    return plugin.parse(
+    spec = plugin.parse(
         key,
         CommonMeasureFields(
             of=of,
@@ -1697,6 +1871,24 @@ def _parse_measure(
             parameter_names=param_names,
             parameter_types=dict(param_types or {}),
         ),
+    )
+    where = _parse_where(key, raw.get("where")) if raw.get("where") is not None else None
+    ignore_raw = raw.get("ignore_filters")
+    ignore_filters: tuple[str, ...] = ()
+    if ignore_raw is not None:
+        if not isinstance(ignore_raw, (list, tuple)):
+            raise BindError(f"measures.{key}.ignore_filters must be a list.")
+        ignore_filters = tuple(str(c).strip() for c in ignore_raw if str(c).strip())
+    versus_cut = str(raw["versus_cut"]).strip() if raw.get("versus_cut") else None
+    if versus_cut and spec.kind != "percent_of_total":
+        raise BindError(
+            f"measures.{key} versus_cut: is only valid on op: percent_of_total."
+        )
+    return replace(
+        spec,
+        where=where,
+        ignore_filters=ignore_filters,
+        versus_cut=versus_cut or None,
     )
 
 

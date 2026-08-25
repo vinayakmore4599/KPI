@@ -55,6 +55,7 @@ from kpi_engine.pipeline.filters import (
     columns_for_source_filters,
     filters_on_all_cuts,
     split_filters,
+    _is_listed,
 )
 from kpi_engine.pipeline.model_sql import NON_ADDITIVE, compile_extract, compile_period_probe, extract
 from kpi_engine.pipeline.pipelines import (
@@ -71,7 +72,7 @@ from kpi_engine.pipeline.relations import join_monthly
 from kpi_engine.pipeline.parameters import declared_time_grain
 from kpi_engine.pipeline.time_planner import apply_request_time, fill_probed_selection, plan_time, span_for_keys
 from kpi_engine.dates import add_periods, iso_period, parse_date, period_label
-from kpi_engine.exceptions import BindError, KPIEngineError
+from kpi_engine.exceptions import BindError, KPIEngineError, TimePlanError
 from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.host_runtime import acquire_connection
 from kpi_engine.runlog import (
@@ -184,6 +185,7 @@ def _compute(
                 connection=con,
                 joined=pipe.joined,
                 measure_keys=pipe.measure_keys,
+                measure_calc=prepared.get("measure_calc") or (),
             )
             if not any(n.get("code") == "unobserved_anchor" for n in notes):
                 notes.extend(_unobserved_anchor_note(kpi, prepared["plan"], monthly))
@@ -216,6 +218,7 @@ def _compute(
             applied_def.extend(prepared["deferred"])
             applied_res.extend(prepared["result_filters"])
             ignored.extend(_ignored(prepared["deferred"], prepared["cuts"]))
+            ignored.extend(_measure_ignored(kpi))
     finally:
         if owned:
             con.close()
@@ -348,6 +351,11 @@ def _validate(
         "grain_warnings": _grain_warnings(kpi),
         "notes": _validate_time_notes(time_plan),
     }
+    if kpi.time is not None and kpi.time.anchor_mode == "last_observed":
+        result["anchor"] = None
+        selection = result.get("time_selection")
+        if isinstance(selection, dict):
+            result["time_selection"] = {**selection, "anchor_source": "data"}
     log_step("END validate", kpi_id=kpi.kpi_id, sql_count=len(sqls), param_count=param_count)
     return result
 
@@ -490,12 +498,36 @@ def _prepare_pipeline(
         or match_name(item.column, available) is not None
         or (time_col is not None and norm_name(item.column) == norm_name(time_col))
     )
-    source_filters, deferred, result_filters = split_filters(pipe_bound, emitted)
-    extra = tuple(dict.fromkeys([*extra, *(item.column for item in deferred)]))
+    skip_codes: set[str] = set()
+    for spec in kpi.measures:
+        skip_codes.update(spec.ignore_filters)
+    for base in pipe.bases:
+        skip_codes.update(getattr(base, "skip_filter_codes", ()) or ())
+    extra_ignored = {norm_name(c) for c in skip_codes} | set(skip_codes)
+    source_filters, deferred, result_filters = split_filters(
+        pipe_bound, emitted, extra_ignored=extra_ignored
+    )
+    grain_filter_cols = []
+    cut_deferred: list = []
+    for item in deferred:
+        measure_only = bool(extra_ignored) and _is_listed(item, extra_ignored)
+        on_cut_grain = match_name(item.column, grouping) is not None
+        if not measure_only or on_cut_grain:
+            grain_filter_cols.append(item.column)
+            cut_deferred.append(item)
+    extra = tuple(dict.fromkeys([*extra, *grain_filter_cols]))
     grain = extract_grain(kpi, emitted, pipe.bases, extra=extra)
     from kpi_engine.capabilities.ops.support import assert_helper_of_allowed
 
     assert_helper_of_allowed(kpi, emitted, pipe.measure_keys)
+    global_calc = filters_on_all_cuts(tuple(cut_deferred), emitted)
+    measure_calc = tuple(
+        item for item in deferred if extra_ignored and _is_listed(item, extra_ignored)
+    )
+    if extra_ignored:
+        global_calc = tuple(
+            item for item in global_calc if not _is_listed(item, extra_ignored)
+        )
     return {
         "models": models,
         "datasets": pipe_ds,
@@ -503,9 +535,10 @@ def _prepare_pipeline(
         "grain": grain,
         "plan": span_for_keys(kpi, pipe.measure_keys, time_plan),
         "source_filters": source_filters,
-        "deferred": deferred,
+        "deferred": tuple(cut_deferred),
         "result_filters": result_filters,
-        "global_calc": filters_on_all_cuts(deferred, emitted),
+        "global_calc": global_calc,
+        "measure_calc": measure_calc,
         "dropped_cuts": dropped,
     }
 
@@ -582,6 +615,7 @@ def _extract_all(
     connection: Any | None = None,
     joined: bool = False,
     measure_keys: tuple[str, ...] = (),
+    measure_calc=(),
 ) -> tuple[pd.DataFrame, pd.DataFrame | None, list[str]]:
     """Per-model row-level retrieve of physical columns, then Pandas builds the monthly frame."""
     scoped = replace(kpi, base_measures=needed_bases)
@@ -618,9 +652,14 @@ def _extract_all(
             detail_parts.append(mapped)
             continue
         from kpi_engine.pipeline.row_pipeline import stabilize_detail
+        from kpi_engine.pipeline.fn_apply import _MEASURE_CALC_FILTERS
 
         mapped = stabilize_detail(mapped, kpi)
-        facted = apply_pandas_facts(mapped, sub)
+        token = _MEASURE_CALC_FILTERS.set(tuple(measure_calc))
+        try:
+            facted = apply_pandas_facts(mapped, sub)
+        finally:
+            _MEASURE_CALC_FILTERS.reset(token)
         detail_parts.append(facted)
         pandas_monthly = collapse_pandas_detail(
             facted, sub, grain, facts_applied=True, measure_keys=measure_keys
@@ -665,7 +704,11 @@ def _to_monthly(
     time_col = kpi.time.column
     keys = pandas_group_keys(kpi, grain)
     value_cols = _monthly_value_cols(kpi, measure_keys)
-    fill_zero = [m.name for m in kpi.base_measures if m.agg in {"sum", "count"}]
+    fill_zero = [
+        m.name
+        for m in kpi.base_measures
+        if m.agg in {"sum", "count"} and m.where is None and not m.also_where
+    ]
     densify_end = plan.anchor
     if plan.lookback_forward:
         densify_end = add_periods(plan.anchor, plan.lookback_forward, kpi.time)
@@ -969,6 +1012,20 @@ def _ignored(deferred, emitted) -> list[dict[str, Any]]:
     return rows
 
 
+def _measure_ignored(kpi: KpiSpec) -> list[dict[str, Any]]:
+    """Per-measure ignore_filters reported on the response."""
+    rows: list[dict[str, Any]] = []
+    for spec in kpi.measures:
+        for code in spec.ignore_filters:
+            rows.append(
+                {
+                    "filter_code": code,
+                    "reason": f"measure_{spec.key}",
+                }
+            )
+    return rows
+
+
 def _resolve_time_plan(
     time_plan: TimePlan | None,
     kpi: KpiSpec,
@@ -983,7 +1040,9 @@ def _resolve_time_plan(
     notes: list[dict[str, str]] = []
     if time_plan is None or kpi.time is None:
         return time_plan, notes
-    if time_plan.anchor is not None:
+    last_observed = kpi.time.anchor_mode == "last_observed"
+    if time_plan.anchor is not None and not last_observed:
+        _assert_span_cap(kpi, time_plan)
         notes.extend(_span_notes(time_plan))
         return time_plan, notes
     if time_plan.selection and time_plan.selection.empty_reason:
@@ -1035,13 +1094,36 @@ def _resolve_time_plan(
             ),
             notes,
         )
+    if last_observed and time_plan.anchor is not None:
+        new_anchor = min(time_plan.anchor, hi)
+        filled = replace(time_plan, anchor=new_anchor)
+        filled = span_for_keys(kpi, request.measure_keys, filled) or filled
+        _assert_span_cap(kpi, filled)
+        notes.extend(_span_notes(filled))
+        return filled, notes
     filled = fill_probed_selection(kpi, time_plan, lo, hi, request.measure_keys)
     if filled.selection and filled.selection.empty_reason:
         notes.append(
             {"code": "empty_time_selection", "detail": filled.selection.empty_reason}
         )
+    _assert_span_cap(kpi, filled)
     notes.extend(_span_notes(filled))
     return filled, notes
+
+
+def _assert_span_cap(kpi: KpiSpec, plan: TimePlan | None) -> None:
+    """Raise when the densified span exceeds time.max_span_years."""
+    if kpi.time is None or kpi.time.max_span_years is None or plan is None:
+        return
+    if plan.span_start is None or plan.anchor is None:
+        return
+    cap_days = kpi.time.max_span_years * 365
+    if (plan.anchor - plan.span_start).days > cap_days:
+        raise TimePlanError(
+            f"Time span {plan.span_start.isoformat()} .. {plan.anchor.isoformat()} "
+            f"exceeds time.max_span_years={kpi.time.max_span_years}. "
+            "Narrow the time filters."
+        )
 
 
 def _probe_date(value) -> Any:
@@ -1147,6 +1229,8 @@ def _unobserved_anchor_note(
 ) -> list[dict[str, str]]:
     """O4: selection-end anchor with no observed row at that bucket."""
     if kpi.time is None or plan is None or plan.anchor is None:
+        return []
+    if kpi.time.anchor_mode == "last_observed":
         return []
     if monthly is None or monthly.empty or kpi.time.column not in monthly.columns:
         return [

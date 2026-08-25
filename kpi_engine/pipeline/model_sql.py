@@ -329,6 +329,8 @@ def _select_model_columns(
             add(col)
         if measure.where is not None:
             add(measure.where.column)
+        for extra in measure.also_where:
+            add(extra.column)
     if time_col and any(m.agg in {"first", "last"} for m in kpi.base_measures):
         raw_time = _physical_ident(time_col, model, datasets)
         parsed = duckdb_parse_time_sql(
@@ -401,6 +403,8 @@ def _used_column_names(
         used.update(norm_name(col) for col in input_columns(measure, bases))
         if measure.where is not None:
             used.add(norm_name(measure.where.column))
+        for extra in measure.also_where:
+            used.add(norm_name(extra.column))
     for item in source_filters:
         used.add(norm_name(item.column))
     return used
@@ -490,6 +494,8 @@ def _assert_sql_projection(
         needed.extend(input_columns(measure, bases))
         if measure.where is not None:
             needed.append(measure.where.column)
+        for extra in measure.also_where:
+            needed.append(extra.column)
     for col in dict.fromkeys(needed):
         if norm_name(col) in allowed:
             continue

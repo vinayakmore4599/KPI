@@ -26,7 +26,19 @@ from typing import Any, Literal, Mapping
 
 
 AggName = Literal[
-    "sum", "avg", "count", "count_distinct", "min", "max", "median", "percentile", "first", "last"
+    "sum",
+    "avg",
+    "count",
+    "count_distinct",
+    "min",
+    "max",
+    "median",
+    "percentile",
+    "first",
+    "last",
+    "stddev",
+    "variance",
+    "mode",
 ]
 GrainName = Literal["day", "week", "month", "quarter", "year"]
 GRAIN_NAMES = frozenset({"day", "week", "month", "quarter", "year"})
@@ -53,7 +65,19 @@ NAMED_WINDOW_RANGES = PTD_RANGES | FULL_RANGES
 WINDOW_RANGE_NAMES = frozenset(
     {"trailing", "leading", "cumulative", "ytd", "mtd", "qtd", "wtd", "full_month", "full_quarter", "full_year"}
 )
-NON_ADDITIVE_AGGS = frozenset({"count_distinct", "median", "percentile", "first", "last"})
+NON_ADDITIVE_AGGS = frozenset(
+    {
+        "count_distinct",
+        "median",
+        "percentile",
+        "first",
+        "last",
+        "stddev",
+        "variance",
+        "mode",
+    }
+)
+AnchorMode = Literal["selection_end", "last_observed"]
 OVER_FNS = frozenset(
     {
         "lag",
@@ -199,6 +223,8 @@ class TimeSpec:
     source_grain: GrainName | None = None
     grains: tuple[GrainName, ...] = ()
     periods: tuple[tuple[str, str], ...] = ()
+    anchor_mode: AnchorMode = "selection_end"
+    max_span_years: int | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +308,8 @@ class BaseMeasure:
     over: OverSpec | None = None
     replace: bool = False
     agg_ok: bool = False
+    also_where: tuple[MeasureWhere, ...] = ()
+    skip_filter_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -338,6 +366,10 @@ class OutputSpec:
     rank_order: str | None = None
     rank_group_by: tuple[str, ...] = ()
     params: Mapping[str, Any] = field(default_factory=dict)
+    versus_cut: str | None = None
+    cut_derived: bool = False
+    where: MeasureWhere | None = None
+    ignore_filters: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

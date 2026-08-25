@@ -347,13 +347,19 @@ value_9m:
 2. New `kpi_config/kpis/orders/4001.yaml` with `model: orders`, `base_measures` on that fact, `measures.previous_year_value` with `op: point`, `offset: { years: 1 }`.
 3. **Files not touched:** `calc_engine.py` (point + years already exists).
 
-### C. Need a new op `rolling_median`
+### C. Need a rolling median
 
-1. Add a class under `capabilities/ops/` (`extra_keys` on the class if it has its own YAML fields).
-2. Add a row in `registries/ops.yaml`.
-3. Regenerate `registries/CAPABILITIES.md`.
-4. Optional: a `compute()` test under `tests/`.
-5. After that, KPIs only add YAML `op: rolling_median`. No `pipeline/` edit.
+`rolling_median` is an alias of the existing hook `period_median`. KPI YAML only:
+
+```yaml
+typical:
+  op: hook
+  hook: rolling_median   # or period_median
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+No `pipeline/` edit. Other series stats (`mad`, `projection`, `ewma`, …) are the same `op: hook` + a name from [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md).
 
 ---
 
@@ -362,7 +368,7 @@ value_9m:
 | Symptom | Likely cause | Fix in |
 |---|---|---|
 | `Unknown measure_key` | Context key not in YAML `measures:` | KPI YAML |
-| `Cannot parse month` | Time part was not an integer (`3` / `"03"`) | KPI YAML or metadata |
+| `Cannot parse month` | Time part was not an integer or month name | KPI YAML or metadata (`3` / `"03"` / `March` / `Mar`) |
 | Previous year all null | Month applied as IN; or span too short | Must be range (engine); check requested keys widen span |
 | Unmapped filter error | No `filter_column_mappings` for that filter | Metadata mappings or YAML `filter_map` |
 | `heir` error | Hierarchical filter not expanded | Context builder, not the engine |

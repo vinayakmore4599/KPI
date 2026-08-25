@@ -146,7 +146,7 @@ def test_lag_of_helper_is_bind_error(extra_config):
         load_kpi(9911, extra_config)
 
 
-def test_lag_of_fn_of_hook_names_the_leaf(extra_config):
+def test_lag_of_fn_of_hook_is_shiftable(extra_config):
     spec = minimal_kpi(9915)
     spec["measures"]["smoothed"] = {
         "op": "hook",
@@ -161,8 +161,8 @@ def test_lag_of_fn_of_hook_names_the_leaf(extra_config):
     }
     spec["measures"]["lagged"] = {"op": "lag", "of": "scaled", "offset": {"months": 1}}
     write_yaml(extra_config / "kpis" / "9915.yaml", spec)
-    with pytest.raises(BindError, match="hook ewma"):
-        load_kpi(9915, extra_config)
+    kpi = load_kpi(9915, extra_config)
+    assert {m.key for m in kpi.measures} >= {"smoothed", "scaled", "lagged"}
 
 
 def test_lag_of_rank_is_bind_error(extra_config):

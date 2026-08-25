@@ -275,19 +275,53 @@ def assert_part_not_finer(part: str, grain: str) -> None:
         )
 
 
+_MONTH_NAMES: dict[str, int] = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+
+
 def _as_int(raw: Any, part: str) -> int:
-    """Coerce a context scalar to int; names like 'March' are rejected."""
+    """Coerce a context scalar to int. Month names (March, Mar) are accepted."""
     if isinstance(raw, bool) or isinstance(raw, float):
         raise TimePlanError(
-            f"Cannot parse {part} {raw!r}. Use an integer (e.g. 3, 03)."
+            f"Cannot parse {part} {raw!r}. Use an integer (e.g. 3, 03)"
+            + (" or a month name (March, Mar)." if part == "month" else ".")
         )
     if isinstance(raw, int):
         return raw
     text = str(raw).strip()
+    if part == "month":
+        named = _MONTH_NAMES.get(text.lower())
+        if named is not None:
+            return named
     if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
         return int(text)
     raise TimePlanError(
-        f"Cannot parse {part} {raw!r}. Use an integer (e.g. 3, 03)."
+        f"Cannot parse {part} {raw!r}. Use an integer (e.g. 3, 03)"
+        + (" or a month name (March, Mar)." if part == "month" else ".")
     )
 
 

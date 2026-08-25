@@ -77,8 +77,8 @@ def test_base_measure_shape_and_agg_are_validated(extra_config):
     with pytest.raises(BindError, match="base_measures.sotif_value must be an object"):
         load_kpi(9106, extra_config)
 
-    _write(extra_config, 9107, base_measures={"sotif_value": {"sql": "amount", "agg": "stddev"}})
-    with pytest.raises(BindError, match="Unknown agg 'stddev'"):
+    _write(extra_config, 9107, base_measures={"sotif_value": {"sql": "amount", "agg": "geomean"}})
+    with pytest.raises(BindError, match="Unknown agg 'geomean'"):
         load_kpi(9107, extra_config)
 
 

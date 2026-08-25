@@ -46,6 +46,10 @@ from kpi_engine.identifiers import (
 )
 from kpi_engine.runlog import traced
 
+_MEASURE_CALC_FILTERS: contextvars.ContextVar[tuple] = contextvars.ContextVar(
+    "measure_calc_filters", default=()
+)
+
 WHERE_OPS = {"in", "eq", "ne", "gt", "gte", "lt", "lte", "between"}
 WHERE_OPS_HELP = "in, eq, ne, gt, gte, lt, lte, or between"
 NUMERIC_WHERE_OPS = frozenset({"gt", "gte", "lt", "lte", "between"})
@@ -696,6 +700,8 @@ def fold_extract_columns(
         wanted.extend(input_columns(measure, {m.name: m for m in kpi.base_measures}))
         if measure.where is not None:
             wanted.append(measure.where.column)
+        for extra in measure.also_where:
+            wanted.append(extra.column)
         if measure.lookup is not None:
             wanted.append(measure.lookup.column)
         if measure.over is not None:
@@ -828,6 +834,21 @@ def _base_measure_series(
         raise CatalogError(f"base_measures.{measure.name} has no columns to compute.")
     if measure.where is not None:
         series = series.where(apply_where_mask(work, measure.where))
+    for extra in measure.also_where:
+        series = series.where(apply_where_mask(work, extra))
+    skip = {str(c).lower() for c in measure.skip_filter_codes}
+    from kpi_engine.identifiers import match_name as match_col
+
+    for item in _MEASURE_CALC_FILTERS.get():
+        code = str(getattr(item, "code", "")).lower()
+        column = str(getattr(item, "column", "")).lower()
+        if code in skip or column in skip:
+            continue
+        col = match_col(getattr(item, "column", ""), work.columns)
+        if col is None:
+            continue
+        mask = pandas_mask(work[col], item.op, item.values)
+        series = series.where(mask)
     return series
 
 

@@ -475,6 +475,22 @@ def agg_detail(
     if base.agg == "percentile":
         q = base.percentile if base.percentile is not None else 0.5
         return _num_or_none(series.quantile(q))
+    if base.agg == "stddev":
+        if len(series.dropna()) < 2:
+            return None
+        return _num_or_none(series.std(ddof=1))
+    if base.agg == "variance":
+        if len(series.dropna()) < 2:
+            return None
+        return _num_or_none(series.var(ddof=1))
+    if base.agg == "mode":
+        numeric = pd.to_numeric(series, errors="coerce").dropna()
+        if numeric.empty:
+            return None
+        modes = numeric.mode()
+        if modes.empty:
+            return None
+        return _num_or_none(modes.iloc[0])
     return None
 
 

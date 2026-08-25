@@ -1115,7 +1115,7 @@ worst_month:
   trailing: { months: 12 }
 ```
 
-### `period_median`
+### `period_median` (aliases: rolling_median)
 
 Median of period values in the trailing window.  
 `role: addon` · `enabled: on`
@@ -1313,4 +1313,31 @@ trend_slope:
   hook: slope
   of: sotif_value
   trailing: { months: 12 }
+```
+
+### `mad`
+
+Median absolute deviation of period values in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+robust_spread:
+  op: hook
+  hook: mad
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `projection`
+
+Linear forecast — last observed value plus slope times periods_ahead (default 1).  
+`role: addon` · `enabled: on`
+
+```yaml
+next_month:
+  op: hook
+  hook: projection
+  of: sotif_value
+  trailing: { months: 12 }
+  periods_ahead: 1
 ```

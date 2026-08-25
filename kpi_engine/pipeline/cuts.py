@@ -142,6 +142,8 @@ def extract_grain(
     for base in bases:
         if base.where is not None:
             add(base.where.column)
+        for extra_where in base.also_where:
+            add(extra_where.column)
     for name in extra:
         add(rename.get(name, name))
     return tuple(names)

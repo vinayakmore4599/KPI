@@ -136,7 +136,7 @@ Add a test under `tests/` with local parquet (see `tests/conftest.py`). Do not h
 
 Call `udfs.kpi_engine.main` (file `udfs/kpi_engine/main.py`). **Do not** add `udfs/<kpi>.py` per KPI. Routing is by `kpi_id`. Copy the whole `udfs/` folder (`kpi_engine`, `config`) into the host.
 
-DuckDB/ADLS stay on the platform. Set `kpi_engine.platform.HOST_DUCKDB_GETTER` to the existing helper (`module.path:function_name`) when you copy this tree in. The engine reuses that session and does not `duckdb.connect()` in production. Context `datasets.*.table_type` chooses `delta_scan` (DELTA) or `read_parquet` (PARQUET). In SQL models prefer `$alias_scan` so the same YAML works for both.
+DuckDB/ADLS stay on the platform. Set `kpi_engine.host_runtime.HOST_DUCKDB_GETTER` to the existing helper (`module.path:function_name`) when you copy this tree in. The engine reuses that session and does not `duckdb.connect()` in production. Context `datasets.*.table_type` chooses `delta_scan` (DELTA) or `read_parquet` (PARQUET). In SQL models prefer `$alias_scan` so the same YAML works for both.
 
 Each `compute` / `validate` writes `logs/kpi-<kind>-<kpi_id>-<timestamp>.log` with every step, the full DuckDB SQL (including values inlined), and function invoke/return. Override with `log_dir=`; disable with `KPI_ENGINE_LOG=0`.
 

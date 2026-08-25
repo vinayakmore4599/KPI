@@ -15,6 +15,10 @@ Capabilities
 When to use
     When copying this repo into the platform, set HOST_DUCKDB_GETTER to the
     existing function (module:function). Do not add credentials here.
+
+    Do not rename this file to platform.py. That shadows the stdlib ``platform``
+    module (pandas does ``import platform``) whenever this directory is on
+    sys.path.
 """
 
 from __future__ import annotations

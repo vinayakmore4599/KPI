@@ -73,7 +73,7 @@ from kpi_engine.core.time_planner import apply_request_time, plan_time, span_for
 from kpi_engine.dates import add_periods, iso_period, parse_date, period_label
 from kpi_engine.exceptions import BindError, KPIEngineError
 from kpi_engine.identifiers import match_name, norm_name
-from kpi_engine.platform import acquire_connection
+from kpi_engine.host_runtime import acquire_connection
 from kpi_engine.runlog import (
     end_run,
     exception as log_exception,

@@ -19,7 +19,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError, KPIEngineError
-from kpi_engine.platform import register_duckdb_getter
+from kpi_engine.host_runtime import register_duckdb_getter
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 from kpi_engine.main import main
 
@@ -39,7 +39,7 @@ def test_compute_reuses_caller_connection_and_leaves_it_open(parquet_path, confi
     def boom():
         raise AssertionError("must not open a new DuckDB session")
 
-    monkeypatch.setattr("kpi_engine.platform.duckdb.connect", boom)
+    monkeypatch.setattr("kpi_engine.host_runtime.duckdb.connect", boom)
     monkeypatch.setattr("kpi_engine.core.model_sql.duckdb.connect", boom)
     try:
         result = compute(ctx, config_dir=config_dir, connection=connection)
@@ -60,7 +60,7 @@ def test_registered_host_getter_is_used_and_not_closed(parquet_path, config_dir,
         return host
 
     register_duckdb_getter(getter)
-    monkeypatch.setattr("kpi_engine.platform.duckdb.connect", lambda: (_ for _ in ()).throw(AssertionError("no local connect")))
+    monkeypatch.setattr("kpi_engine.host_runtime.duckdb.connect", lambda: (_ for _ in ()).throw(AssertionError("no local connect")))
     monkeypatch.setattr("kpi_engine.core.model_sql.duckdb.connect", lambda: (_ for _ in ()).throw(AssertionError("no extract connect")))
     try:
         result = compute(ctx, config_dir=config_dir)
@@ -83,7 +83,7 @@ def test_local_fallback_closes_the_session_it_opened(parquet_path, config_dir, m
         wrappers.append(wrap)
         return wrap
 
-    monkeypatch.setattr("kpi_engine.platform.duckdb.connect", tracking)
+    monkeypatch.setattr("kpi_engine.host_runtime.duckdb.connect", tracking)
     register_duckdb_getter(None)
     result = compute(ctx, config_dir=config_dir)
     assert result["rows"]
@@ -110,7 +110,7 @@ def test_bad_host_getter_spec_is_an_error(parquet_path, config_dir, monkeypatch)
     """A configured helper that cannot be imported fails loudly instead of silent local connect."""
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
     register_duckdb_getter(None)
-    monkeypatch.setattr("kpi_engine.platform.HOST_DUCKDB_GETTER", "not_a_real_pkg:get_connection")
+    monkeypatch.setattr("kpi_engine.host_runtime.HOST_DUCKDB_GETTER", "not_a_real_pkg:get_connection")
     try:
         compute(ctx, config_dir=config_dir)
     except KPIEngineError as exc:
@@ -202,7 +202,7 @@ def test_unbound_alias_scan_fails_at_compile(parquet_path, extra_config):
 def test_host_getter_spec_requires_module_and_function(parquet_path, config_dir, monkeypatch):
     """HOST_DUCKDB_GETTER must be module.path:function, not a bare name."""
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
-    monkeypatch.setattr("kpi_engine.platform.HOST_DUCKDB_GETTER", "just_a_module")
+    monkeypatch.setattr("kpi_engine.host_runtime.HOST_DUCKDB_GETTER", "just_a_module")
     try:
         compute(ctx, config_dir=config_dir)
     except KPIEngineError as exc:

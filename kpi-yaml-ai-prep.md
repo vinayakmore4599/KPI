@@ -154,7 +154,7 @@ Gold shape: `kpi_config/kpis/sotif/3004.yaml` — copy structure, not Sotif name
 
 ## 7. Rules that fail bind if ignored
 
-**Time.** Need `column` + `grain` plus one of `filter_code` / `periods:` / `compose:` (not `periods` and `compose` together). Scalar `filter_code` on the context = exactly one value and **wins**. `periods:` parts conjoin; missing part = not applied; lists = union. Month part accepts `3`, `"03"`, `March`, `Mar`. Never `WHERE month IN (one month)` for lookback — the engine scans a date range. `offset`/`trailing` calendar units (`days` `weeks` `months` `quarters` `years`) keep that meaning after a grain pick; `periods` / `from: data_points` follow the pick. Finer pick than `source_grain` fails. `time.timezone` rejected. Fiscal = quarter/year only (no fiscal weeks). Snapshot: no window/trend/nonzero offset/period hooks.
+**Time.** Need `column` + `grain` plus one of `filter_code` / `periods:` / `compose:` (not `periods` and `compose` together). Scalar `filter_code` on the context = exactly one value and **wins**. `periods:` parts conjoin; missing part = not applied; lists = union. Month part accepts `3`, `"03"`, `March`, `Mar`. Never `WHERE month IN (one month)` for lookback — the engine scans a date range. `offset`/`trailing` calendar units (`days` `weeks` `months` `quarters` `years`) keep that meaning after a grain pick; `periods` / `from: data_points` follow the pick. Finer pick than `source_grain` fails. `time.timezone` rejected. Fiscal = quarter/year only (no fiscal weeks). A host **year part** forces calendar Jan–Dec for year grain / ytd / full_year without moving fiscal quarters. Snapshot: no window/trend/nonzero offset/period hooks.
 
 **Cuts.** `group_by` = extras only. Effective grain = request dims − `exclude_from_grain` + extras. Dim-named `ignore_filters` must pair with `exclude_from_grain`. `measures.*.cuts` only limits trend/rank/`percent_of_total` (and other cut-phase ops). Trend default = `default_cut` (50k cells/cut). `output_cut` on the **context** is the also_emit walk root; YAML `default` does not lock; `pack_also_emit: false` emits only that root.
 
@@ -166,7 +166,9 @@ Gold shape: `kpi_config/kpis/sotif/3004.yaml` — copy structure, not Sotif name
 
 **Parameters.** Sibling of `filters`, not `execution.*`. Reserved: `time_grain`, `output_cut`. Overlay: `when: { param, cases, else }` (always `else:`) or `from_param:`. No `parameters:` block → reject a non-empty `context.parameters`. No `execution.time_grain`.
 
-**Nulls.** Engine never emits NaN/Inf. Point empty → null. Trend `sum`/`count` empty slot → `0`, else null. Dims not in a cut grain → `null` on the row.
+**Nulls.** Engine never emits NaN/Inf. Point empty → null. Trend `sum`/`count` empty slot → `0`, else null. Grain dims carry values. Rolled-up dims (in another emitted cut's grain, or `exclude_from_grain`) are `null` on that row. Other catalog dims are omitted.
+
+**Timed measures.** Point/lag `{value, period}`. Window/ytd `{value, period_start, period_end}`. Trend `[{period, value}, …]`. Rank, percent, constants, yoy/fn/expr stay scalars. `trend_axes` stays on the envelope.
 
 **Closed (do not invent YAML for):** timezone conversion, cross-KPI measure refs, hierarchy expansion, regex/JSON/geo/ML, result caching. Use a catalog hook, `kind: sql`, or the host instead.
 

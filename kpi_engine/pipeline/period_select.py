@@ -33,6 +33,7 @@ from kpi_engine.dates import (
     add_days,
     add_months,
     apply_offset,
+    fiscal_year_start,
     period_range_inclusive,
     quarter_start,
     truncate_period,
@@ -327,27 +328,31 @@ def _as_int(raw: Any, part: str) -> int:
 
 def _year_span(year: int, time: TimeSpec) -> tuple[date, date]:
     """First and last calendar day of calendar/fiscal year `year`."""
-    if time.calendar == "fiscal":
-        start = date(year, time.fiscal_start_month, 1)
-        last = add_days(add_months(start, 12), -1)
-        return start, last
-    return date(year, 1, 1), date(year, 12, 31)
+    from kpi_engine.dates import uses_calendar_year
+
+    if uses_calendar_year(time):
+        return date(year, 1, 1), date(year, 12, 31)
+    start = date(year, time.fiscal_start_month, 1)
+    last = add_days(add_months(start, 12), -1)
+    return start, last
 
 
 def _bucket_year(bucket: date, time: TimeSpec, *, iso: bool) -> int:
     """Year number used for the year part: ISO, fiscal-start, or calendar."""
+    from kpi_engine.dates import uses_calendar_year
+
     if iso:
         return bucket.isocalendar().year
-    if time.calendar == "fiscal":
-        return year_start(bucket, time).year
-    return bucket.year
+    if uses_calendar_year(time):
+        return bucket.year
+    return year_start(bucket, time).year
 
 
 def _bucket_quarter(bucket: date, time: TimeSpec) -> int:
     """1-4 quarter of `bucket` (fiscal when time.calendar is fiscal)."""
     start = quarter_start(bucket, time)
     if time.calendar == "fiscal":
-        fy = year_start(bucket, time)
+        fy = fiscal_year_start(bucket, time)
         months_in = (start.year - fy.year) * 12 + (start.month - fy.month)
         return months_in // 3 + 1
     return (start.month - 1) // 3 + 1
@@ -355,16 +360,18 @@ def _bucket_quarter(bucket: date, time: TimeSpec) -> int:
 
 def _sql_year_expr(time_expr: str, time: TimeSpec, *, iso: bool) -> str:
     """DuckDB integer year expression matching `_bucket_year`."""
+    from kpi_engine.dates import uses_calendar_year
+
     if iso:
         return f"CAST(date_part('isoyear', {time_expr}) AS INTEGER)"
-    if time.calendar == "fiscal":
-        start = int(time.fiscal_start_month)
-        return (
-            f"CAST(CASE WHEN date_part('month', {time_expr}) >= {start} "
-            f"THEN date_part('year', {time_expr}) "
-            f"ELSE date_part('year', {time_expr}) - 1 END AS INTEGER)"
-        )
-    return f"CAST(date_part('year', {time_expr}) AS INTEGER)"
+    if uses_calendar_year(time):
+        return f"CAST(date_part('year', {time_expr}) AS INTEGER)"
+    start = int(time.fiscal_start_month)
+    return (
+        f"CAST(CASE WHEN date_part('month', {time_expr}) >= {start} "
+        f"THEN date_part('year', {time_expr}) "
+        f"ELSE date_part('year', {time_expr}) - 1 END AS INTEGER)"
+    )
 
 
 def _sql_quarter_expr(time_expr: str, time: TimeSpec) -> str:

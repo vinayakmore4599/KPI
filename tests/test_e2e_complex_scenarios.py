@@ -327,7 +327,7 @@ def test_e2e_kitchen_sink_supplier_and_empty_grain(parquet_path, extra_config):
     assert empty["selected_dimensions"] == []
     g_sup = _pick(supplier, cut="G", supplier="ABC")
     assert g_sup["grouped_dimensions"] == ["supplier"]
-    assert g_sup["reason_code"] is None
+    assert g_sup.get("reason_code") is None
     assert g_sup["supplier"] == "ABC"
     _approx(g_sup["current_value"], 51.0)
     _approx(g_sup["value_3m"], 102.0)
@@ -347,8 +347,8 @@ def test_e2e_kitchen_sink_supplier_and_empty_grain(parquet_path, extra_config):
 
     g_empty = _pick(empty, cut="G")
     assert g_empty["grouped_dimensions"] == []
-    assert g_empty["reason_code"] is None
-    assert g_empty["region"] is None
+    assert g_empty.get("reason_code") is None
+    assert g_empty.get("region") is None
     _approx(g_empty["current_value"], 51.0)
     _approx(g_empty["value_3m"], 102.0)
     _approx(g_empty["percent_gt"], 100.0)
@@ -357,7 +357,7 @@ def test_e2e_kitchen_sink_supplier_and_empty_grain(parquet_path, extra_config):
     g_late = find_row(default, cut="G", reason="LATE_SUPPLIER")
     assert g_late["current_value"] != pytest.approx(g_sup["current_value"])
     assert set(g_late) >= set(KITCHEN_KEYS)
-    assert set(g_sup) >= set(KITCHEN_KEYS)
+    assert set(g_sup) >= set(KITCHEN_KEYS) - {"reason_code"}
 
 
 def test_e2e_rank_and_share_universe_follows_selected_dimensions(tmp_path, extra_config):
@@ -657,7 +657,7 @@ def test_e2e_two_model_windows_and_ratio_at_supplier(
     assert planned["sqls"] == result["sqls"]
     row = _pick(result, cut="G", supplier="ABC")
     assert row["grouped_dimensions"] == ["supplier"]
-    assert row["reason_code"] is None
+    assert row.get("reason_code") is None
     _approx(row["current_sotif"], 51.0)
     _approx(row["current_spend"], 100.0)
     _approx(row["sotif_3m"], 102.0)
@@ -695,7 +695,7 @@ def test_e2e_snapshot_selected_dimensions(parquet_path, extra_config):
     late = find_row(default, cut="G", reason="LATE_SUPPLIER")
     _approx(late["current_value"], float(abc.loc[abc["reason_code"] == "LATE_SUPPLIER", "amount"].sum()))
     g_sup = _pick(supplier, cut="G", supplier="ABC")
-    assert g_sup["reason_code"] is None
+    assert g_sup.get("reason_code") is None
     _approx(g_sup["current_value"], float(abc["amount"].sum()))
     g_all = _pick(empty, cut="G")
     _approx(g_all["current_value"], float(abc["amount"].sum()))

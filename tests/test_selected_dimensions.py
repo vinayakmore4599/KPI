@@ -334,7 +334,7 @@ def test_two_model_join_at_supplier(parquet_path, extra_config, tmp_path):
     row = next(r for r in result["rows"] if r["output_cut"] == "G")
     assert row["grouped_dimensions"] == ["supplier"]
     assert row["supplier"] == "ABC"
-    assert row["reason_code"] is None
+    assert row.get("reason_code") is None
     assert row["current_sotif"] == 51.0
     assert row["current_spend"] == 100.0
     assert row["spend_ratio"] == 0.51

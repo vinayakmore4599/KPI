@@ -211,3 +211,17 @@ class OpPlugin:
     ) -> None:
         """Write cut-phase results onto every row of one cut."""
         raise NotImplementedError(f"{self.name} does not implement apply_to_cut.")
+
+    def periods(
+        self,
+        spec: OutputSpec,
+        kpi: KpiSpec,
+        plan: TimePlan | None,
+    ) -> dict[str, Any] | None:
+        """Envelope period metadata for wrapping a scalar or trend after calc.
+
+        Return ``{"period": iso}``, ``{"period_start", "period_end"}``,
+        ``{"periods": [...]}``, or ``None`` when this kind does not select a
+        period of its own (rank, percent, constant, composite, snapshot).
+        """
+        return None

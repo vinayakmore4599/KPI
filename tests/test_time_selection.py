@@ -281,7 +281,7 @@ def test_g2_explicit_selection_collapses(parquet_path, extra_config):
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     assert g["current_value"] == 45.0
     assert len(g["trend_12m"]) == 12
-    assert len({v for v in g["trend_12m"] if v}) >= 3
+    assert len({item["value"] for item in g["trend_12m"] if item and item.get("value")}) >= 3
 
 
 def test_year_list_folds_both_years(parquet_path, extra_config):

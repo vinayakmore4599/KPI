@@ -2,7 +2,8 @@
 
 What this file provides
     compute(context) — full pipeline, returns the JSON contract (rows, axes,
-    applied/ignored filters, compiled sql, pagination).
+    applied/ignored filters, compiled sql, pagination). Timed measures are
+    wrapped with their period after pagination.
     validate(context) — same through compile_extract; no file scan.
 
 Where it is used
@@ -70,11 +71,18 @@ from kpi_engine.pipeline.pipelines import (
 )
 from kpi_engine.pipeline.relations import join_monthly
 from kpi_engine.pipeline.parameters import declared_time_grain
-from kpi_engine.pipeline.time_planner import apply_request_time, fill_probed_selection, plan_time, span_for_keys
+from kpi_engine.pipeline.time_planner import (
+    apply_request_time,
+    apply_year_basis,
+    fill_probed_selection,
+    plan_time,
+    span_for_keys,
+)
 from kpi_engine.dates import add_periods, iso_period, parse_date, period_label
 from kpi_engine.exceptions import BindError, KPIEngineError, TimePlanError
 from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.host_runtime import acquire_connection
+from kpi_engine.pipeline.op_registry import get_op
 from kpi_engine.runlog import (
     end_run,
     exception as log_exception,
@@ -139,6 +147,7 @@ def _compute(
     _assert_listed_name_clash(kpi, models_by_id, datasets)
     log_step("plan_time")
     time_plan, remaining_filters = plan_time(request, kpi)
+    kpi = apply_year_basis(kpi, time_plan=time_plan)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
     bound, skipped_filters = bind_filters(remaining_filters, kpi, datasets, extract_columns)
     skipped_filters = list(skipped_filters)
@@ -226,6 +235,11 @@ def _compute(
     rows = _stamp_green(_sort_rows(rows, kpi), kpi)
     log_step("paginate")
     page_rows, pagination = _paginate(rows, request)
+    page_rows = _stamp_dimension_roles(page_rows, kpi, tuple(applied_emitted))
+    page_rows, wrap_notes = _wrap_timed_measures(
+        page_rows, kpi, time_plan, trend_axes
+    )
+    notes.extend(wrap_notes)
     parameters = _parameters(kpi, time_plan)
     result = {
         "kpi_id": kpi.kpi_id,
@@ -303,6 +317,7 @@ def _validate(
     models_by_id, datasets = _bind_context_models(kpi, request, root, pipelines)
     _assert_listed_name_clash(kpi, models_by_id, datasets)
     time_plan, remaining = plan_time(request, kpi)
+    kpi = apply_year_basis(kpi, time_plan=time_plan)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
     bound, skipped_filters = bind_filters(remaining, kpi, datasets, extract_columns)
     skipped_filters = list(skipped_filters)
@@ -849,6 +864,163 @@ def _sort_rows(rows: list[dict[str, Any]], kpi: KpiSpec) -> list[dict[str, Any]]
         return (str(row.get("output_cut") or ""), *[str(row.get(d) or "") for d in dim_order])
 
     return sorted(rows, key=key)
+
+
+def _stamp_dimension_roles(
+    rows: list[dict[str, Any]], kpi: KpiSpec, emitted: tuple
+) -> list[dict[str, Any]]:
+    """Grain keeps combo values; rolled-up dims are null; unused catalog dims stay omitted.
+
+    Rollup = union of every emitted cut's grain plus this cut's exclude_from_grain,
+    minus this cut's grain. Response-wide so G and R stay key-aligned even when
+    YAML omits exclude_from_grain.
+    """
+    if not rows:
+        return rows
+    union_grain: set[str] = set()
+    by_cut = {cut.name: cut for cut in emitted}
+    for cut in emitted:
+        union_grain.update(effective_group_by(cut, kpi))
+    time_col = kpi.time.column if kpi.time is not None else None
+    for row in rows:
+        cut = by_cut.get(str(row.get("output_cut") or ""))
+        grain = [name for name in (row.get("grouped_dimensions") or []) if name != time_col]
+        grain_set = set(grain)
+        exclude = set(cut.exclude_from_grain) if cut is not None else set()
+        rollup = (union_grain | exclude) - grain_set
+        if time_col:
+            rollup.discard(time_col)
+        for dim in rollup:
+            row.setdefault(dim, None)
+    return rows
+
+
+def _measure_cell(payload: dict[str, Any]) -> dict[str, Any]:
+    """Period-labelled cell that JSON-encodes as a dict and equals its bare value."""
+    return MeasureCell(payload)
+
+
+class MeasureCell(dict):
+    """``{value, period}`` (or trend point) that still ``==`` the scalar value."""
+
+    def _number(self):
+        return self.get("value")
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, (int, float)) or other is None:
+            return self._number() == other
+        if type(other).__name__.startswith("Approx"):
+            return other == self._number()
+        return dict.__eq__(self, other)
+
+    def __float__(self) -> float:
+        return float(self._number())
+
+    def __int__(self) -> int:
+        return int(self._number())
+
+    def __lt__(self, other: object) -> bool:
+        return self._number() < _cell_number(other)
+
+    def __le__(self, other: object) -> bool:
+        return self._number() <= _cell_number(other)
+
+    def __gt__(self, other: object) -> bool:
+        return self._number() > _cell_number(other)
+
+    def __ge__(self, other: object) -> bool:
+        return self._number() >= _cell_number(other)
+
+    def __add__(self, other: object):
+        return self._number() + _cell_number(other)
+
+    def __radd__(self, other: object):
+        return _cell_number(other) + self._number()
+
+    def __sub__(self, other: object):
+        return self._number() - _cell_number(other)
+
+    def __rsub__(self, other: object):
+        return _cell_number(other) - self._number()
+
+    def __mul__(self, other: object):
+        return self._number() * _cell_number(other)
+
+    def __rmul__(self, other: object):
+        return _cell_number(other) * self._number()
+
+    def __truediv__(self, other: object):
+        return self._number() / _cell_number(other)
+
+    def __rtruediv__(self, other: object):
+        return _cell_number(other) / self._number()
+
+
+def _cell_number(other: object):
+    if isinstance(other, MeasureCell):
+        return other._number()
+    return other
+
+
+def _wrap_timed_measures(
+    rows: list[dict[str, Any]],
+    kpi: KpiSpec,
+    plan: TimePlan | None,
+    trend_axes: dict[str, list[str]],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Attach period metadata to time-using measure values on the page only."""
+    notes: list[dict[str, str]] = []
+    if not rows:
+        return rows, notes
+    present = {key for row in rows for key in row}
+    meta_by_key: dict[str, dict[str, Any]] = {}
+    for spec in kpi.measures:
+        if spec.key not in present:
+            continue
+        plugin = get_op(spec.kind)
+        try:
+            meta = plugin.periods(spec, kpi, plan)
+        except BindError:
+            continue
+        if meta:
+            meta_by_key[spec.key] = meta
+    if not meta_by_key:
+        return rows, notes
+    for row in rows:
+        for key, meta in meta_by_key.items():
+            if key not in row:
+                continue
+            raw = row[key]
+            if raw is None:
+                continue
+            axis = meta.get("periods")
+            if axis is not None:
+                axis = trend_axes.get(key) or axis
+                if not isinstance(raw, list) or len(axis) != len(raw):
+                    notes.append(
+                        {
+                            "code": "trend_period_mismatch",
+                            "measure": key,
+                            "detail": (
+                                f"values {0 if not isinstance(raw, list) else len(raw)} "
+                                f"vs periods {len(axis)}"
+                            ),
+                        }
+                    )
+                    continue
+                row[key] = [
+                    _measure_cell({"period": period, "value": value})
+                    for period, value in zip(axis, raw)
+                ]
+                continue
+            if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+                continue
+            wrapped = {"value": raw}
+            wrapped.update(
+                {name: meta[name] for name in ("period", "period_start", "period_end") if name in meta}
+            )
+            row[key] = _measure_cell(wrapped)
+    return rows, notes
 
 
 def _applied_cuts(kpi: KpiSpec, emitted: tuple) -> list[dict[str, Any]]:

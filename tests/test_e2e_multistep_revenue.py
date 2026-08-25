@@ -395,7 +395,7 @@ def test_e2e_net_revenue_region_and_worldwide_grains(tmp_path, extra_config):
     na_e = next(r for r in region_exp if r["region"] == "NA")
     eu_e = next(r for r in region_exp if r["region"] == "EU")
     assert na["grouped_dimensions"] == ["region"]
-    assert na["product_category"] is None
+    assert na.get("product_category") is None
     _approx_row(na, na_e, ["total_final_revenue", "avg_order_value", "order_count", "max_single_order"])
     assert na["revenue_rank"] == 1
     assert eu["revenue_rank"] == 2
@@ -415,7 +415,7 @@ def test_e2e_net_revenue_region_and_worldwide_grains(tmp_path, extra_config):
 
     world = worldwide["rows"][0]
     assert world["grouped_dimensions"] == []
-    assert world["region"] is None
+    assert world.get("region") is None
     _approx_row(world, world_exp[0], ["total_final_revenue", "avg_order_value", "order_count"])
     assert world["revenue_rank"] == 1
     assert world["clears_floor"] == 1.0

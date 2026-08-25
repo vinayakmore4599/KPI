@@ -554,7 +554,7 @@ value_next_3m:
 | `mtd` / `qtd` / `ytd` / `wtd` | calendar period start through the reference (`cumulative` = `ytd`; `wtd` needs the **effective** grain `day`) |
 | `full_month` / `full_quarter` / `full_year` | whole calendar period containing the reference |
 
-`offset` on a window shifts the reference **backwards**, then the range is applied. Named PTD / `full_*` ranges stay calendar and do not change meaning when the grain pick changes (`qtd` is still quarter-to-date; month + `qtd` is valid). `wtd` binds when `day` is allowed and fails at evaluate unless the pick is `day`. Named ranges cannot also set `trailing:`. `inclusive` applies only to trailing/leading. Fiscal vs calendar follows `time.calendar`.
+`offset` on a window shifts the reference **backwards**, then the range is applied. Named PTD / `full_*` ranges stay calendar and do not change meaning when the grain pick changes (`qtd` is still quarter-to-date; month + `qtd` is valid). `wtd` binds when `day` is allowed and fails at evaluate unless the pick is `day`. Named ranges cannot also set `trailing:`. `inclusive` applies only to trailing/leading. Fiscal vs calendar follows `time.calendar`, except a host **year part** forces calendar Jan–Dec for `ytd` / `full_year` / year grain.
 
 | `inclusive` | Trailing window | With anchor March |
 |---|---|---|
@@ -576,7 +576,7 @@ trend_12m:
   cuts: [G]                # optional; default is default_cut only
 ```
 
-- Returns a fixed-length array; the shared x-axis is in `trend_axes` (ISO period starts) and `trend_labels` (fixed English: `23 Mar`, `2026-W30`, `Jul 2026`, `2026-Q1`, `2026`). Same keys and lengths. Labels are unique enough for a chart and are not locale-dependent.
+- Returns a list of `{period, value}` objects, one per grain step. The shared x-axis is still in `trend_axes` (ISO period starts) and `trend_labels` (fixed English: `23 Mar`, `2026-W30`, `Jul 2026`, `2026-Q1`, `2026`). Same keys and lengths. Labels are unique enough for a chart and are not locale-dependent.
 - A period with no rows keeps its slot: `0` for `sum`/`count`, `null` for everything else.
 - Trends are emitted **only on the default cut** unless `cuts:` lists more. This is deliberate — a trend on a high-cardinality cut multiplies the payload.
 - Guardrail: rows × array length may not exceed **50,000 cells** per cut, otherwise the request fails and asks you to narrow `cuts`.
@@ -872,7 +872,7 @@ Undeclared context codes stay `IN` at extract, unless an emitted cut lists them 
 
 **All row filters are non-binding (breaking vs empty `IN` = FALSE).** Omit the key, send `[]`, or send all-null comparison values → skip; the key appears on `skipped_filters` when it was present but blank. `[""]`, `["ALL"]`, `["*"]` are real predicates. `optional: true` is accepted and ignored. `optional: false` is a bind error. `is_null` / `is_not_null` apply when the key is **present** (omit the key to skip). Row-filter `compose` with a missing or blank part skips; time `compose` still errors if a placeholder is missing. A scalar `time.filter_code` still requires exactly one value when the key is present. Missing period parts are not applied.
 
-`apply: result` may name **dimension** columns on the output row only, not measure keys. Dimensions not in a cut's effective grain are `null` on that cut. A result `IN` on those fields is skipped (`not_in_grain`) rather than hiding the cut by matching stamped null. G worldwide is `default_dimensions: [reason_code]` plus `exclude_from_grain: [region]` / `ignore_filters: [region]`; `selected_dimensions: []` makes G's grain empty.
+`apply: result` may name **dimension** columns on the output row only, not measure keys. Dimensions not in a cut's effective grain are omitted unless they are rolled up (`null` sentinel). A result `IN` on fields outside the grain is skipped (`not_in_grain`) rather than hiding the cut by matching a stamped null. G worldwide is `default_dimensions: [reason_code]` plus `exclude_from_grain: [region]` / `ignore_filters: [region]`; `selected_dimensions: []` makes G's grain empty.
 
 ### Operators (all three `apply` stages)
 
@@ -1348,7 +1348,7 @@ pytest -q
 Known boundaries, so you do not design around something that is not there:
 
 - Timestamps are bucketed as stored; there is no timezone conversion, and `time.timezone` is rejected at bind rather than silently ignored. Convert the column in a `kind: sql` model if you need it.
-- `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months. There is no fiscal-week grain (DAX has none either).
+- `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months. There is no fiscal-week grain (DAX has none either). When the host sends a **year part**, year grain / `ytd` / `full_year` / year-part spans are calendar January–December (`TimeSpec.year_basis=calendar`) without moving fiscal quarters.
 - Regex, JSON, geospatial, ML, timezone conversion, result caching, hierarchy expansion, and cross-KPI measure references remain architecture boundaries: hooks, `kind: sql` models, or the host.
 - `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) do not change meaning when `parameters.time_grain` changes. `periods` and `from: data_points` follow the pick (§5.2).
 - `over:` detail is capped at 500,000 rows and 50,000 partitions; densify trends still use the 50,000 cell cap. Larger extracts fail fast — narrow filters, coarsen retrieve, or pre-aggregate in a SQL model.

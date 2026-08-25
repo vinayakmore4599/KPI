@@ -90,21 +90,17 @@ def test_the_time_filter_is_never_reported_as_an_in_filter(parquet_path, config_
     assert result["parameters"]["anchor"] == "2026-03-01"
 
 
-def test_rows_carry_every_dimension_with_null_for_ungrouped_ones(parquet_path, config_dir):
-    """A stable row shape lets the caller build one table across cuts."""
+def test_rows_stamp_grain_values_and_rollup_nulls(parquet_path, config_dir):
+    """Grain dims have values; rolled-up dims are null; unused catalog dims are omitted."""
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
     rows = compute(ctx, config_dir=config_dir)["rows"]
     for row in rows:
-        assert set(row) == {
-            "output_cut",
-            "grouped_dimensions",
-            "reason_code",
-            "region",
-            "supplier",
-            "current_value",
-            "model",
-        }
+        assert "reason_code" in row
+        assert "supplier" not in row
         assert row["model"] == "sotif"
+        cell = row["current_value"]
+        assert isinstance(cell, dict)
+        assert "value" in cell and "period" in cell
     g_rows = [r for r in rows if r["output_cut"] == "G"]
     assert all(r["region"] is None for r in g_rows)
     assert all(r["grouped_dimensions"] == ["reason_code"] for r in g_rows)
@@ -155,7 +151,7 @@ def test_response_is_json_serializable_without_nan(parquet_path, config_dir):
     assert "NaN" not in encoded
     for row in result["rows"]:
         for value in row.values():
-            assert type(value) in (str, float, int, list, type(None)), value
+            assert isinstance(value, (str, float, int, list, dict, bool, type(None))), value
 
 
 def test_compute_is_deterministic_and_leaves_the_context_untouched(parquet_path, config_dir):

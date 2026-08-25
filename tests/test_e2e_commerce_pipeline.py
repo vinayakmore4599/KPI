@@ -551,7 +551,7 @@ def test_e2e_commerce_customer_windows_by_order_date(tmp_path, extra_config):
     o2 = _pick(result, customer_id="C1", order_id="O2")
     o3 = _pick(result, customer_id="C1", order_id="O3")
     assert o1["grouped_dimensions"] == ["customer_id", "order_id"]
-    assert o1["region"] is None
+    assert o1.get("region") is None
     _approx(o1["order_sequence_num"], 1, "seq")
     _approx(o2["order_sequence_num"], 2, "seq")
     _approx(o3["order_sequence_num"], 3, "seq")
@@ -585,7 +585,7 @@ def test_e2e_commerce_region_rollup_and_partition_bind(tmp_path, extra_config):
     na_e = next(row for row in expected if row["region"] == "NA")
     eu_e = next(row for row in expected if row["region"] == "EU")
     assert na["grouped_dimensions"] == ["region"]
-    assert na["product_category"] is None
+    assert na.get("product_category") is None
     _approx(na["total_revenue"], na_e["total_revenue"], "na_rev")
     _approx(na["total_profit"], na_e["total_profit"], "na_profit")
     _approx(na["order_count"], na_e["order_count"], "na_n")

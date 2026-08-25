@@ -3,7 +3,8 @@
 What this file provides
     partition_request — one pipeline per extract model, or one joined pipeline
     when a requested measure graph spans models.
-    cuts_for_keys, compatible_cuts, available_extract_columns, pad_result_rows.
+    pad_result_rows — stamp model and null-fill measures from other extracts
+    (dimension keys stay as calc stamped them).
 
 Where it is used
     orchestrator compute/validate.
@@ -193,11 +194,10 @@ def pad_result_rows(
     requested: tuple[str, ...],
     model_id: str,
 ) -> list[dict]:
-    """Stamp model, fill KPI dimensions, and null-fill measures from other extracts."""
+    """Stamp model and null-fill measures from other extracts. Dims stay as stamped."""
+    _ = kpi
     for row in rows:
         row["model"] = model_id
-        for dim in kpi.dimensions:
-            row.setdefault(dim, None)
         row.setdefault("grouped_dimensions", [])
         for key in requested:
             if key not in row:

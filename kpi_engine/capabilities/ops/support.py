@@ -220,6 +220,86 @@ def window_lookforward_periods(spec: OutputSpec, time, anchor) -> int:
     return periods_between(ref_anchor, end, time)
 
 
+def _plan_selection_periods(plan: TimePlan | None) -> tuple[date, ...]:
+    """Request buckets: explicit selection, else the single anchor."""
+    if plan is None:
+        return ()
+    if plan.selection is not None and plan.selection.periods:
+        return tuple(plan.selection.periods)
+    if plan.anchor is not None:
+        return (plan.anchor,)
+    return ()
+
+
+def _offset_shifts(offset) -> bool:
+    if offset is None:
+        return False
+    return bool(
+        offset.months or offset.years or offset.days or offset.quarters or offset.weeks
+    )
+
+
+def shift_period_meta(
+    spec: OutputSpec,
+    kpi: KpiSpec,
+    plan: TimePlan | None,
+    *,
+    backward: bool = True,
+) -> dict[str, Any] | None:
+    """``{period}`` for point / lag / lead after applying the measure offset."""
+    if kpi.time is None or plan is None:
+        return None
+    from kpi_engine.pipeline.period_select import negate_offset, shift_selection
+
+    periods = _plan_selection_periods(plan)
+    if spec.offset and _offset_shifts(spec.offset):
+        offset = negate_offset(spec.offset) if backward else spec.offset
+        periods = shift_selection(periods, offset, kpi.time)
+    if not periods:
+        return None
+    return {"period": iso_period(periods[-1], kpi.time)}
+
+
+def window_period_meta(
+    spec: OutputSpec, kpi: KpiSpec, plan: TimePlan | None
+) -> dict[str, Any] | None:
+    """``{period_start, period_end}`` for window / ytd / full_* / windowed hooks."""
+    if kpi.time is None or plan is None:
+        return None
+    sel = _plan_selection_periods(plan)
+    if not sel:
+        return None
+    start, end = window_bounds(sel[-1], spec, kpi)
+    return {
+        "period_start": iso_period(start, kpi.time),
+        "period_end": iso_period(end, kpi.time),
+    }
+
+
+def trend_period_meta(
+    spec: OutputSpec, kpi: KpiSpec, plan: TimePlan | None
+) -> dict[str, Any] | None:
+    """``{periods: [...]}`` aligned to ``trend_values`` (from the request anchor)."""
+    if kpi.time is None or plan is None or plan.anchor is None:
+        return None
+    start, end = window_bounds(plan.anchor, spec, kpi)
+    axis = [iso_period(d, kpi.time) for d in period_range_inclusive(start, end, kpi.time)]
+    if not axis:
+        return None
+    return {"periods": axis}
+
+
+def hook_period_meta(
+    spec: OutputSpec, kpi: KpiSpec, plan: TimePlan | None
+) -> dict[str, Any] | None:
+    """Window metadata when the hook has a range/trailing; else a shifted point."""
+    if spec.window_range or spec.trailing_months or spec.trailing_from:
+        return window_period_meta(spec, kpi, plan)
+    if _offset_shifts(spec.offset):
+        return shift_period_meta(spec, kpi, plan, backward=True)
+    return None
+
+
 def assert_window_range(spec: OutputSpec, kpi: KpiSpec) -> None:
     """Reject illegal range + trailing / grain combinations."""
     kind = spec.window_range or "trailing"

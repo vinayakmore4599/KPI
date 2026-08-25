@@ -544,6 +544,10 @@ def _time_bucket_expr(
     casted = duckdb_parse_time_sql(ident, kpi.time.format)
     grain = kpi.time.grain
     if kpi.time.calendar == "fiscal" and grain in {"quarter", "year"}:
+        from kpi_engine.dates import uses_calendar_year
+
+        if grain == "year" and uses_calendar_year(kpi.time):
+            return f"CAST(date_trunc('year', {casted}) AS DATE)"
         shift = kpi.time.fiscal_start_month - 1
         if grain == "year":
             return (

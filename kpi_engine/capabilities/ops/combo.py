@@ -118,6 +118,9 @@ class Point(OpPlugin):
         )
         return value
 
+    def periods(self, spec, kpi, plan):
+        return support.shift_period_meta(spec, kpi, plan, backward=True)
+
 
 class Window(OpPlugin):
     name = "window"
@@ -163,6 +166,9 @@ class Window(OpPlugin):
         )
         return value
 
+    def periods(self, spec, kpi, plan):
+        return support.window_period_meta(spec, kpi, plan)
+
 
 class Trend(OpPlugin):
     name = "trend"
@@ -197,6 +203,9 @@ class Trend(OpPlugin):
             combo=ctx.combo,
             group_dims=ctx.group_dims,
         )
+
+    def periods(self, spec, kpi, plan):
+        return support.trend_period_meta(spec, kpi, plan)
 
 
 class Arithmetic(OpPlugin):
@@ -564,6 +573,9 @@ class Hook(OpPlugin):
             cut=ctx.cut, key=ctx.spec.key, op="hook", combo=_combo(ctx), result=value, hook=name
         )
         return value
+
+    def periods(self, spec, kpi, plan):
+        return support.hook_period_meta(spec, kpi, plan)
 
 
 def _dep_keys(spec: OutputSpec) -> list[str]:

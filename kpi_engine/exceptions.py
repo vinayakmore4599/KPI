@@ -41,3 +41,7 @@ class TimePlanError(KPIEngineError):
 
 class CatalogError(KPIEngineError):
     """An output op is illegal, unknown, or cannot be composed."""
+
+
+class CalcError(KPIEngineError):
+    """Calculation produced an illegal row (missing grain key, broken combo)."""

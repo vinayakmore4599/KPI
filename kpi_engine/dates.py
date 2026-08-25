@@ -13,6 +13,7 @@ Where it is used
 
 Capabilities
     Default calendar is gregorian. Fiscal uses time.fiscal_start_month (April=4).
+    time.year_basis=calendar forces Jan–Dec years without moving fiscal quarters.
 
 When to use
     Any period math. Do not use datetime.today() or context.business_date.
@@ -143,9 +144,9 @@ def truncate_period(value: date, time: TimeSpec) -> date:
     if grain == "month":
         return date(day.year, day.month, 1)
     if grain == "year":
-        if time.calendar == "fiscal":
-            return _fiscal_year_start(day, time.fiscal_start_month)
-        return date(day.year, 1, 1)
+        if uses_calendar_year(time):
+            return date(day.year, 1, 1)
+        return _fiscal_year_start(day, time.fiscal_start_month)
     if grain == "quarter":
         if time.calendar == "fiscal":
             return _fiscal_quarter_start(day, time.fiscal_start_month)
@@ -240,12 +241,30 @@ def periods_between(start: date, end: date, time: TimeSpec) -> int:
     return n
 
 
+def uses_calendar_year(time: TimeSpec) -> bool:
+    """True when year grain / ytd / full_year / year-part spans are Jan–Dec.
+
+    ``year_basis=calendar`` (set when the host sends a year part) wins over
+    ``calendar: fiscal``. Quarters still follow ``time.calendar``.
+    """
+    if time.year_basis == "calendar":
+        return True
+    if time.year_basis == "fiscal":
+        return False
+    return time.calendar != "fiscal"
+
+
 def year_start(anchor: date, time: TimeSpec) -> date:
-    """First day of the calendar or fiscal year that contains the anchor."""
+    """First day of the (possibly calendar-overridden) year that contains the anchor."""
     day = parse_date(anchor)
-    if time.calendar == "fiscal":
-        return _fiscal_year_start(day, time.fiscal_start_month)
-    return date(day.year, 1, 1)
+    if uses_calendar_year(time):
+        return date(day.year, 1, 1)
+    return _fiscal_year_start(day, time.fiscal_start_month)
+
+
+def fiscal_year_start(anchor: date, time: TimeSpec) -> date:
+    """First day of the fiscal year containing `anchor`, ignoring year_basis."""
+    return _fiscal_year_start(parse_date(anchor), time.fiscal_start_month)
 
 
 def month_start(anchor: date) -> date:
@@ -339,7 +358,7 @@ def period_label(value: date, time: TimeSpec | None = None) -> str:
     if time.grain == "quarter":
         start = quarter_start(d, time)
         if time.calendar == "fiscal":
-            fy = year_start(d, time)
+            fy = fiscal_year_start(d, time)
             months_in = (start.year - fy.year) * 12 + (start.month - fy.month)
             q = months_in // 3 + 1
             return f"{fy.year}-Q{q}"

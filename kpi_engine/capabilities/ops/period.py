@@ -194,6 +194,9 @@ class Lag(_Shift):
         )
         return value
 
+    def periods(self, spec, kpi, plan):
+        return support.shift_period_meta(spec, kpi, plan, backward=True)
+
 
 class Lead(_Shift):
     name = "lead"
@@ -219,6 +222,9 @@ class Lead(_Shift):
             period=target,
         )
         return value
+
+    def periods(self, spec, kpi, plan):
+        return support.shift_period_meta(spec, kpi, plan, backward=False)
 
 
 class Index(_Shift):

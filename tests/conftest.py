@@ -32,6 +32,31 @@ from kpi_engine.contracts import CutSpec
 from kpi_engine.dates import month_range_inclusive
 
 
+_orig_approx = pytest.approx
+
+
+def _unwrap_for_approx(expected: Any) -> Any:
+    """Let pytest.approx compare the number inside a period-labelled cell."""
+    if isinstance(expected, dict) and "value" in expected:
+        return expected["value"]
+    if (
+        isinstance(expected, list)
+        and expected
+        and isinstance(expected[0], dict)
+        and "value" in expected[0]
+    ):
+        return [item.get("value") for item in expected]
+    return expected
+
+
+def approx(expected, *args, **kwargs):
+    """pytest.approx that unwraps {value, period} measure cells."""
+    return _orig_approx(_unwrap_for_approx(expected), *args, **kwargs)
+
+
+pytest.approx = approx
+
+
 @pytest.fixture(autouse=True)
 def _redirect_kpi_logs(tmp_path_factory, monkeypatch):
     """Keep per-run log files out of the repo during tests."""
@@ -184,6 +209,25 @@ def find_row(
     assert matches, result["rows"]
     assert len(matches) == 1, matches
     return matches[0]
+
+
+def value_of(row: dict, key: str) -> Any:
+    """Unwrap a time-labelled measure cell to the scalar or trend value list.
+
+    Point/window cells are ``{value, period...}``. Trends are
+    ``[{period, value}, ...]``. Cut-phase and composite measures stay scalars.
+    """
+    cell = row.get(key)
+    if isinstance(cell, dict) and "value" in cell:
+        return cell["value"]
+    if (
+        isinstance(cell, list)
+        and cell
+        and isinstance(cell[0], dict)
+        and "value" in cell[0]
+    ):
+        return [item.get("value") for item in cell]
+    return cell
 
 
 def make_context(

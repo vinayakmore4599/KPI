@@ -14,6 +14,7 @@ Capabilities
     - Trends, rank, and percent_of_total default to default_cut unless measures.*.cuts lists more.
     - row_set: span_union keeps combos seen anywhere in the span; anchor_only
       keeps only combos observed at the selected period.
+    - Rows stamp only the cut's grain dimensions; unused catalog dims are omitted.
 
 When to use
     Engine bugs (spine, cut loop, dispatch). New kinds go in capabilities/ops/
@@ -41,7 +42,7 @@ from kpi_engine.pipeline.model_sql import NON_ADDITIVE
 from kpi_engine.pipeline.op_protocol import EvalCtx
 from kpi_engine.pipeline.op_registry import get_op
 from kpi_engine.dates import period_range_inclusive
-from kpi_engine.exceptions import BindError, CatalogError, KPIEngineError
+from kpi_engine.exceptions import BindError, CalcError, CatalogError, KPIEngineError
 from kpi_engine.identifiers import match_name
 from kpi_engine.runlog import traced
 
@@ -310,6 +311,7 @@ def _evaluate_combos(
 ) -> list[dict[str, Any]]:
     cut_rows: list[dict[str, Any]] = []
     time_col = kpi.time.column if kpi.time else ""
+    _ = dim_keys
     for _, combo in combo_frame.iterrows():
         series = _combo_series(cut_monthly, group_dims, combo, time_col)
         memo: dict[str, Any] = {}
@@ -317,14 +319,12 @@ def _evaluate_combos(
             "output_cut": cut.name,
             "grouped_dimensions": list(group_dims),
         }
-        for dim in kpi.dimensions:
-            if dim in group_dims:
-                row[dim] = _json_value(combo[dim]) if dim in combo.index else None
-            else:
-                row[dim] = None
-        for key in dim_keys:
-            if key not in row:
-                row[key] = row.get(key)
+        for dim in group_dims:
+            if dim not in combo.index:
+                raise CalcError(
+                    f"Cut {cut.name!r} grain dimension {dim!r} is missing from the combo."
+                )
+            row[dim] = _json_value(combo[dim])
         for key in need:
             spec = measures[key]
             plugin = get_op(spec.kind)

@@ -2,6 +2,7 @@
 
 What this file provides
     plan_time, claim_month_filter, max_lookback_months, lookback_for.
+    apply_year_basis — host year part forces calendar Jan–Dec years.
 
 Where it is used
     orchestrator after YAML bind. validate() uses it to report span_start
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date
+from typing import Any, Mapping
 
 from kpi_engine.contracts import (
     GRAIN_RANK,
@@ -56,6 +58,27 @@ from kpi_engine.exceptions import BindError, TimePlanError
 from kpi_engine.runlog import traced
 
 
+def apply_year_basis(
+    kpi: KpiSpec,
+    *,
+    parts: Mapping[str, Any] | None = None,
+    time_plan: TimePlan | None = None,
+) -> KpiSpec:
+    """Force Jan–Dec years when the host sent a year part. Quarters stay fiscal."""
+    if kpi.time is None:
+        return kpi
+    has_year = False
+    if parts and "year" in parts and parts["year"]:
+        has_year = True
+    elif time_plan is not None and time_plan.selection is not None:
+        has_year = any(
+            name == "year" and values for name, values in time_plan.selection.parts
+        )
+    if not has_year or kpi.time.year_basis == "calendar":
+        return kpi
+    return replace(kpi, time=replace(kpi.time, year_basis="calendar"))
+
+
 @traced
 def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, tuple[IncomingFilter, ...]]:
     """Claim the time filter as a selection, compute required_span, return remaining filters.
@@ -72,6 +95,7 @@ def plan_time(request: AdaptedRequest, kpi: KpiSpec) -> tuple[TimePlan | None, t
 
     if kpi.time.periods:
         parts, rest = read_period_parts(request.filters, kpi.time.periods)
+        kpi = apply_year_basis(kpi, parts=parts)
         return _parts_plan(kpi, parts, rest, keys), rest
 
     if template:

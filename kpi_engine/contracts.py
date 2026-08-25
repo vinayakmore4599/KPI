@@ -41,6 +41,7 @@ AggName = Literal[
     "mode",
 ]
 GrainName = Literal["day", "week", "month", "quarter", "year"]
+YearBasis = Literal["inherit", "calendar", "fiscal"]
 GRAIN_NAMES = frozenset({"day", "week", "month", "quarter", "year"})
 GRAIN_RANK = {"day": 0, "week": 1, "month": 2, "quarter": 3, "year": 4}
 # Open set: any name enabled in registries/ops.yaml.
@@ -218,6 +219,7 @@ class TimeSpec:
     filter_code: str
     calendar: str = "gregorian"
     fiscal_start_month: int = 4
+    year_basis: YearBasis = "inherit"
     format: str | None = None
     compose_template: str | None = None
     source_grain: GrainName | None = None

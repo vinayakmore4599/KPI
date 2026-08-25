@@ -381,10 +381,12 @@ flowchart LR
   RF --> GR["_stamp_green"]
   GR --> SORT["_sort_rows"]
   SORT --> PAGE["_paginate"]
-  PAGE --> JSON["Response dict"]
+  PAGE --> DIM["_stamp_dimension_roles"]
+  DIM --> WRAP["_wrap_timed_measures"]
+  WRAP --> JSON["Response dict"]
 ```
 
-Null `page_size` means return all rows. Sort is deterministic before pagination.
+Null `page_size` means return all rows. Sort is deterministic before pagination. Dimension roles and period wrapping run on the page only.
 
 Response fields (see `orchestrator._compute`):
 
@@ -402,7 +404,18 @@ Response fields (see `orchestrator._compute`):
 | `pagination` | `page`, `page_size`, `total_count`, `has_more` |
 | `notes` / `grain_warnings` / `meta` | Probe notes, unobserved anchor, YAML meta |
 
-Engine never emits NaN/Inf. Empty point → `null`. Trend `sum`/`count` empty slot → `0`, else `null`. Dimensions not in a cut’s grain → `null` on that row.
+Engine never emits NaN/Inf. Empty point → `null`. Trend `sum`/`count` empty slot → `0`, else `null`.
+
+**Dimension roles on a row.** Grain dims (the cut's `grouped_dimensions`) carry the combo value. Dims in another emitted cut's grain, or in this cut's `exclude_from_grain`, stay on the row as `null` (the global/rollup sentinel — `region: null` on G means worldwide). Catalog dims in neither set are omitted. A genuine source NULL on a grain dim is also JSON `null`, but that name is listed in `grouped_dimensions`.
+
+**Time-using measures** are objects, not bare numbers:
+
+- point / lag / lead: `{ "value": 45, "period": "2026-03-01" }`
+- window / ytd / full_*: `{ "value": 120, "period_start": "2026-01-01", "period_end": "2026-03-01" }`
+- trend: `[ { "period": "2025-04-01", "value": 4 }, … ]` (same length/order as `trend_axes[key]`)
+- rank, `percent_of_total`, constants, and composites (`yoy`, `fn`, `expr`) stay scalars.
+
+When the host sends a **year part**, year grain / `ytd` / `full_year` / year-part spans are calendar January–December even if `time.calendar` is `fiscal`. Fiscal quarters stay fiscal.
 
 ---
 
@@ -624,7 +637,7 @@ Config files at this step: `kpi_config/kpis/…` (math) and `kpi_config/models/�
 
 ### 19.9 JSON out
 
-Still `orchestrator.py`: result filters, `_stamp_green`, sort, paginate, attach `sql`/`sqls`, filter metadata, `trend_axes`, `notes`.
+Still `orchestrator.py`: result filters, `_stamp_green`, sort, paginate, stamp dimension roles, wrap timed measures, attach `sql`/`sqls`, filter metadata, `trend_axes`, `notes`.
 
 ---
 

@@ -4,7 +4,7 @@ This document is the working architecture for a reusable, config-driven KPI engi
 
 It supersedes earlier drafts. Decisions recorded here are locked unless explicitly marked as a recommendation.
 
-Authoring docs that follow this architecture: [README.md](README.md), [kpi-onboarding-guide.md](kpi-onboarding-guide.md), [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md), [kpi-yaml-reference.md](kpi-yaml-reference.md), and the live name list [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md).
+Authoring docs that follow this architecture: [README.md](README.md), [kpi-onboarding-guide.md](kpi-onboarding-guide.md), [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md), [kpi-yaml-reference.md](kpi-yaml-reference.md), and the live name list [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md).
 
 ---
 
@@ -32,7 +32,7 @@ The engine is a library invoked from an existing UDF entry point. It is not a st
 
 ### 1.3 Product goal
 
-Onboard a new KPI with YAML. A new reusable name (op, hook, function) is `capabilities/` + `registries/`, not `core/`. No context-schema changes, no ADLS plumbing.
+Onboard a new KPI with YAML. A new reusable name (op, hook, function) is `capabilities/` + `registries/`, not `pipeline/`. No context-schema changes, no ADLS plumbing.
 
 ---
 
@@ -40,7 +40,7 @@ Onboard a new KPI with YAML. A new reusable name (op, hook, function) is `capabi
 
 | Area | Decision |
 |---|---|
-| Host | In-process Python library. Entry: `udfs.kpi_engine.main` → `compute(context)`. `kpi_id` selects YAML. |
+| Host | In-process Python library. Entry: `kpi_engine.main` → `compute(context)`. `kpi_id` selects YAML. |
 | Context | Immutable envelope. Adapter maps it; we do not redesign it. |
 | Paths | Taken from `context.datasets`. KPI/model YAML does not own file locations. |
 | `business_date` | Present on the context. **Never used in calculations.** |
@@ -56,7 +56,7 @@ Onboard a new KPI with YAML. A new reusable name (op, hook, function) is `capabi
 | Trends | Authored `measure_key` whose value is an ordered array of monthly points (for graphs). |
 | Measures | Every `measure_key` is authored in KPI YAML. Nothing is inferred from catalog op ids. |
 | Catalog | YAML registries under `registries/` (ops, hooks, column fns, measure fns). Live page: `registries/CAPABILITIES.md`. Platform kinds (`point`, `window`, `trend`, `arithmetic`, `fn`, `expr`, `constant`, `dimension`, `hook`, `rank`, `percent_of_total`) plus allowlisted add-ons. |
-| Freeze | A new **name** does not edit `core/`, `contracts.py`, or a hardcoded name list in tests. A new **agg**, filter operator, compose template, time format, or *common* measure field (`offset`-like) is engine work. |
+| Freeze | A new **name** does not edit `pipeline/`, `contracts.py`, or a hardcoded name list in tests. A new **agg**, filter operator, compose template, time format, or *common* measure field (`offset`-like) is engine work. |
 | Cuts | Generic. G and R are examples. YAML: `group_by`, `ignore_filters`, `also_emit`. |
 | Level G (example) | Ignore region filter. Compute global (no region in group by) **and** regional (region in group by) from the same extract. |
 | Additivity | Declared per measure (`sum`, `avg`, `count`, `window`, …). Global is recomputed with that agg, never rolled up from regional rows for avg/window. |
@@ -177,7 +177,7 @@ The engine does not change the context schema. It maps the existing envelope.
     "udf_id": 6,
     "udf_name": "kpi_engine",
     "udf_type": "MEASURE",
-    "module_path": "udfs.kpi_engine.main",
+    "module_path": "kpi_engine.main",
     "output_type": "df"
   },
   "output": {
@@ -193,7 +193,7 @@ The engine does not change the context schema. It maps the existing envelope.
 
 | Context path | Engine use |
 |---|---|
-| `execution.kpi_id` | Load `config/kpis/<kpi_id>.yaml` |
+| `execution.kpi_id` | Load `kpi_config/kpis/<kpi_id>.yaml` |
 | `execution.request_id` | Echo in result metadata |
 | `execution.view_details` | Assert length = 1. Read `measures_required[].measure_key` |
 | `execution.business_date` | Ignore for all calculations |
@@ -204,7 +204,7 @@ The engine does not change the context schema. It maps the existing envelope.
 | `datasets.*.columns` | Projection and bind-time column check |
 | `datasets.*.filter_column_mappings` | `filter_code` → `column_name`, operator (already `in`) |
 | `datasets.*.join_managed_by: udf` | Legacy. Ignored when a model YAML/SQL exists |
-| `udf.module_path` | Host entry `udfs.kpi_engine.main`. YAML KPIs do not import this path |
+| `udf.module_path` | Host entry `kpi_engine.main`. YAML KPIs do not import this path |
 | `output.page` / `page_size` / `limit` | Paginate the **result**, never the extract |
 
 ### 4.3 Adapter rules
@@ -247,7 +247,7 @@ A model is the extract. It is not the KPI.
 YAML describes logical sources and joins. Runtime paths come from context.
 
 ```yaml
-# config/models/sotif.yaml
+# kpi_config/models/sotif.yaml
 model_id: sotif
 kind: physical
 required_aliases: [sotif]
@@ -279,7 +279,7 @@ No `SELECT *`. Project only columns required by measures, grains, filters, and j
 Use when source logic is CTEs, SCD, eligibility, or otherwise too messy for join YAML.
 
 ```yaml
-# config/models/sotif_sql.yaml
+# kpi_config/models/sotif_sql.yaml
 model_id: sotif_sql
 kind: sql
 required_aliases: [sotif]
@@ -315,7 +315,7 @@ One file per `kpi_id`. This is the onboarding surface.
 ### 6.1 Shape
 
 ```yaml
-# config/kpis/3004.yaml
+# kpi_config/kpis/3004.yaml
 kpi_id: 3004
 version: 1
 model: sotif
@@ -429,7 +429,7 @@ Result: dimensions not in a cut’s `group_by` are `null` on those rows.
 
 Reusable names. KPI YAML names them; authors do not reimplement YoY or trailing windows.
 
-The live list is [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md), generated from four YAML files: `registries/ops.yaml`, `registries/hooks.yaml`, `registries/functions/column.yaml`, `registries/functions/measure.yaml`. Bodies live under `capabilities/`. `core/` loads those files; it does not contain a name list.
+The live list is [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md), generated from four YAML files: `registries/ops.yaml`, `registries/hooks.yaml`, `registries/functions/column.yaml`, `registries/functions/measure.yaml`. Bodies live under `capabilities/`. `pipeline/` loads those files; it does not contain a name list.
 
 | Layer | Examples | Where it lives |
 |---|---|---|
@@ -439,7 +439,7 @@ The live list is [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/re
 | Period | add-ons `lag`, `lead`, `diff`, `pct_change`, `index`, `vs_target` | `capabilities/ops/period.py` |
 | Hook | `ewma`, `hit_rate`, `cagr`, … | `capabilities/hooks/` + `registries/hooks.yaml` |
 
-A new **name** = impl + registry row + regenerate `CAPABILITIES.md`. A new **agg**, filter operator, compose template, time format, or common measure field = `core/` (and `contracts.py` if the field is shared).
+A new **name** = impl + registry row + regenerate `CAPABILITIES.md`. A new **agg**, filter operator, compose template, time format, or common measure field = `pipeline/` (and `contracts.py` if the field is shared).
 
 ### 7.1 Composition order (locked recommendation)
 
@@ -621,38 +621,37 @@ Fallback if upstream cannot expand: a hierarchy model in YAML, queried before bu
 
 ### 11.1 Current entry
 
-`udfs.kpi_engine.main` is the UDF the metadata layer calls (`output_type: df`). One module for every KPI; `execution.kpi_id` loads `config/kpis/<id>.yaml`.
+`kpi_engine.main` is the UDF the metadata layer calls (`output_type: df`). One module for every KPI; `execution.kpi_id` loads `kpi_config/kpis/<id>.yaml`.
 
 ```text
-udfs.kpi_engine.main(context) → kpi_engine.compute(context) → DataFrame or JSON
+kpi_engine.main(context) → kpi_engine.compute(context) → DataFrame or JSON
 ```
 
 ### 11.2 Folder structure
 
 ```text
-udfs/
-  kpi_engine/
-    main.py                  # UDF entry → kpi_engine.compute(context)
-    core/
-      adapter.py             # context quirks, month-filter claim, single-view assert
-      binder.py              # kpi_id → YAML, common measure fields
-      loader.py              # load registries; extras allowlist
-      op_protocol.py         # OpPlugin façade (needs_time, parse)
-      op_registry.py         # name → plugin
-      time_planner.py        # anchor, required_span, range predicate
-      model_sql.py           # physical YAML or SQL model → DuckDB
-      filters.py / filter_ops.py
-      cuts.py                # generic cut planner
-      calc_engine.py         # dispatch to plugins on the monthly frame
-      fn_apply.py            # COLUMN_FNS / MEASURE_FNS maps + Pandas apply
-      hook_registry.py       # REGISTRY / register / run for named hooks
-      orchestrator.py        # request lifecycle, one DuckDB session
-    capabilities/            # function, op, and hook bodies
-    registries/              # YAML allowlist + generated CAPABILITIES.md
-    contracts.py
-  config/
-    models/                  # physical YAML or sql models
-    kpis/                    # one file per kpi_id
+kpi_engine/
+  main.py                    # UDF entry → kpi_engine.compute(context)
+  pipeline/
+    adapter.py               # context quirks, month-filter claim, single-view assert
+    binder.py                # kpi_id → YAML, common measure fields
+    loader.py                # load registries; extras allowlist
+    op_protocol.py           # OpPlugin façade (needs_time, parse)
+    op_registry.py           # name → plugin
+    time_planner.py          # anchor, required_span, range predicate
+    model_sql.py             # physical YAML or SQL model → DuckDB
+    filters.py / filter_ops.py
+    cuts.py                  # generic cut planner
+    calc_engine.py           # dispatch to plugins on the monthly frame
+    fn_apply.py              # COLUMN_FNS / MEASURE_FNS maps + Pandas apply
+    hook_registry.py         # REGISTRY / register / run for named hooks
+    orchestrator.py          # request lifecycle, one DuckDB session
+  capabilities/              # function, op, and hook bodies
+  registries/                # YAML allowlist + generated CAPABILITIES.md
+  contracts.py
+kpi_config/
+  models/                    # physical YAML or sql models
+  kpis/                      # one file per kpi_id
 tests/                       # local parquet, no ADLS
 ```
 
@@ -676,7 +675,7 @@ Key: `kpi_id`, KPI version, catalog version, resolved filters, cuts, requested o
 3. Declare `time`, `base_measures`, `cuts`, `measures` (every `measure_key` the UI can request).
 4. If two models: `model_relations.on` + `how`.
 5. Run `validate(sample_context)` — bind errors without ADLS when `output_schema` / column lists exist.
-6. If no existing name fits: add the body under `capabilities/` and a row under `registries/`, then regenerate `CAPABILITIES.md`. Do not edit `core/`.
+6. If no existing name fits: add the body under `capabilities/` and a row under `registries/`, then regenerate `CAPABILITIES.md`. Do not edit `pipeline/`.
 
 Effort targets:
 
@@ -769,7 +768,7 @@ These do not block the first slice. They should be confirmed before many KPIs ar
 | Trend | Array of monthly values for graphs |
 | Measure key | Column name in JSON; must exist in KPI `measures` |
 | Capability | Allowlisted name (op, hook, column fn, measure fn) in `registries/` |
-| Freeze | A new capability name does not edit `core/` |
+| Freeze | A new capability name does not edit `pipeline/` |
 
 ---
 

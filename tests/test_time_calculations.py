@@ -14,8 +14,8 @@ When to use
 from datetime import date
 
 from kpi_engine import compute, validate
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.time_planner import lookback_for, max_lookback_months
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.time_planner import lookback_for, max_lookback_months
 from kpi_engine.dates import add_months, iso_month, month_range_inclusive, parse_month
 from kpi_engine.exceptions import TimePlanError
 from tests.conftest import find_row, make_context, write_yaml

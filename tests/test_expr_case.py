@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute
-from kpi_engine.core.binder import load_kpi
+from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import parse_expression
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml

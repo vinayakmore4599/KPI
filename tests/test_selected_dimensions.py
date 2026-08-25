@@ -19,9 +19,9 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute, validate
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.calc_engine import densify
-from kpi_engine.core.cuts import effective_group_by
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.calc_engine import densify
+from kpi_engine.pipeline.cuts import effective_group_by
 from kpi_engine.exceptions import BindError, CatalogError, ContextError
 from tests.conftest import make_context, minimal_kpi, sotif_cuts, write_yaml
 
@@ -414,10 +414,10 @@ def test_cardinality_high_is_a_warning(parquet_path, extra_config):
 
 def test_grouping_reads_use_effective_group_by():
     """Leftover cut.group_by used as grouping keys outside parse/effective_group_by is a bug."""
-    root = Path(__file__).resolve().parents[1] / "udfs" / "kpi_engine"
+    root = Path(__file__).resolve().parents[1] / "kpi_engine"
     allowed = {
-        root / "core" / "cuts.py",
-        root / "core" / "binder.py",
+        root / "pipeline" / "cuts.py",
+        root / "pipeline" / "binder.py",
     }
     offenders = []
     for path in root.rglob("*.py"):

@@ -16,7 +16,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.contracts import BoundFilter, CutSpec
-from kpi_engine.core.filters import apply_cut_filters, split_for_duckdb
+from kpi_engine.pipeline.filters import apply_cut_filters, split_for_duckdb
 from kpi_engine.exceptions import FilterError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 

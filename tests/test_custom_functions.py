@@ -16,11 +16,11 @@ from datetime import date
 import pandas as pd
 
 from kpi_engine import compute
-from kpi_engine.core.time_planner import lookback_for
-from kpi_engine.core.binder import load_kpi
+from kpi_engine.pipeline.time_planner import lookback_for
+from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.dates import add_months
 from kpi_engine.exceptions import BindError, CatalogError
-from kpi_engine.core.hook_registry import REGISTRY, register, run, unregister
+from kpi_engine.pipeline.hook_registry import REGISTRY, register, run, unregister
 from tests.conftest import find_row, make_context, write_yaml
 
 

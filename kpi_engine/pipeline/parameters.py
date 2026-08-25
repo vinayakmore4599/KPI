@@ -27,7 +27,7 @@ from kpi_engine.contracts import (
     TimeSpec,
 )
 from kpi_engine.exceptions import BindError
-from kpi_engine.core.time_planner import apply_request_time
+from kpi_engine.pipeline.time_planner import apply_request_time
 from kpi_engine.runlog import log_step, traced
 
 RESERVED_TIME_GRAIN = "time_grain"

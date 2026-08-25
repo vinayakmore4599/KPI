@@ -9,8 +9,8 @@ Where it is used
     orchestrator after adapt(). Tests load KPI 3004 via load_kpi.
 
 Capabilities
-    - Reads config/kpis/<kpi_id>.yaml or config/kpis/<kpi_group>/<kpi_id>.yaml.
-    - Reads config/models/<model_id>.yaml or config/models/<kpi_group>/<model_id>.yaml.
+    - Reads kpi_config/kpis/<kpi_id>.yaml or kpi_config/kpis/<kpi_group>/<kpi_id>.yaml.
+    - Reads kpi_config/models/<model_id>.yaml or kpi_config/models/<kpi_group>/<model_id>.yaml.
     - kpi_id / model_id are globally unique; the group folder is authoring only.
     - Validates identifiers, aggs, default_cut, measure keys.
     - `base_measures.sql` / `expr:` / `columns:` + `op` run in Pandas after retrieve.
@@ -27,6 +27,7 @@ When to use
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from collections.abc import Mapping
@@ -71,29 +72,50 @@ from kpi_engine.identifiers import (
     parse_expression,
     require_ident,
 )
-from kpi_engine.core.fn_apply import (
+from kpi_engine.pipeline.fn_apply import (
     COLUMN_FNS,
     WHERE_OPS,
     WHERE_OPS_HELP,
     column_op_error,
 )
-from kpi_engine.core.compose import parse_compose_block
-from kpi_engine.core.filter_ops import FILTER_ARITY, assert_filter_arity, canonicalize_op
-from kpi_engine.core.loader import ensure_loaded
-from kpi_engine.core.op_protocol import CommonMeasureFields
-from kpi_engine.core.op_registry import get_op, require_op
+from kpi_engine.pipeline.compose import parse_compose_block
+from kpi_engine.pipeline.filter_ops import FILTER_ARITY, assert_filter_arity, canonicalize_op
+from kpi_engine.pipeline.loader import ensure_loaded
+from kpi_engine.pipeline.op_protocol import CommonMeasureFields
+from kpi_engine.pipeline.op_registry import get_op, require_op
 from kpi_engine.runlog import traced
 
 ensure_loaded()
 
 
+def _require_kpis_dir(root: Path, *, source: str) -> Path:
+    """YAML root must be a directory that contains kpis/."""
+    if root.is_file():
+        raise BindError(f"{source} is a file; set it to the folder that contains kpis/.")
+    if not root.is_dir():
+        raise BindError(
+            f"{source} is not a directory. Set KPI_ENGINE_CONFIG_DIR or pass "
+            "config_dir= to the folder that contains kpis/ and models/."
+        )
+    if not (root / "kpis").is_dir():
+        raise BindError(
+            f"No kpis/ directory under {root}. Set KPI_ENGINE_CONFIG_DIR or pass "
+            "config_dir= to the kpi_config folder (the one that contains kpis/)."
+        )
+    return root
+
+
 def default_config_dir() -> Path:
-    """Prefer udfs/config (next to kpi_engine). Fall back to a packaged copy."""
-    here = Path(__file__).resolve()
-    udfs_config = here.parents[2] / "config"
-    if (udfs_config / "kpis").is_dir():
-        return udfs_config
-    return here.parents[1] / "config"
+    """config_dir= wins at the caller. Else KPI_ENGINE_CONFIG_DIR, else sibling kpi_config/."""
+    env = os.environ.get("KPI_ENGINE_CONFIG_DIR", "").strip()
+    if env:
+        return _require_kpis_dir(
+            Path(env).expanduser().resolve(),
+            source=f"KPI_ENGINE_CONFIG_DIR={env}",
+        )
+    pkg = Path(__file__).resolve().parents[1]
+    sibling = (pkg.parent / "kpi_config").resolve()
+    return _require_kpis_dir(sibling, source=str(sibling))
 
 
 def _resolve_yaml(root: Path, kind: str, file_id: str, *, fold: bool) -> Path:
@@ -169,8 +191,8 @@ def load_kpi(
     """
     from dataclasses import replace as _replace
 
-    from kpi_engine.core.parameters import apply_bound_to_spec, bind_incoming
-    from kpi_engine.core.resolve import resolve_kpi, validate_when_cases, yaml_has_overlays
+    from kpi_engine.pipeline.parameters import apply_bound_to_spec, bind_incoming
+    from kpi_engine.pipeline.resolve import resolve_kpi, validate_when_cases, yaml_has_overlays
 
     root = config_dir or default_config_dir()
     path = _resolve_yaml(root, "kpis", str(kpi_id), fold=False)
@@ -345,7 +367,7 @@ def assert_pack_columns(kpi: KpiSpec, models: Mapping[str, ModelSpec]) -> None:
 
 @traced
 def load_model(model_id: str, config_dir: Path | None = None) -> ModelSpec:
-    """Load config/models/<model_id>.yaml or models/<group>/<model_id>.yaml (name fold)."""
+    """Load kpi_config/models/<model_id>.yaml or models/<group>/<model_id>.yaml (name fold)."""
     root = config_dir or default_config_dir()
     path = _resolve_yaml(root, "models", str(model_id), fold=True)
     return _parse_model(_read_yaml(path), expected_id=model_id)
@@ -442,7 +464,7 @@ def resolve_requested_graph(
     if requested and kpi.green_when is not None:
         keys.append(kpi.green_when.of)
     if requested and kpi.having is not None:
-        from kpi_engine.core.predicates import predicate_names
+        from kpi_engine.pipeline.predicates import predicate_names
 
         keys.extend(predicate_names(kpi.having.predicates))
     emit = tuple(dict.fromkeys(fold_measure_keys(kpi, tuple(keys))))
@@ -455,7 +477,7 @@ def resolve_requested_graph(
         if name not in by_base or name in needed:
             return
         needed.add(name)
-        from kpi_engine.core.row_pipeline import base_dep_names
+        from kpi_engine.pipeline.row_pipeline import base_dep_names
 
         for dep in base_dep_names(by_base[name], by_base):
             walk_base(dep)
@@ -956,7 +978,7 @@ def _parse_base_measure(
         replace=replace_col,
         agg_ok=agg_ok,
     )
-    from kpi_engine.core.row_pipeline import assert_window_agg
+    from kpi_engine.pipeline.row_pipeline import assert_window_agg
 
     assert_window_agg(measure)
     return measure
@@ -1035,7 +1057,7 @@ def _assert_base_pipeline(
     bases: tuple[BaseMeasure, ...], *, default_model: str | None
 ) -> None:
     """Topo-sort (cycle check) and reject over/lookup columns on another extract."""
-    from kpi_engine.core.row_pipeline import topo_bases
+    from kpi_engine.pipeline.row_pipeline import topo_bases
 
     topo_bases(bases)
     by_name = {measure.name: measure for measure in bases}
@@ -1080,7 +1102,7 @@ def _parse_having(
 ) -> HavingSpec | None:
     if raw is None:
         return None
-    from kpi_engine.core.predicates import (
+    from kpi_engine.pipeline.predicates import (
         assert_scalar_ofs,
         parse_match,
         parse_predicates,
@@ -1177,7 +1199,7 @@ def _parse_parameters(raw: Any) -> tuple[ParameterSpec, ...]:
         return ()
     if not isinstance(raw, dict):
         raise BindError("parameters must be an object.")
-    from kpi_engine.core.parameters import COLLECTION_TYPES, ITEM_TYPES, SCALAR_TYPES
+    from kpi_engine.pipeline.parameters import COLLECTION_TYPES, ITEM_TYPES, SCALAR_TYPES
 
     out: list[ParameterSpec] = []
     seen: set[str] = set()

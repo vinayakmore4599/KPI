@@ -30,8 +30,8 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute, validate
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.time_planner import lookback_for, lookforward_for
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.time_planner import lookback_for, lookforward_for
 from kpi_engine.dates import month_range_inclusive
 from tests.conftest import make_context, write_yaml
 

@@ -17,7 +17,7 @@ from dataclasses import replace
 
 from kpi_engine.contracts import BoundParameters, KpiSpec, ModelSpec
 from kpi_engine.exceptions import BindError
-from kpi_engine.core.parameters import RESERVED_CASE_LABELS
+from kpi_engine.pipeline.parameters import RESERVED_CASE_LABELS
 from kpi_engine.identifiers import norm_name
 
 TRAILING_UNITS = frozenset({"months", "weeks", "days", "quarters", "years", "periods"})

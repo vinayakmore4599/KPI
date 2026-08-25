@@ -9,7 +9,7 @@ Where it is used
 When to use
     Add a case here when the context envelope changes.
 """
-from kpi_engine.core.adapter import adapt
+from kpi_engine.pipeline.adapter import adapt
 from kpi_engine.exceptions import BindError, ContextError, FilterError
 from tests.conftest import make_context
 

@@ -16,9 +16,9 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute
-from kpi_engine.core.binder import load_kpi
+from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError, CatalogError
-from kpi_engine.core.fn_apply import (
+from kpi_engine.pipeline.fn_apply import (
     COLUMN_FNS,
     MEASURE_FNS,
     register_column_fn,
@@ -482,7 +482,7 @@ def test_misplaced_fn_and_inputs_are_rejected(extra_config):
 
 def test_fn_measure_widens_the_scan_span(extra_config, safe_ratio_fn):
     """Lookback walks inputs, so a fn over a YoY point still scans 12 months."""
-    from kpi_engine.core.time_planner import lookback_for
+    from kpi_engine.pipeline.time_planner import lookback_for
 
     spec = minimal_kpi(9916)
     spec["measures"] = {

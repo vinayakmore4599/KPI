@@ -36,12 +36,12 @@ from kpi_engine.contracts import (
     KpiSpec,
     ModelSpec,
 )
-from kpi_engine.core.compose import (
+from kpi_engine.pipeline.compose import (
     compose_placeholder_names,
     expand_compose,
     strip_compose_keys,
 )
-from kpi_engine.core.filter_ops import assert_filter_arity, pandas_mask
+from kpi_engine.pipeline.filter_ops import assert_filter_arity, pandas_mask
 from kpi_engine.exceptions import FilterError, TimePlanError
 from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.runlog import traced
@@ -234,7 +234,7 @@ def apply_result_filters(
     skipped: list[dict[str, str]] = []
     if not items or not rows:
         return rows, skipped
-    from kpi_engine.core.cuts import effective_group_by
+    from kpi_engine.pipeline.cuts import effective_group_by
 
     by_cut = {cut.name: cut for cut in cuts}
     kept: list[dict] = []

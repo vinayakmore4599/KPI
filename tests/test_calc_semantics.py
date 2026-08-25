@@ -20,8 +20,8 @@ import pytest
 
 from kpi_engine import compute
 from kpi_engine.contracts import OutputSpec, TimePlan
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.calc_engine import densify, evaluate
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.calc_engine import densify, evaluate
 from kpi_engine.exceptions import BindError, CatalogError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 

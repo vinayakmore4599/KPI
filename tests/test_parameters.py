@@ -203,6 +203,6 @@ def test_parameter_name_collides_with_measure(extra_config):
     )
     write_yaml(extra_config / "kpis" / "9809.yaml", spec)
     with pytest.raises(BindError, match="collide with measure keys"):
-        from kpi_engine.core.binder import load_kpi
+        from kpi_engine.pipeline.binder import load_kpi
 
         load_kpi(9809, extra_config)

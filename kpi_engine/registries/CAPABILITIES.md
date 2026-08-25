@@ -1,9 +1,9 @@
 # Capability catalog
 
-Generated from `udfs/kpi_engine/registries/`. Do not hand-edit.
+Generated from `kpi_engine/registries/`. Do not hand-edit.
 
 This catalog covers column functions, measure functions, measure op kinds, and hooks.
-A new name is implemented under `capabilities/` and allowlisted here. Do not edit `core/`.
+A new name is implemented under `capabilities/` and allowlisted here. Do not edit `pipeline/`.
 Filter operators, compose templates, time formats, and aggregations stay platform code.
 
 ## Measure ops (`measures.op`)

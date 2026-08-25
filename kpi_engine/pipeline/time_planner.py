@@ -38,8 +38,8 @@ from kpi_engine.dates import (
     truncate_period,
     year_start,
 )
-from kpi_engine.core.binder import fold_measure_keys
-from kpi_engine.core.compose import expand_compose, strip_compose_keys
+from kpi_engine.pipeline.binder import fold_measure_keys
+from kpi_engine.pipeline.compose import expand_compose, strip_compose_keys
 from kpi_engine.exceptions import BindError, TimePlanError
 from kpi_engine.runlog import traced
 
@@ -219,7 +219,7 @@ def lookback_for(
     """
     if output.key in seen:
         return 0
-    from kpi_engine.core.op_registry import get_op
+    from kpi_engine.pipeline.op_registry import get_op
     from kpi_engine.exceptions import CatalogError
 
     try:
@@ -241,7 +241,7 @@ def lookforward_for(
     """How many grain periods after the anchor a leading or full-period window needs."""
     if output.key in seen:
         return 0
-    from kpi_engine.core.op_registry import get_op
+    from kpi_engine.pipeline.op_registry import get_op
 
     def _walk(child, by_key, seen=frozenset()):
         return lookforward_for(child, by_key, seen=seen, time=time, anchor=anchor)

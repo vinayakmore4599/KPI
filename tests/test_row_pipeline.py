@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute, validate
-from kpi_engine.core.binder import load_kpi
+from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError, CatalogError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 
@@ -225,7 +225,7 @@ def test_having_g_vs_r_independent(parquet_path, extra_config):
 
 
 def test_over_caps(monkeypatch, parquet_path, extra_config):
-    monkeypatch.setattr("kpi_engine.core.row_pipeline.OVER_ROW_CAP", 1)
+    monkeypatch.setattr("kpi_engine.pipeline.row_pipeline.OVER_ROW_CAP", 1)
     _write(
         extra_config,
         8812,

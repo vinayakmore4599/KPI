@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from kpi_engine.exceptions import BindError, CatalogError
 
 if TYPE_CHECKING:
-    from kpi_engine.core.op_protocol import OpPlugin
+    from kpi_engine.pipeline.op_protocol import OpPlugin
 
 OP_KINDS: dict[str, "OpPlugin"] = {}
 _ALIASES: dict[str, str] = {}
@@ -35,7 +35,7 @@ def unregister_op(*names: str) -> None:
 
 def get_op(kind: str) -> OpPlugin:
     """Return the plugin for `kind`, loading registries on first use."""
-    from kpi_engine.core.loader import ensure_loaded
+    from kpi_engine.pipeline.loader import ensure_loaded
 
     ensure_loaded()
     plugin = OP_KINDS.get(kind)
@@ -53,7 +53,7 @@ def enabled_op_names() -> list[str]:
 
 def require_op(kind: str, *, what: str = "measures") -> OpPlugin:
     """Bind-time lookup with BindError."""
-    from kpi_engine.core.loader import ensure_loaded
+    from kpi_engine.pipeline.loader import ensure_loaded
 
     ensure_loaded()
     plugin = OP_KINDS.get(kind)

@@ -66,9 +66,9 @@ def reload_packaged() -> None:
 
 def _reset() -> None:
     global _loaded, _entries, _skipped_addons
-    from kpi_engine.core.fn_apply import COLUMN_FNS, MEASURE_FNS, _COLUMN_META, _MEASURE_META
-    from kpi_engine.core.op_registry import OP_KINDS, _ALIASES
-    from kpi_engine.core.hook_registry import REGISTRY
+    from kpi_engine.pipeline.fn_apply import COLUMN_FNS, MEASURE_FNS, _COLUMN_META, _MEASURE_META
+    from kpi_engine.pipeline.op_registry import OP_KINDS, _ALIASES
+    from kpi_engine.pipeline.hook_registry import REGISTRY
 
     COLUMN_FNS.clear()
     MEASURE_FNS.clear()
@@ -226,7 +226,7 @@ def _register_one(item: dict[str, Any]) -> None:
     kind = item["type"]
     aliases = item["aliases"]
     if kind == "column_fn":
-        from kpi_engine.core.fn_apply import register_column_fn
+        from kpi_engine.pipeline.fn_apply import register_column_fn
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} column function must be callable.")
@@ -235,7 +235,7 @@ def _register_one(item: dict[str, Any]) -> None:
         )
         return
     if kind == "measure_fn":
-        from kpi_engine.core.fn_apply import register_measure_fn
+        from kpi_engine.pipeline.fn_apply import register_measure_fn
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} measure function must be callable.")
@@ -244,7 +244,7 @@ def _register_one(item: dict[str, Any]) -> None:
         )
         return
     if kind == "hook":
-        from kpi_engine.core.hook_registry import register
+        from kpi_engine.pipeline.hook_registry import register
 
         if not callable(obj):
             raise CatalogError(f"{item['name']!r} hook must be callable.")
@@ -253,8 +253,8 @@ def _register_one(item: dict[str, Any]) -> None:
             register(alias, obj)
         return
     if kind == "op":
-        from kpi_engine.core.op_protocol import OpPlugin
-        from kpi_engine.core.op_registry import register_op
+        from kpi_engine.pipeline.op_protocol import OpPlugin
+        from kpi_engine.pipeline.op_registry import register_op
 
         plugin: OpPlugin
         if isinstance(obj, type) and issubclass(obj, OpPlugin):
@@ -277,7 +277,7 @@ def list_capabilities() -> list[dict[str, Any]]:
         rows = _read_packaged()
     # Always prefer packaged YAML for discoverability.
     rows = _read_packaged()
-    from kpi_engine.core.op_registry import OP_KINDS
+    from kpi_engine.pipeline.op_registry import OP_KINDS
 
     out = []
     for item in rows:
@@ -327,11 +327,12 @@ def impact_check(name: str, search_roots: list[Path] | None = None) -> list[Path
     """KPI YAML files that mention a capability name."""
     roots = search_roots or []
     if not roots:
-        here = Path(__file__).resolve()
-        udfs_kpis = here.parents[2] / "config" / "kpis"
-        if udfs_kpis.is_dir():
-            roots.append(udfs_kpis)
-        tests = here.parents[3] / "tests"
+        from kpi_engine.pipeline.binder import default_config_dir
+
+        kpis = default_config_dir() / "kpis"
+        if kpis.is_dir():
+            roots.append(kpis)
+        tests = Path(__file__).resolve().parents[2] / "tests"
         if tests.is_dir():
             roots.append(tests)
         roots.append(registries_dir())
@@ -353,10 +354,10 @@ def generate_capabilities_markdown() -> str:
     lines = [
         "# Capability catalog",
         "",
-        "Generated from `udfs/kpi_engine/registries/`. Do not hand-edit.",
+        "Generated from `kpi_engine/registries/`. Do not hand-edit.",
         "",
         "This catalog covers column functions, measure functions, measure op kinds, and hooks.",
-        "A new name is implemented under `capabilities/` and allowlisted here. Do not edit `core/`.",
+        "A new name is implemented under `capabilities/` and allowlisted here. Do not edit `pipeline/`.",
         "Filter operators, compose templates, time formats, and aggregations stay platform code.",
         "",
     ]

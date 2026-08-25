@@ -18,8 +18,8 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute, validate
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.pipelines import partition_request
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.pipelines import partition_request
 from kpi_engine.exceptions import BindError
 from tests.conftest import make_context, write_yaml
 

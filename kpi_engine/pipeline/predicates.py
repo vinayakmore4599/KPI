@@ -86,7 +86,7 @@ def assert_scalar_ofs(
 ) -> None:
     """Fail when a predicate names a trend array or an unknown key."""
     by_key = {m.key: m for m in measures}
-    from kpi_engine.core.op_registry import get_op
+    from kpi_engine.pipeline.op_registry import get_op
 
     for pred in predicates:
         for name in (pred.of, pred.vs):

@@ -35,11 +35,11 @@ from kpi_engine.contracts import (
     OutputSpec,
     TimePlan,
 )
-from kpi_engine.core.cuts import cut_group_dims, effective_group_by
-from kpi_engine.core.filters import apply_cut_filters
-from kpi_engine.core.model_sql import NON_ADDITIVE
-from kpi_engine.core.op_protocol import EvalCtx
-from kpi_engine.core.op_registry import get_op
+from kpi_engine.pipeline.cuts import cut_group_dims, effective_group_by
+from kpi_engine.pipeline.filters import apply_cut_filters
+from kpi_engine.pipeline.model_sql import NON_ADDITIVE
+from kpi_engine.pipeline.op_protocol import EvalCtx
+from kpi_engine.pipeline.op_registry import get_op
 from kpi_engine.dates import period_range_inclusive
 from kpi_engine.exceptions import BindError, CatalogError, KPIEngineError
 from kpi_engine.identifiers import match_name
@@ -175,7 +175,7 @@ def compute_cuts(
         if kpi.having is not None:
             kept, dropped = _apply_having(cut_rows, kpi, cut, group_dims)
             dropped_groups.extend(dropped)
-            from kpi_engine.core.row_pipeline import OVER_PARTITION_CAP
+            from kpi_engine.pipeline.row_pipeline import OVER_PARTITION_CAP
 
             if len(dropped_groups) > OVER_PARTITION_CAP:
                 raise CatalogError(
@@ -306,7 +306,7 @@ def _apply_having(
     cut: CutSpec,
     group_dims: list[str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    from kpi_engine.core.predicates import eval_predicate_list
+    from kpi_engine.pipeline.predicates import eval_predicate_list
 
     having = kpi.having
     if having is None:
@@ -341,7 +341,7 @@ def _rollup_after_having(
     deferred_filters: tuple[BoundFilter, ...],
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     """Re-fold surviving facts to then_group_by, then re-run combo measures."""
-    from kpi_engine.core.fn_apply import collapse_pandas_detail, pandas_group_keys
+    from kpi_engine.pipeline.fn_apply import collapse_pandas_detail, pandas_group_keys
     from kpi_engine.dates import add_periods
 
     having = kpi.having

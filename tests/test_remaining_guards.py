@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute, validate
-from kpi_engine.core.binder import load_kpi
+from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError, FilterError, KPIEngineError
 from kpi_engine.identifiers import require_ident
 from tests.conftest import find_row, make_context, sotif_cuts, write_yaml
@@ -125,7 +125,7 @@ def test_invalid_row_set_fails_at_bind(extra_config):
 
 def test_trend_cell_cap_rejects_oversized_payload(parquet_path, config_dir, monkeypatch):
     """Trend length × cut rows cannot exceed TREND_CELL_CAP."""
-    monkeypatch.setattr("kpi_engine.core.calc_engine.TREND_CELL_CAP", 10)
+    monkeypatch.setattr("kpi_engine.pipeline.calc_engine.TREND_CELL_CAP", 10)
     ctx = make_context(parquet_path, measures=["trend_12m"], supplier=["ABC"])
     with pytest.raises(KPIEngineError, match="exceeds 10"):
         compute(ctx, config_dir=config_dir)
@@ -206,7 +206,7 @@ def test_illegal_sql_identifiers_fail_at_bind(extra_config):
             ],
         },
     )
-    from kpi_engine.core.binder import load_model
+    from kpi_engine.pipeline.binder import load_model
 
     with pytest.raises(BindError, match="Illegal join.on"):
         load_model("bad_join", extra_config)

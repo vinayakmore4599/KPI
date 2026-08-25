@@ -14,7 +14,7 @@ When to use
 
 import pytest
 
-from kpi_engine.core.binder import load_kpi, load_model
+from kpi_engine.pipeline.binder import load_kpi, load_model
 from kpi_engine.exceptions import BindError
 from tests.conftest import minimal_kpi, write_yaml
 

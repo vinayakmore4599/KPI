@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute, validate
-from kpi_engine.core.filter_ops import pandas_mask, sql_predicate
+from kpi_engine.pipeline.filter_ops import pandas_mask, sql_predicate
 from kpi_engine.exceptions import BindError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 
@@ -224,7 +224,7 @@ def test_optional_false_is_a_bind_error(extra_config):
         "reason_code": {"column": "reason_code", "op": "in", "optional": False}
     }
     write_yaml(extra_config / "kpis" / "9887.yaml", spec)
-    from kpi_engine.core.binder import load_kpi
+    from kpi_engine.pipeline.binder import load_kpi
 
     with pytest.raises(BindError, match="optional: false is not supported"):
         load_kpi(9887, extra_config)
@@ -235,7 +235,7 @@ def test_extract_filter_in_ignore_filters_loads_and_defers(parquet_path, extra_c
     spec = minimal_kpi(9882)
     spec["filters"] = {"region": {"column": "region", "op": "in", "apply": "extract"}}
     write_yaml(extra_config / "kpis" / "9882.yaml", spec)
-    from kpi_engine.core.binder import load_kpi
+    from kpi_engine.pipeline.binder import load_kpi
 
     load_kpi(9882, extra_config)
     ctx = make_context(
@@ -258,7 +258,7 @@ def test_result_filter_cannot_be_in_ignore_filters(extra_config):
     spec = minimal_kpi(9883)
     spec["filters"] = {"region": {"column": "region", "op": "in", "apply": "result"}}
     write_yaml(extra_config / "kpis" / "9883.yaml", spec)
-    from kpi_engine.core.binder import load_kpi
+    from kpi_engine.pipeline.binder import load_kpi
 
     with pytest.raises(BindError, match="apply: result cannot be listed in ignore_filters"):
         load_kpi(9883, extra_config)
@@ -269,7 +269,7 @@ def test_unknown_op_and_wrong_arity_are_bind_errors(parquet_path, extra_config):
     spec = minimal_kpi(9884)
     spec["filters"] = {"reason_code": {"column": "reason_code", "op": "nearby"}}
     write_yaml(extra_config / "kpis" / "9884.yaml", spec)
-    from kpi_engine.core.binder import load_kpi
+    from kpi_engine.pipeline.binder import load_kpi
 
     with pytest.raises(BindError, match="Unknown filter op 'nearby'"):
         load_kpi(9884, extra_config)

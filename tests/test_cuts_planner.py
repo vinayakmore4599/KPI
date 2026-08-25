@@ -14,7 +14,7 @@ When to use
 import pytest
 
 from kpi_engine.contracts import BaseMeasure, CutSpec, KpiSpec, ModelRelation, OutputSpec, TimeSpec
-from kpi_engine.core.cuts import cut_group_dims, emitted_cuts, extract_grain, finest_grain
+from kpi_engine.pipeline.cuts import cut_group_dims, emitted_cuts, extract_grain, finest_grain
 from kpi_engine.exceptions import BindError
 
 

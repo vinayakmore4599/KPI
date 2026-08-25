@@ -63,7 +63,7 @@ def test_inner_join_drops_unmatched(parquet_path, extra_config, tmp_path):
 
 def test_two_models_require_relations(parquet_path, extra_config, tmp_path):
     """A graph that spans extracts still needs model_relations; load_kpi does not."""
-    from kpi_engine.core.binder import load_kpi
+    from kpi_engine.pipeline.binder import load_kpi
 
     write_yaml(extra_config / "models" / "marketing.yaml", _marketing_model())
     spec = _ratio_kpi("outer")

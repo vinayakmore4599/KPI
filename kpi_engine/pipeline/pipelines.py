@@ -24,8 +24,8 @@ from kpi_engine.contracts import (
     ModelSpec,
     OutputSpec,
 )
-from kpi_engine.core.binder import measure_dependencies, resolve_requested_graph
-from kpi_engine.core.cuts import cut_group_dims, emitted_cuts_from
+from kpi_engine.pipeline.binder import measure_dependencies, resolve_requested_graph
+from kpi_engine.pipeline.cuts import cut_group_dims, emitted_cuts_from
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import match_name, norm_name
 

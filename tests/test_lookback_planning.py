@@ -16,9 +16,9 @@ from datetime import date
 import pytest
 
 from kpi_engine.contracts import Offset, OutputSpec, TimeSpec
-from kpi_engine.core.adapter import adapt
-from kpi_engine.core.binder import fold_measure_keys, load_kpi
-from kpi_engine.core.time_planner import (
+from kpi_engine.pipeline.adapter import adapt
+from kpi_engine.pipeline.binder import fold_measure_keys, load_kpi
+from kpi_engine.pipeline.time_planner import (
     claim_month_filter,
     lookback_for,
     max_lookback_months,

@@ -13,7 +13,7 @@ When to use
 
 import pytest
 
-from kpi_engine.core.adapter import adapt
+from kpi_engine.pipeline.adapter import adapt
 from kpi_engine.exceptions import ContextError, FilterError
 from tests.conftest import make_context
 

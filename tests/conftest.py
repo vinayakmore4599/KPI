@@ -1,7 +1,7 @@
 """Shared test fixtures (local parquet only — no ADLS).
 
 What this file provides
-    config_dir — path to repo config/kpis and config/models (optional kpi_group folders).
+    config_dir — path to repo kpi_config/kpis and kpi_config/models (optional kpi_group folders).
     parquet_path — tiny Sotif-like fact table with a deliberate missing month.
     make_context — metadata-shaped JSON pointing at that parquet.
 
@@ -42,8 +42,8 @@ def _redirect_kpi_logs(tmp_path_factory, monkeypatch):
 
 @pytest.fixture
 def config_dir() -> Path:
-    """Repo udfs/config (kpis and models YAML)."""
-    return Path(__file__).resolve().parents[1] / "udfs" / "config"
+    """Repo kpi_config (kpis and models YAML)."""
+    return Path(__file__).resolve().parents[1] / "kpi_config"
 
 
 @pytest.fixture
@@ -274,7 +274,7 @@ def make_context(
             "udf_id": 6,
             "udf_name": "kpi_engine",
             "udf_type": "MEASURE",
-            "module_path": "udfs.kpi_engine.main",
+            "module_path": "kpi_engine.main",
             "output_type": "df",
         },
         "output": {

@@ -12,7 +12,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parents[1]
-CAPABILITIES = ROOT / "udfs/kpi_engine/registries/CAPABILITIES.md"
+CAPABILITIES = ROOT / "kpi_engine/registries/CAPABILITIES.md"
 OUTPUT = ROOT / "docs/KPI-Engine-Design-Document.docx"
 
 
@@ -116,7 +116,7 @@ def build() -> Document:
     _bullets(
         doc,
         [
-            "One generic entry point (udfs.kpi_engine.main) serves every KPI; routing is by kpi_id.",
+            "One generic entry point (kpi_engine.main) serves every KPI; routing is by kpi_id.",
             "New KPIs are onboarded primarily by YAML — typically ~20 lines for a simple metric.",
             "702 automated tests validate bind rules, SQL generation, and calculation semantics.",
             "Horizontally scalable: each request is stateless; Kubernetes scales worker pods.",
@@ -145,7 +145,7 @@ def build() -> Document:
         doc,
         [
             "YAML-first — KPI authors declare dimensions, base measures, cuts, and output measures; engine code is frozen.",
-            "Catalog freeze — New reusable names go to capabilities/ + registries/; core/ is not edited for new KPIs.",
+            "Catalog freeze — New reusable names go to capabilities/ + registries/; pipeline/ is not edited for new KPIs.",
             "DuckDB for I/O, Pandas for math — Base GROUP BY in DuckDB; all derived/time/cut logic in Pandas.",
             "Anchor-driven time — User-selected month from filters; never max(date) or business_date.",
             "Request-scoped scan — Only requested measures widen lookback; unrequested YAML measures do not expand the scan.",
@@ -176,7 +176,7 @@ def build() -> Document:
         doc,
         [
             "Adapt context — assert one view; normalize filters; read measure_keys and parameters.",
-            "Bind KPI YAML — load config/kpis/<kpi_id>.yaml; resolve parameters and grain overlay.",
+            "Bind KPI YAML — load kpi_config/kpis/<kpi_id>.yaml; resolve parameters and grain overlay.",
             "Plan time — claim month filter as anchor; compute required_span from requested measures.",
             "DuckDB extract — scan datasets, apply IN filters and date range, GROUP BY to monthly grain.",
             "Pandas — dense month spine, apply cuts, evaluate measure plugins, project requested keys.",
@@ -188,9 +188,9 @@ def build() -> Document:
     _bullets(
         doc,
         [
-            "Entry: udfs.kpi_engine.main(context) → compute(context) → JSON.",
-            "Host sets udf.module_path to udfs.kpi_engine.main for all KPIs.",
-            "Copy udfs/kpi_engine/ + udfs/config/ into the platform image or volume.",
+            "Entry: kpi_engine.main(context) → compute(context) → JSON.",
+            "Host sets udf.module_path to kpi_engine.main for all KPIs.",
+            "Copy kpi_engine/ + kpi_config/ into the platform image or volume, or set KPI_ENGINE_CONFIG_DIR.",
             "DuckDB session from platform via HOST_DUCKDB_GETTER; engine never closes host connections.",
             "Kubernetes: scale Deployment replicas; each pod handles independent requests.",
         ],
@@ -258,13 +258,13 @@ def build() -> Document:
         doc,
         [
             "Confirm context: kpi_id, dataset aliases, filter codes, measure_keys, filter_column_mappings.",
-            "Model: reuse existing model or add config/models/<id>.yaml (physical or SQL).",
-            "Copy template: cp config/kpis/3004.yaml config/kpis/<kpi_id>.yaml.",
+            "Model: reuse existing model or add kpi_config/models/<id>.yaml (physical or SQL).",
+            "Copy template: cp kpi_config/kpis/sotif/3004.yaml kpi_config/kpis/<kpi_group>/<kpi_id>.yaml.",
             "Fill time, dimensions, base_measures, cuts, measures (every UI measure_key).",
             "Align metadata: measures_required matches YAML; month filter = time.filter_code.",
             "validate(sample_context) — bind + compile SQL without scanning ADLS.",
             "compute(sample_context) — full JSON; add local parquet test under tests/.",
-            "Deploy: host module_path = udfs.kpi_engine.main (no per-KPI Python file).",
+            "Deploy: host module_path = kpi_engine.main (no per-KPI Python file).",
         ],
     )
 
@@ -276,7 +276,7 @@ def build() -> Document:
             ["Simple SUM/AVG + point/window", "~20 lines YAML, one model", "None"],
             ["Two-model ratio / join", "YAML: two bases + model_relations", "None"],
             ["Complex row pipeline + windows", "YAML: named steps, over, cuts", "None"],
-            ["New reusable formula", "capabilities/ + registries/ entry", "Catalog only, not core/"],
+            ["New reusable formula", "capabilities/ + registries/ entry", "Catalog only, not pipeline/"],
             ["Iterative / ML / geospatial", "Hook or SQL model", "Hook or model YAML"],
         ],
     )
@@ -285,9 +285,9 @@ def build() -> Document:
     _bullets(
         doc,
         [
-            "kpi_engine/core/ for a standard KPI.",
+            "kpi_engine/pipeline/ for a standard KPI.",
             "ADLS paths in KPI YAML (paths come from context.datasets).",
-            "Per-KPI UDF modules (udfs/<kpi>.py).",
+            "Per-KPI UDF modules.",
             "DuckDB connection or authentication code.",
         ],
     )
@@ -364,7 +364,7 @@ def build() -> Document:
         doc,
         [
             "Custom logic: allowlisted hook names only — no dotted import paths from YAML.",
-            "New catalog name: capabilities/ + registries/ — not core/ edits.",
+            "New catalog name: capabilities/ + registries/ — not pipeline/ edits.",
             "New agg, filter operator, or compose template: engine work (rare).",
         ],
     )
@@ -421,7 +421,7 @@ def build() -> Document:
             "kpi-onboarding-guide.md — step-by-step onboarding playbook",
             "kpi-yaml-preparation-guide.md — YAML authoring, limits, when to use what",
             "kpi-yaml-reference.md — every YAML key and op",
-            "udfs/kpi_engine/registries/CAPABILITIES.md — live capability catalog",
+            "kpi_engine/registries/CAPABILITIES.md — live capability catalog",
             "README.md — install, run, folder map",
         ],
     )

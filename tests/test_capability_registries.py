@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.loader import (
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.loader import (
     _normalize,
     assert_named_capability,
     ensure_loaded,
@@ -19,13 +19,13 @@ from kpi_engine.core.loader import (
     skipped_addons,
     write_generated_docs,
 )
-from kpi_engine.core.op_registry import OP_KINDS, enabled_op_names, get_op
+from kpi_engine.pipeline.op_registry import OP_KINDS, enabled_op_names, get_op
 from kpi_engine.exceptions import BindError, CatalogError
 from tests.conftest import write_yaml
 
 
 FORBIDDEN_IMPORTS = ("binder", "calc_engine", "orchestrator", "model_sql", "filters")
-CAPABILITIES_ROOT = Path(__file__).resolve().parents[1] / "udfs" / "kpi_engine" / "capabilities"
+CAPABILITIES_ROOT = Path(__file__).resolve().parents[1] / "kpi_engine" / "capabilities"
 
 
 def test_packaged_registries_boot():
@@ -46,7 +46,7 @@ def test_list_capabilities_includes_disabled_from_yaml():
 
 
 def test_column_and_measure_divide_both_register():
-    from kpi_engine.core.fn_apply import COLUMN_FNS, MEASURE_FNS
+    from kpi_engine.pipeline.fn_apply import COLUMN_FNS, MEASURE_FNS
 
     reload_packaged()
     assert "divide" in COLUMN_FNS
@@ -176,12 +176,12 @@ def test_unknown_key_on_point_is_bind_error(extra_config):
 def test_facade_modules_do_not_import_calc_engine():
     import kpi_engine.capabilities.ops.support as support
     import kpi_engine.contracts as contracts
-    import kpi_engine.core.op_protocol as protocol
+    import kpi_engine.pipeline.op_protocol as protocol
 
     for module in (protocol, contracts, support):
         source = Path(module.__file__).read_text()
-        assert "import kpi_engine.core.calc_engine" not in source
-        assert "from kpi_engine.core.calc_engine" not in source
+        assert "import kpi_engine.pipeline.calc_engine" not in source
+        assert "from kpi_engine.pipeline.calc_engine" not in source
 
 
 def test_capabilities_do_not_import_core_engines():
@@ -189,7 +189,7 @@ def test_capabilities_do_not_import_core_engines():
     for path in CAPABILITIES_ROOT.rglob("*.py"):
         text = path.read_text()
         for name in FORBIDDEN_IMPORTS:
-            if f"kpi_engine.core.{name}" in text:
+            if f"kpi_engine.pipeline.{name}" in text:
                 banned.append(f"{path.name} imports {name}")
     assert banned == []
 
@@ -233,7 +233,7 @@ def test_unknown_registry_extra_is_catalog_error():
 
 
 def test_loader_has_no_arity_name_list():
-    import kpi_engine.core.loader as loader
+    import kpi_engine.pipeline.loader as loader
 
     text = Path(loader.__file__).read_text()
     assert '{"sum", "subtract"' not in text

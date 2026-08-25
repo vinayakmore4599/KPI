@@ -40,7 +40,7 @@ def test_compute_reuses_caller_connection_and_leaves_it_open(parquet_path, confi
         raise AssertionError("must not open a new DuckDB session")
 
     monkeypatch.setattr("kpi_engine.host_runtime.duckdb.connect", boom)
-    monkeypatch.setattr("kpi_engine.core.model_sql.duckdb.connect", boom)
+    monkeypatch.setattr("kpi_engine.pipeline.model_sql.duckdb.connect", boom)
     try:
         result = compute(ctx, config_dir=config_dir, connection=connection)
         assert result["rows"]
@@ -61,7 +61,7 @@ def test_registered_host_getter_is_used_and_not_closed(parquet_path, config_dir,
 
     register_duckdb_getter(getter)
     monkeypatch.setattr("kpi_engine.host_runtime.duckdb.connect", lambda: (_ for _ in ()).throw(AssertionError("no local connect")))
-    monkeypatch.setattr("kpi_engine.core.model_sql.duckdb.connect", lambda: (_ for _ in ()).throw(AssertionError("no extract connect")))
+    monkeypatch.setattr("kpi_engine.pipeline.model_sql.duckdb.connect", lambda: (_ for _ in ()).throw(AssertionError("no extract connect")))
     try:
         result = compute(ctx, config_dir=config_dir)
         assert calls == [1]

@@ -15,7 +15,7 @@ When to use
 """
 
 from kpi_engine import compute, validate
-from kpi_engine.core.binder import resolve_requested_graph, load_kpi
+from kpi_engine.pipeline.binder import resolve_requested_graph, load_kpi
 from kpi_engine.exceptions import BindError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 

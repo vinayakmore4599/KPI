@@ -16,10 +16,10 @@ from datetime import date
 import pytest
 
 from kpi_engine import compute, validate
-from kpi_engine.core.adapter import adapt
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.compose import expand_compose, parse_compose_template
-from kpi_engine.core.time_planner import plan_time
+from kpi_engine.pipeline.adapter import adapt
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.compose import expand_compose, parse_compose_template
+from kpi_engine.pipeline.time_planner import plan_time
 from kpi_engine.dates import parse_date
 from kpi_engine.exceptions import BindError, TimePlanError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml

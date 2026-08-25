@@ -740,7 +740,7 @@ def assert_helper_of_allowed(
             "Add agg: on that base, declare identity_grain: and emit only that "
             "grain, or use it only in later base expr/over."
         )
-    from kpi_engine.core.cuts import effective_group_by
+    from kpi_engine.pipeline.cuts import effective_group_by
     from kpi_engine.identifiers import norm_name
 
     wanted = {norm_name(name) for name in kpi.identity_grain}
@@ -803,7 +803,7 @@ def assert_last_n_consumers(kpi: KpiSpec) -> None:
             "green_when needs a numeric measure."
         )
     if kpi.having is not None:
-        from kpi_engine.core.predicates import predicate_names
+        from kpi_engine.pipeline.predicates import predicate_names
 
         for name in predicate_names(kpi.having.predicates):
             if is_last_n_valued(name, kpi):
@@ -873,8 +873,8 @@ def assert_partition_keys(spec: OutputSpec, kpi: KpiSpec) -> None:
 
 def assert_partition_keys_for_request(kpi: KpiSpec, measure_keys: tuple[str, ...]) -> None:
     """Requested rank/share partition_by must sit on each cut the measure emits."""
-    from kpi_engine.core.cuts import effective_group_by
-    from kpi_engine.core.pipelines import cuts_for_keys
+    from kpi_engine.pipeline.cuts import effective_group_by
+    from kpi_engine.pipeline.pipelines import cuts_for_keys
 
     by_key = {m.key: m for m in kpi.measures}
     for key in measure_keys:

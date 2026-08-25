@@ -2,11 +2,11 @@
 
 Everything the engine can calculate, and how to declare it in YAML.
 
-Use this document while writing `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml` and `udfs/config/models/<kpi_group>/<model_id>.yaml`.
+Use this document while writing `kpi_config/kpis/<kpi_group>/<kpi_id>.yaml` and `kpi_config/models/<kpi_group>/<model_id>.yaml`.
 
 Related docs:
 
-- [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) — live catalog of every op, function, and hook. New names go in `capabilities/` + `registries/` only; do not edit `core/`.
+- [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) — live catalog of every op, function, and hook. New names go in `capabilities/` + `registries/` only; do not edit `pipeline/`.
 - [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — write a KPI YAML: **§0 is the AI authoring contract** (intake + completeness checklist). Then function catalog, columns vs expressions, when to use what, current limits
 - [kpi-onboarding-guide.md](kpi-onboarding-guide.md) — the step-by-step process and which files to change
 - [README.md](README.md) — folders, install, request path
@@ -43,7 +43,7 @@ Hosts and YAML authors must treat these as breaks, not silent extras:
 ```yaml
 kpi_id: 3004                 # must match execution.kpi_id
 version: 1                   # optional, defaults to 1
-model: sotif                 # config/models/<kpi_group>/sotif.yaml (group is authoring only)
+model: sotif                 # kpi_config/models/<kpi_group>/sotif.yaml (group is authoring only)
 
 time:
   column: event_month        # date column on the extract
@@ -113,7 +113,7 @@ measures:                    # every measure_key the UI can send
 | A named function over other measures' values | `op: fn` + `inputs:` (see §5.5) |
 | A named function over retrieved columns | `columns:` + `op:` on a base measure (see §10.1) |
 | A dimension echoed as a `measure_key` | `op: dimension` |
-| Quartiles, Pareto, lag, vs-target, series stats | add-on ops / hooks — [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) |
+| Quartiles, Pareto, lag, vs-target, series stats | add-on ops / hooks — [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) |
 | Math no listed kind can express | new hook under `capabilities/hooks/` + `registries/hooks.yaml` (see §10.3) |
 
 ---
@@ -449,7 +449,7 @@ Every `measures_required[].measure_key` the UI can send must be a key here. Unkn
 
 `op:` and `kind:` are interchangeable spellings.
 
-Platform kinds are documented below. Add-on kinds (`ntile`, `lag`, `diff`, `top_n`, …) and hooks (`ewma`, `hit_rate`, `cagr`, …) are listed with examples in [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md). A new name is `capabilities/` + `registries/` — not `core/`.
+Platform kinds are documented below. Add-on kinds (`ntile`, `lag`, `diff`, `top_n`, …) and hooks (`ewma`, `hit_rate`, `cagr`, …) are listed with examples in [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). A new name is `capabilities/` + `registries/` — not `pipeline/`.
 
 ### 5.1 `point` — one period
 
@@ -721,7 +721,7 @@ See §10.3. The function must be listed in `registries/hooks.yaml`.
 
 ### 5.9 Add-on kinds
 
-Cut-phase (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_share`, `running_total`, `running_avg`, `contribution`, `gap_to_leader`, `gap_to_avg`, `zscore`, `top_n`) and period-phase (`lag`, `lead`, `index`, `vs_target`, `threshold`, `diff`, `pct_change`) ops are allowlisted add-ons. YAML keys are kind-specific (`tiles`, `n`, `vs`, `cmp`, `offset`). `lag` / `lead` / `index` / `diff` / `pct_change` may `of:` a base or a shiftable measure (`point`, `window`, `fn`, `expr`, …). They cannot shift `trend`, `hook`, `rank`, or a row helper (`agg` omitted). Copy the example from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md). Do not invent a name that is not in the registry.
+Cut-phase (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_share`, `running_total`, `running_avg`, `contribution`, `gap_to_leader`, `gap_to_avg`, `zscore`, `top_n`) and period-phase (`lag`, `lead`, `index`, `vs_target`, `threshold`, `diff`, `pct_change`) ops are allowlisted add-ons. YAML keys are kind-specific (`tiles`, `n`, `vs`, `cmp`, `offset`). `lag` / `lead` / `index` / `diff` / `pct_change` may `of:` a base or a shiftable measure (`point`, `window`, `fn`, `expr`, …). They cannot shift `trend`, `hook`, `rank`, or a row helper (`agg` omitted). Copy the example from [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). Do not invent a name that is not in the registry.
 
 ---
 
@@ -897,7 +897,7 @@ measures:
 
 ---
 
-## 9. Model YAML (`config/models/<kpi_group>/<model_id>.yaml`)
+## 9. Model YAML (`kpi_config/models/<kpi_group>/<model_id>.yaml`)
 
 The model says **what DuckDB reads**. Paths come from the context at runtime.
 
@@ -970,9 +970,9 @@ Work down this list and stop at the first row that fits.
 | Maths over other measures' results | **Measure function** — impl + `registries/functions/measure.yaml`, then `op: fn` + `inputs:` |
 | A one-off algorithm needing the whole period series | **Hook** — impl + `registries/hooks.yaml` |
 
-A new name never requires an engine change. Add the Python under `capabilities/` and a row under `registries/`. Then regenerate `registries/CAPABILITIES.md`. Both registries are validated at bind time, so a typo names the registered alternatives instead of failing mid-request. See [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md).
+A new name never requires an engine change. Add the Python under `capabilities/` and a row under `registries/`. Then regenerate `registries/CAPABILITIES.md`. Both registries are validated at bind time, so a typo names the registered alternatives instead of failing mid-request. See [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md).
 
-This registry does **not** cover filter operators, compose templates, time format aliases, or aggregations — those stay platform code in `core/`.
+This registry does **not** cover filter operators, compose templates, time format aliases, or aggregations — those stay platform code in `pipeline/`.
 
 ### 10.1 Column functions — `base_measures.op`
 
@@ -1089,7 +1089,7 @@ Reach for a hook when the calculation needs the whole period series rather than 
 Register the function by **name**. Dotted import paths and `context.udf.module_path` are rejected on purpose — YAML may only call the allowlist.
 
 ```python
-# udfs/kpi_engine/capabilities/hooks/blend.py
+# kpi_engine/capabilities/hooks/blend.py
 def blend_mom(series, *, kpi, plan, spec, **_):
     """0.5 × current period + 0.5 × previous period."""
     current = _at(series, kpi.time.column, spec.of, plan.anchor)
@@ -1099,7 +1099,7 @@ def blend_mom(series, *, kpi, plan, spec, **_):
     return 0.5 * current + 0.5 * prior
 ```
 
-Then allowlist it in `registries/hooks.yaml` (`module` / `attr`, plus `requires_value` or `extra_keys` if needed). Do not edit `core/`.
+Then allowlist it in `registries/hooks.yaml` (`module` / `attr`, plus `requires_value` or `extra_keys` if needed). Do not edit `pipeline/`.
 
 ```yaml
 measures:
@@ -1245,7 +1245,7 @@ pytest -q
 | `This KPI declares no parameters` | `context.parameters` was non-empty on a KPI with no schema | Omit it, or add YAML `parameters:` |
 | `Unknown parameter(s)` / `Missing required parameter` / `not allowed` | Schema mismatch | Match YAML `parameters:` names, defaults, and `allowed` |
 | `Illegal measure sql: '…'` | Comments, `;`, double quotes, or incomplete CASE | Use `+ - * /`, CASE, or an allowlisted call; put `SUM` in `agg:` |
-| `names unknown function` | Call is not in that layer's registry | Use a name from [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) |
+| `names unknown function` | Call is not in that layer's registry | Use a name from [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) |
 | `Unknown agg '<x>'` | Aggregation not in §4 | Pick a built-in or add one to the engine |
 | `agg=percentile requires percentile:` | Missing quantile | Add `percentile: 90` |
 | `default_cut '<x>' is not a declared cut` | Typo in `default_cut` or `also_emit` | Match a `cuts[].name` |
@@ -1280,7 +1280,7 @@ Known boundaries, so you do not design around something that is not there:
 - `rank` and `percent_of_total` cannot feed `arithmetic` / `fn` / `expr` in the same request.
 - Physical joins support `inner`, `left` and `right`. Anything else belongs in a `kind: sql` model.
 - KPI `base_measures.sql` is a column name or a Pandas formula. DuckDB `SUM(` / `LAG(` belong in a `kind: sql` **model** when you opt into SQL extract shaping — not in KPI YAML.
-- Regex, JSON, geospatial, ML, and arbitrary Python remain **hooks** or `kind: sql`. The closed catalog is the ops/fns in this document plus [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md).
+- Regex, JSON, geospatial, ML, and arbitrary Python remain **hooks** or `kind: sql`. The closed catalog is the ops/fns in this document plus [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md).
 - KPI YAML cannot reference another KPI's measures.
 - Non-additive aggregations (`median` / `percentile` / `count_distinct`) fold the **post-pipeline** fact series, not the pre-CASE columns.
 - `expr:` CASE is Pandas, not DuckDB. No `SUM(CASE)`, `LIKE`, `IN ('A','B')`, or simple `CASE status WHEN 'O'`. `columns:` + `op:` stays numeric.

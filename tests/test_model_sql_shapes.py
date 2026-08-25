@@ -20,9 +20,9 @@ import pytest
 
 from kpi_engine import validate
 from kpi_engine.contracts import DatasetBinding, TimePlan
-from kpi_engine.core.adapter import adapt
-from kpi_engine.core.binder import bind_datasets, load_kpi, load_model
-from kpi_engine.core.model_sql import compile_extract, extract
+from kpi_engine.pipeline.adapter import adapt
+from kpi_engine.pipeline.binder import bind_datasets, load_kpi, load_model
+from kpi_engine.pipeline.model_sql import compile_extract, extract
 from kpi_engine.exceptions import BindError, KPIEngineError
 from tests.conftest import make_context, minimal_kpi, write_yaml
 
@@ -374,7 +374,7 @@ def test_filters_that_match_nothing_return_an_empty_extract(parquet_path, config
 
 def test_anchor_month_in_filter_is_caught_by_the_compile_guard():
     """The locked rule "the selected month is a range" is enforced on generated SQL."""
-    from kpi_engine.core.model_sql import _assert_no_month_in
+    from kpi_engine.pipeline.model_sql import _assert_no_month_in
 
     plan = _plan()
     ranged = 'SELECT 1 FROM t WHERE "event_month" >= ? AND "event_month" < ?'

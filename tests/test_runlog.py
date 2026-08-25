@@ -38,9 +38,9 @@ def test_compute_writes_a_timestamped_log_with_sql_and_steps(parquet_path, confi
     assert "STEP extract" in text
     assert "STEP calculate" in text
     assert "STEP END compute" in text
-    assert "INVOKE kpi_engine.core.adapter.adapt" in text
-    assert "RETURN kpi_engine.core.adapter.adapt" in text
-    assert "INVOKE kpi_engine.core.model_sql.extract" in text
+    assert "INVOKE kpi_engine.pipeline.adapter.adapt" in text
+    assert "RETURN kpi_engine.pipeline.adapter.adapt" in text
+    assert "INVOKE kpi_engine.pipeline.model_sql.extract" in text
     assert "---------- SQL" in text
     assert "SELECT" in text
     assert "FROM" in text

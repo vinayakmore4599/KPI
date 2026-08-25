@@ -13,7 +13,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.worksheet import Worksheet
 
 ROOT = Path(__file__).resolve().parents[1]
-REG = ROOT / "udfs/kpi_engine/registries"
+REG = ROOT / "kpi_engine/registries"
 OUT = ROOT / "docs/KPI-Engine-Capabilities.xlsx"
 
 NAVY = "1A365D"
@@ -125,7 +125,7 @@ def cover(wb: Workbook) -> None:
     ws["A1"] = "KPI Engine — Capability Catalog"
     ws["A1"].font = Font(name="Calibri", size=22, bold=True, color=NAVY)
     ws["A2"] = (
-        "Live allowlist from udfs/kpi_engine/registries/. "
+        "Live allowlist from kpi_engine/registries/. "
         "YAML may only name what is listed here. Generated for authors, architects, and leadership."
     )
     ws["A2"].alignment = Alignment(wrap_text=True)
@@ -156,7 +156,7 @@ def cover(wb: Workbook) -> None:
             "Decision guide",
             "If you need X, use Y — stop at the first matching row",
             "Walk top to bottom while authoring",
-            "If nothing matches: new catalog name, not core/",
+            "If nothing matches: new catalog name, not pipeline/",
         ],
         [
             "Sample dataset",
@@ -209,8 +209,8 @@ def cover(wb: Workbook) -> None:
         [
             "YAML calculation patterns",
             "How to write typical KPI math (YoY, ratio, SLA, rank, …)",
-            "Copy the pattern into config/kpis/<kpi_group>/<id>.yaml",
-            "If no pattern fits, add a catalog name — do not edit core/",
+            "Copy the pattern into kpi_config/kpis/<kpi_group>/<id>.yaml",
+            "If no pattern fits, add a catalog name — do not edit pipeline/",
         ],
         [
             "How to extend",
@@ -272,7 +272,8 @@ def cover(wb: Workbook) -> None:
     ws.row_dimensions[last + 4].height = 80
 
     ws["A" + str(last + 8)] = (
-        "Host entry: udfs.kpi_engine.main   |   Routing: execution.kpi_id → config/kpis/<kpi_group>/<id>.yaml   |   "
+        "Host entry: kpi_engine.main   |   YAML root: KPI_ENGINE_CONFIG_DIR or sibling kpi_config/   |   "
+        "Routing: execution.kpi_id → kpis/<kpi_group>/<id>.yaml   |   "
         "AI brief: attach YAML preparation + catalogs + calculation intake (kpi-yaml-preparation-guide.md §0)."
     )
     ws["A" + str(last + 8)].font = Font(italic=True, size=10, color="44546A")
@@ -284,7 +285,7 @@ def convention_rows() -> list[list]:
     return [
         [
             "KPI YAML file",
-            "Path: udfs/config/kpis/<kpi_group>/<kpi_id>.yaml or flat kpis/<kpi_id>.yaml. Stem equals execution.kpi_id exactly (no fold). kpi_id is unique across groups.",
+            "Path: kpi_config/kpis/<kpi_group>/<kpi_id>.yaml or flat kpis/<kpi_id>.yaml. Stem equals execution.kpi_id exactly (no fold). kpi_id is unique across groups.",
             "kpis/sotif/3004.yaml when execution.kpi_id is 3004. Copy to kpis/<kpi_group>/<new_id>.yaml.",
             "sotif.yaml for kpi_id 3004. 3004.yml. Two groups both containing 3004.yaml. kpis/sotif/quality/3004.yaml (only one group folder).",
             "load_kpi finds exactly one f\"{kpi_id}.yaml\" under kpis/ or kpis/*/. Zero or two files is a bind error. No execution.kpi_group field.",
@@ -305,7 +306,7 @@ def convention_rows() -> list[list]:
         ],
         [
             "Model YAML file",
-            "Path: udfs/config/models/<kpi_group>/<model_id>.yaml or flat models/<model_id>.yaml. Prefer lowercase snake_case. Extension must be .yaml. model_id is unique across groups.",
+            "Path: kpi_config/models/<kpi_group>/<model_id>.yaml or flat models/<model_id>.yaml. Prefer lowercase snake_case. Extension must be .yaml. model_id is unique across groups.",
             "models/sotif/sotif.yaml, models/freight/orders_sql.yaml.",
             "sotif.yml. models/Sotif Model.yaml. Two groups both containing sotif.yaml. Putting the file under kpis/.",
             "load_model finds exactly one file whose stem folds to model_id among models/*.yaml and models/*/*.yaml (Sotif.yaml ↔ sotif). Two fold-matches is an error.",
@@ -410,9 +411,9 @@ def convention_rows() -> list[list]:
         ],
         [
             "Host UDF / module_path",
-            "One generic entry: udfs.kpi_engine.main. Routing is execution.kpi_id → config/kpis/<kpi_group>/<id>.yaml (or flat kpis/<id>.yaml). Do not add a per-KPI Python module.",
-            "Host module_path: udfs.kpi_engine.main. New KPI = new YAML (+ model YAML if the extract is new).",
-            "udfs/<kpi_id>/main.py. Cloning the engine per metric. A second module_path per kpi_id.",
+            "One generic entry: kpi_engine.main. Routing is execution.kpi_id → kpi_config/kpis/<kpi_group>/<id>.yaml (or flat kpis/<id>.yaml). Do not add a per-KPI Python module.",
+            "Host module_path: kpi_engine.main. New KPI = new YAML (+ model YAML if the extract is new).",
+            "kpi_engine/<kpi_id>/main.py. Cloning the engine per metric. A second module_path per kpi_id.",
             "The UDF is stateless compute(context). KPI math lives in YAML; DuckDB shape lives in model YAML.",
         ],
         [
@@ -425,7 +426,7 @@ def convention_rows() -> list[list]:
         [
             "File header comments (recommended)",
             "Match existing config files: what the file provides, where it is used, capabilities, when to copy it.",
-            "See udfs/config/kpis/sotif/3004.yaml and udfs/config/models/sotif/sotif.yaml headers.",
+            "See kpi_config/kpis/sotif/3004.yaml and kpi_config/models/sotif/sotif.yaml headers.",
             "Leaving a copied file with the old kpi_id / Sotif description. Putting secrets in comments.",
             "Comments are documentation only; the engine ignores them. Keep kpi_id / model_id in the body in sync with the filename.",
         ],
@@ -458,7 +459,7 @@ def preparation_rows() -> list[list]:
             "kpi_id (filename stem = execution.kpi_id exactly). model_id. reuse_existing_model yes/no. dataset_aliases.",
             "kpi_id: 4120. model_id: sotif (reuse) or freight_lane (new). aliases: [sotif].",
             "Omitting kpi_id. Reusing sotif when the tables are different. Inventing a model_id that folds onto another file.",
-            "See Naming conventions. .yaml only. Host module_path stays udfs.kpi_engine.main.",
+            "See Naming conventions. .yaml only. Host module_path stays kpi_engine.main.",
         ],
         [
             "Intake — time or snapshot",
@@ -548,13 +549,13 @@ def preparation_rows() -> list[list]:
             "Map — cannot express",
             "Iterative allocation, custom solver, anything with no catalog row.",
             "Stop. Report: cannot bind with current catalog. Name the missing op/fn/hook.",
-            "Inventing op: my_yoy. eval() in YAML. A new udfs/<kpi>.py. Editing core/.",
+            "Inventing op: my_yoy. eval() in YAML. A per-KPI Python module. Editing pipeline/.",
             "New reusable names go in capabilities/ + registries/ (How to extend sheet). Do not fake them in this KPI file.",
         ],
         [
             "Mandatory KPI keys",
             "kpi_id, model, default_dimensions, ≥1 cut, ≥1 measure. time: (period) or omit entirely (snapshot). row_set span_union|anchor_only.",
-            "See gold file udfs/config/kpis/sotif/3004.yaml — copy structure, not Sotif names, unless this KPI is Sotif.",
+            "See gold file kpi_config/kpis/sotif/3004.yaml — copy structure, not Sotif names, unless this KPI is Sotif.",
             "Missing default_dimensions. Empty measures:. cuts[].model:. parameters.selected_dimensions.",
             "cuts.group_by is extras only. Header comments must name this kpi_id, not leftover 3004 text.",
         ],
@@ -609,7 +610,7 @@ def component_rows() -> list[list]:
             "KPI YAML",
             "The definition file for one kpi_id",
             "Declares time, dimensions, base_measures, cuts, measures. This is what authors write.",
-            "config/kpis/<kpi_group>/<kpi_id>.yaml (or flat kpis/<kpi_id>.yaml)",
+            "kpi_config/kpis/<kpi_group>/<kpi_id>.yaml (or flat kpis/<kpi_id>.yaml)",
             "Not Python. Not a per-KPI UDF.",
             "When you have a new metric the UI will request.",
         ],
@@ -617,7 +618,7 @@ def component_rows() -> list[list]:
             "Model YAML",
             "What DuckDB reads (tables/joins or a SQL CTE)",
             "Shapes the extract. Does not own KPI math (YoY, rank, windows).",
-            "config/models/<kpi_group>/<id>.yaml  —  KPI model: pointer",
+            "kpi_config/models/<kpi_group>/<id>.yaml  —  KPI model: pointer",
             "Do not put YoY in model SQL as the default path.",
             "New source tables, eligibility CTE, timezone conversion.",
         ],
@@ -707,13 +708,13 @@ def component_rows() -> list[list]:
             "A name is callable only if listed and enabled. Live page: CAPABILITIES.md.",
             "registries/ops.yaml, functions/*.yaml, hooks.yaml",
             "Dotted import paths and context.udf.module_path are rejected.",
-            "Extending the engine without editing core/.",
+            "Extending the engine without editing pipeline/.",
         ],
         [
-            "core/ (frozen pipeline)",
+            "pipeline/ (frozen pipeline)",
             "adapt → bind → extract → calculate → JSON",
             "Not for a new catalog name. Change only for new agg, filter operator, time format, or common YAML field.",
-            "udfs/kpi_engine/core/",
+            "kpi_engine/pipeline/",
             "No if kpi_id == … branches.",
             "Rare platform work, not KPI onboarding.",
         ],
@@ -817,7 +818,7 @@ def decision_rows() -> list[list]:
             "14",
             "I need hit-rate, streak, EWMA, CAGR, volatility on monthly values",
             "Hook (op: hook + trailing so the scan is wide enough)",
-            "Editing core/ per KPI",
+            "Editing pipeline/ per KPI",
             "requires_value hooks need value: (e.g. hit_rate value: 95)",
         ],
         [
@@ -1158,15 +1159,15 @@ def extend_rows() -> list[list]:
         [
             "New KPI (existing catalog)",
             "Authoring",
-            "Copy config/kpis/sotif/3004.yaml → <kpi_group>/<kpi_id>.yaml. Fill time, dimensions, base_measures, cuts, measures. Host module_path stays udfs.kpi_engine.main.",
-            "udfs/config/kpis/<kpi_group>/<id>.yaml",
-            "Do not add udfs/<kpi>.py. Do not edit core/.",
+            "Copy kpi_config/kpis/sotif/3004.yaml → <kpi_group>/<kpi_id>.yaml. Fill time, dimensions, base_measures, cuts, measures. Host module_path stays kpi_engine.main.",
+            "kpi_config/kpis/<kpi_group>/<id>.yaml",
+            "Do not add a per-KPI Python module. Do not edit pipeline/.",
         ],
         [
             "New extract / joins",
             "Model",
-            "Add config/models/<kpi_group>/<id>.yaml (kind: physical or sql). Point KPI model: at model_id. Paths stay on context.datasets.",
-            "udfs/config/models/<kpi_group>/<id>.yaml",
+            "Add kpi_config/models/<kpi_group>/<id>.yaml (kind: physical or sql). Point KPI model: at model_id. Paths stay on context.datasets.",
+            "kpi_config/models/<kpi_group>/<id>.yaml",
             "KPI formulas stay catalog ops; messy SQL belongs in the model.",
         ],
         [
@@ -1174,7 +1175,7 @@ def extend_rows() -> list[list]:
             "Measure ops",
             "1) Implement OpPlugin in capabilities/ops/ (combo, cut, or period). 2) Add key in registries/ops.yaml (role, description, example, module, attr). 3) Regenerate CAPABILITIES.md.",
             "capabilities/ops/*.py + registries/ops.yaml",
-            "Not a core/ edit. KPI YAML uses op: <new_name>.",
+            "Not a pipeline/ edit. KPI YAML uses op: <new_name>.",
         ],
         [
             "New row function",
@@ -1201,14 +1202,14 @@ def extend_rows() -> list[list]:
             "New aggregation",
             "Engine (rare)",
             "contracts.py + binder + calc_engine fold rules. This is not a catalog name.",
-            "kpi_engine/core/ + contracts.py",
+            "kpi_engine/pipeline/ + contracts.py",
             "Only when sum/avg/count/… cannot express the fold.",
         ],
         [
             "New filter operator",
             "Engine (rare)",
             "filter_ops.py allowlist + DuckDB/Pandas impl.",
-            "core/filter_ops.py",
+            "pipeline/filter_ops.py",
             "Default host operator is IN.",
         ],
         [
@@ -1221,7 +1222,7 @@ def extend_rows() -> list[list]:
         [
             "Regenerate docs",
             "Catalog",
-            "After any registry change, regenerate udfs/kpi_engine/registries/CAPABILITIES.md (write_generated_docs).",
+            "After any registry change, regenerate kpi_engine/registries/CAPABILITIES.md (write_generated_docs).",
             "registries/CAPABILITIES.md",
             "Do not hand-edit CAPABILITIES.md.",
         ],

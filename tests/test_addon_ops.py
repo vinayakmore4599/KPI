@@ -7,9 +7,9 @@ import pytest
 from kpi_engine import compute
 from kpi_engine.capabilities.ops.cut import DenseRank
 from kpi_engine.contracts import OutputSpec
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.loader import list_capabilities, reload_packaged, write_generated_docs
-from kpi_engine.core.op_registry import get_op
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.loader import list_capabilities, reload_packaged, write_generated_docs
+from kpi_engine.pipeline.op_registry import get_op
 from kpi_engine.exceptions import BindError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 
@@ -24,8 +24,8 @@ def _addon_rows(kind: str) -> list[dict]:
 
 
 def test_addon_ops_and_hooks_boot_from_packaged_yaml():
-    from kpi_engine.core.loader import skipped_addons
-    from kpi_engine.core.hook_registry import REGISTRY
+    from kpi_engine.pipeline.loader import skipped_addons
+    from kpi_engine.pipeline.hook_registry import REGISTRY
 
     ops = _addon_rows("op")
     hooks = _addon_rows("hook")

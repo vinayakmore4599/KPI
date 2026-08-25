@@ -17,7 +17,7 @@ import pytest
 from kpi_engine import compute, validate
 from kpi_engine.capabilities.functions.measure.impl import sign_label
 from kpi_engine.contracts import TimeSpec
-from kpi_engine.core.binder import load_kpi
+from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.dates import period_label, week_start
 from kpi_engine.exceptions import BindError, TimePlanError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml

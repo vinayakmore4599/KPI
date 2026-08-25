@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 
 from kpi_engine.contracts import BaseMeasure, CutSpec, KpiSpec, ModelRelation, OutputSpec, TimeSpec
-from kpi_engine.core.relations import join_monthly
+from kpi_engine.pipeline.relations import join_monthly
 from kpi_engine.exceptions import BindError
 
 

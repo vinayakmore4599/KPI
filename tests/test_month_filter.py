@@ -9,7 +9,7 @@ Where it is used
 When to use
     Keep this test if anyone changes model_sql WHERE generation.
 """
-from kpi_engine.core.orchestrator import validate
+from kpi_engine.pipeline.orchestrator import validate
 from tests.conftest import make_context
 
 

@@ -15,7 +15,7 @@ from kpi_engine.contracts import (
     OutputSpec,
     TimeSpec,
 )
-from kpi_engine.core.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
+from kpi_engine.pipeline.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
 from kpi_engine.exceptions import BindError, CatalogError
 from kpi_engine.identifiers import (
     assert_expr_calls,
@@ -199,7 +199,7 @@ class Arithmetic(OpPlugin):
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
-        from kpi_engine.core.fn_apply import MEASURE_FNS, measure_fn_error
+        from kpi_engine.pipeline.fn_apply import MEASURE_FNS, measure_fn_error
 
         raw = common.raw
         fn = str(raw.get("fn") or "divide")
@@ -239,7 +239,7 @@ class Fn(OpPlugin):
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
-        from kpi_engine.core.fn_apply import MEASURE_FNS, measure_fn_error
+        from kpi_engine.pipeline.fn_apply import MEASURE_FNS, measure_fn_error
 
         raw = common.raw
         if not raw.get("inputs"):
@@ -301,7 +301,7 @@ class Expr(OpPlugin):
             raise BindError(f"measures.{key} op=expr requires `expr:` with a formula.")
         expr = str(expr_raw).strip()
         node = parse_expression(expr, what=f"measures.{key}.expr")
-        from kpi_engine.core.fn_apply import MEASURE_FNS
+        from kpi_engine.pipeline.fn_apply import MEASURE_FNS
 
         assert_expr_calls(node, MEASURE_FNS, what=f"measures.{key}.expr")
         assert_expr_param_usage(
@@ -401,7 +401,7 @@ class Predicate(OpPlugin):
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
-        from kpi_engine.core.predicates import parse_match, parse_predicates, predicate_names
+        from kpi_engine.pipeline.predicates import parse_match, parse_predicates, predicate_names
 
         raw = dict(common.raw)
         predicates = parse_predicates(raw.get("predicates"), what=f"measures.{key}")
@@ -420,7 +420,7 @@ class Predicate(OpPlugin):
         )
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
-        from kpi_engine.core.predicates import assert_scalar_ofs
+        from kpi_engine.pipeline.predicates import assert_scalar_ofs
 
         predicates = spec.params.get("predicates") or ()
         by_key = {m.key for m in kpi.measures}
@@ -439,7 +439,7 @@ class Predicate(OpPlugin):
         return _max_dep_lookback(spec, by_key, time, anchor, seen, lookback_for)
 
     def evaluate(self, ctx: EvalCtx) -> Any:
-        from kpi_engine.core.predicates import eval_predicate_list
+        from kpi_engine.pipeline.predicates import eval_predicate_list
 
         predicates = ctx.spec.params.get("predicates") or ()
         match = str(ctx.spec.params.get("match") or "all")
@@ -471,8 +471,8 @@ class Hook(OpPlugin):
         hook = raw.get("hook") or raw.get("fn")
         if not hook:
             raise BindError(f"measures.{key} op=hook requires `hook:` (an allowlisted name).")
-        from kpi_engine.core.loader import capability_extras
-        from kpi_engine.core.hook_registry import REGISTRY
+        from kpi_engine.pipeline.loader import capability_extras
+        from kpi_engine.pipeline.hook_registry import REGISTRY
 
         if str(hook) not in REGISTRY:
             raise BindError(
@@ -508,7 +508,7 @@ class Hook(OpPlugin):
             support.require_base_of(spec, kpi)
         if kpi.time is None and (_offset_nonzero(spec.offset) or spec.trailing_months):
             raise BindError(f"measures.{spec.key} (hook lookback) needs a time: block.")
-        from kpi_engine.core.loader import capability_extras
+        from kpi_engine.pipeline.loader import capability_extras
 
         if capability_extras("hook", spec.hook).get("requires_value") and spec.constant is None:
             raise BindError(
@@ -537,7 +537,7 @@ class Hook(OpPlugin):
         return 0
 
     def evaluate(self, ctx: EvalCtx) -> Any:
-        from kpi_engine.core.hook_registry import run
+        from kpi_engine.pipeline.hook_registry import run
 
         name = ctx.spec.hook or ctx.spec.fn
         if not name:
@@ -567,7 +567,7 @@ def _assert_date_fn_inputs(spec: OutputSpec, kpi: KpiSpec) -> None:
     uses_date = fn in _DATE_FNS or any(name in expr for name in _DATE_FNS)
     if not uses_date:
         return
-    from kpi_engine.core.op_registry import get_op
+    from kpi_engine.pipeline.op_registry import get_op
 
     by_key = {m.key: m for m in kpi.measures}
     for name in spec.inputs:
@@ -603,7 +603,7 @@ def _max_dep_lookforward(spec, by_key, seen, lookforward_for) -> int:
 
 
 def _compose(ctx: EvalCtx, *, kind: str) -> Any:
-    from kpi_engine.core.fn_apply import call_measure_fn, eval_expr_scalar
+    from kpi_engine.pipeline.fn_apply import call_measure_fn, eval_expr_scalar
 
     spec = ctx.spec
     if kind == "fn":

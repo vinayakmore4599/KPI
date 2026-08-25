@@ -13,9 +13,9 @@ When to use
 
 from datetime import date
 
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.time_planner import lookback_for, max_lookback_months, plan_time
-from kpi_engine.core.adapter import adapt
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.time_planner import lookback_for, max_lookback_months, plan_time
+from kpi_engine.pipeline.adapter import adapt
 from tests.conftest import make_context
 
 

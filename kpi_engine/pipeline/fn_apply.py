@@ -20,7 +20,7 @@ import pandas as pd
 
 from kpi_engine.contracts import BaseMeasure, KpiSpec, MeasureWhere
 from kpi_engine.exceptions import CatalogError
-from kpi_engine.core.filter_ops import pandas_mask
+from kpi_engine.pipeline.filter_ops import pandas_mask
 from kpi_engine.identifiers import (
     Binary,
     BoolOp,
@@ -215,7 +215,7 @@ def measure_fn_error(name: str, count: int, params: tuple[str, ...] = ()) -> str
 
 def input_columns(measure: BaseMeasure, by_name: dict[str, BaseMeasure] | None = None) -> tuple[str, ...]:
     """Physical columns DuckDB must retrieve for this fact. Never a formula."""
-    from kpi_engine.core.row_pipeline import physical_input_columns
+    from kpi_engine.pipeline.row_pipeline import physical_input_columns
 
     if by_name:
         return physical_input_columns(measure, by_name)
@@ -759,7 +759,7 @@ def apply_dimension_maps(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
 @traced
 def apply_pandas_facts(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
     """Compute every base measure from retrieved physical columns (topo order)."""
-    from kpi_engine.core.row_pipeline import apply_lookup, apply_over, topo_bases
+    from kpi_engine.pipeline.row_pipeline import apply_lookup, apply_over, topo_bases
 
     if frame.empty:
         return frame
@@ -968,8 +968,8 @@ def collapse_pandas_detail(
     measure_keys: tuple[str, ...] | None = None,
 ) -> pd.DataFrame:
     """Compute KPI YAML facts per row, then fold additive aggs to the extract grain."""
-    from kpi_engine.core.model_sql import NON_ADDITIVE
-    from kpi_engine.core.row_pipeline import is_helper
+    from kpi_engine.pipeline.model_sql import NON_ADDITIVE
+    from kpi_engine.pipeline.row_pipeline import is_helper
 
     if detail is None or detail.empty:
         return pd.DataFrame()
@@ -1050,7 +1050,7 @@ def collapse_pandas_detail(
 
 def _autoload() -> None:
     """Fill COLUMN_FNS / MEASURE_FNS from registries/ on first import."""
-    from kpi_engine.core.loader import ensure_loaded
+    from kpi_engine.pipeline.loader import ensure_loaded
 
     ensure_loaded()
 

@@ -28,8 +28,8 @@ from typing import Any
 import pandas as pd
 
 from kpi_engine.contracts import AdaptedRequest, KpiSpec, ModelSpec, TimePlan
-from kpi_engine.core.adapter import adapt
-from kpi_engine.core.binder import (
+from kpi_engine.pipeline.adapter import adapt
+from kpi_engine.pipeline.binder import (
     assert_measure_keys,
     bind_datasets,
     default_config_dir,
@@ -39,16 +39,16 @@ from kpi_engine.core.binder import (
     resolve_requested_graph,
     same_model_id,
 )
-from kpi_engine.core.fn_apply import (
+from kpi_engine.pipeline.fn_apply import (
     apply_dimension_maps,
     apply_pandas_facts,
     collapse_pandas_detail,
     fold_extract_columns,
     pandas_group_keys,
 )
-from kpi_engine.core.calc_engine import compute_cuts, densify
-from kpi_engine.core.cuts import extract_grain, effective_group_by
-from kpi_engine.core.filters import (
+from kpi_engine.pipeline.calc_engine import compute_cuts, densify
+from kpi_engine.pipeline.cuts import extract_grain, effective_group_by
+from kpi_engine.pipeline.filters import (
     apply_frame_filters,
     apply_result_filters,
     bind_filters,
@@ -56,8 +56,8 @@ from kpi_engine.core.filters import (
     filters_on_all_cuts,
     split_filters,
 )
-from kpi_engine.core.model_sql import NON_ADDITIVE, compile_extract, extract
-from kpi_engine.core.pipelines import (
+from kpi_engine.pipeline.model_sql import NON_ADDITIVE, compile_extract, extract
+from kpi_engine.pipeline.pipelines import (
     Pipeline,
     assert_named_cuts_compatible,
     available_extract_columns,
@@ -67,9 +67,9 @@ from kpi_engine.core.pipelines import (
     pad_result_rows,
     partition_request,
 )
-from kpi_engine.core.relations import join_monthly
-from kpi_engine.core.parameters import declared_time_grain
-from kpi_engine.core.time_planner import apply_request_time, plan_time, span_for_keys
+from kpi_engine.pipeline.relations import join_monthly
+from kpi_engine.pipeline.parameters import declared_time_grain
+from kpi_engine.pipeline.time_planner import apply_request_time, plan_time, span_for_keys
 from kpi_engine.dates import add_periods, iso_period, parse_date, period_label
 from kpi_engine.exceptions import BindError, KPIEngineError
 from kpi_engine.identifiers import match_name, norm_name
@@ -598,7 +598,7 @@ def _extract_all(
         if mapped.empty:
             detail_parts.append(mapped)
             continue
-        from kpi_engine.core.row_pipeline import stabilize_detail
+        from kpi_engine.pipeline.row_pipeline import stabilize_detail
 
         mapped = stabilize_detail(mapped, kpi)
         facted = apply_pandas_facts(mapped, sub)

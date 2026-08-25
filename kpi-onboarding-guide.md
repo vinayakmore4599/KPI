@@ -4,19 +4,19 @@ This is the playbook for adding a KPI to the engine, and for deciding **which fi
 
 Related docs:
 
-- [udfs/kpi_engine/registries/CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) — **live list of every op, function, and hook**
+- [kpi_engine/registries/CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) — **live list of every op, function, and hook**
 - [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — **write a KPI YAML** (attach §0 + calculations to an AI for a complete file; functions, columns vs expressions, when to use what, limits)
 - [kpi-yaml-reference.md](kpi-yaml-reference.md) — **every YAML key, op and aggregation the engine supports**
 - [README.md](README.md) — folders, install, YAML meaning
 - [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions
 
-This guide is the *process*: what to confirm, what to write, what to change. For the live name list, keep [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) open. For YAML keys, keep the reference open beside it.
+This guide is the *process*: what to confirm, what to write, what to change. For the live name list, keep [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) open. For YAML keys, keep the reference open beside it.
 
-The engine has three roots under `udfs/kpi_engine/`:
+The engine has three roots under `kpi_engine/`:
 
 | Folder | Role |
 |---|---|
-| `core/` | Frozen pipeline (adapt, bind, extract, dispatch). Not for a new catalog name. |
+| `pipeline/` | Frozen pipeline (adapt, bind, extract, dispatch). Not for a new catalog name. |
 | `capabilities/` | Bodies of ops, column/measure functions, and hooks. |
 | `registries/` | YAML allowlist. A name is callable only if it is listed here. |
 
@@ -29,8 +29,8 @@ A KPI in this framework is:
 | Piece | Lives in | Role |
 |---|---|---|
 | Context JSON | Existing metadata framework (you do not change it) | `kpi_id`, filters, dataset paths, `measures_required` |
-| Model | `udfs/config/models/<kpi_group>/<name>.yaml` | What DuckDB reads (tables/joins or SQL) |
-| KPI definition | `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml` | Dimensions, base fact, cuts, calculated measures |
+| Model | `kpi_config/models/<kpi_group>/<name>.yaml` | What DuckDB reads (tables/joins or SQL) |
+| KPI definition | `kpi_config/kpis/<kpi_group>/<kpi_id>.yaml` | Dimensions, base fact, cuts, calculated measures |
 | Engine | `kpi_engine/` | Reusable; do not fork it per KPI |
 
 The UI asks for columns by **`measure_key`**. Those names must exist under **`measures:`** in the KPI YAML.
@@ -39,7 +39,7 @@ The UI asks for columns by **`measure_key`**. Those names must exist under **`me
 
 ## 2. Standard onboarding (YAML only)
 
-Use this path when the math already exists in [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md): **point**, **window**, **trend**, **arithmetic** / **fn** / **expr**, **rank**, **percent_of_total**, add-on kinds (`lag`, `ntile`, …), and allowlisted hooks.
+Use this path when the math already exists in [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md): **point**, **window**, **trend**, **arithmetic** / **fn** / **expr**, **rank**, **percent_of_total**, add-on kinds (`lag`, `ntile`, …), and allowlisted hooks.
 
 ### Step 1 — Confirm the context
 
@@ -56,7 +56,7 @@ Do **not** put ADLS paths in YAML. Paths stay on the context.
 ### Step 2 — Model (only if this source is new)
 
 - If the KPI uses an **existing** model (same tables as 3004): set `model: sotif` (or the existing `model_id`). **Do not copy the model file.**
-- If the source is **new tables/joins**: add `udfs/config/models/<kpi_group>/<model_id>.yaml`.
+- If the source is **new tables/joins**: add `kpi_config/models/<kpi_group>/<model_id>.yaml`.
   - `kind: physical` — `required_aliases`, `sources`, optional `joins`.
   - `kind: sql` — CTE string; declare `output_schema`; use `$alias_path` for paths.
 - If the source is a **complex CTE**: prefer `kind: sql`. Do not encode that CTE in the KPI file.
@@ -64,7 +64,7 @@ Do **not** put ADLS paths in YAML. Paths stay on the context.
 ### Step 3 — Copy a KPI file
 
 ```bash
-cp udfs/config/kpis/sotif/3004.yaml udfs/config/kpis/<kpi_group>/<kpi_id>.yaml
+cp kpi_config/kpis/sotif/3004.yaml kpi_config/kpis/<kpi_group>/<kpi_id>.yaml
 ```
 
 Set `kpi_id` and `model` to match.
@@ -108,7 +108,7 @@ Set `kpi_id` and `model` to match.
 | `constant` | A literal target / goal | `value` |
 | `rank` / `percent_of_total` | Rank or share of groups on a cut | `of`, optional `partition_by`, `cuts` |
 | `hook` | Logic no listed kind can express | `hook` (an allowlisted name), plus `offset`/`trailing` for lookback |
-| other names | Cut / period / series add-ons (`lag`, `ntile`, `ewma`, …) | See [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) |
+| other names | Cut / period / series add-ons (`lag`, `ntile`, `ewma`, …) | See [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) |
 
 Every `measure_key` the page can send must appear here. Unknown keys fail at bind time.
 
@@ -134,7 +134,7 @@ Add a test under `tests/` with local parquet (see `tests/conftest.py`). Do not h
 
 ### Step 7 — Entry point
 
-Call `udfs.kpi_engine.main` (file `udfs/kpi_engine/main.py`). **Do not** add `udfs/<kpi>.py` per KPI. Routing is by `kpi_id`. Copy the whole `udfs/` folder (`kpi_engine`, `config`) into the host.
+Call `kpi_engine.main` (file `kpi_engine/main.py`). **Do not** add a per-KPI Python module. Routing is by `kpi_id`. Copy `kpi_engine/` and `kpi_config/` into the host (or set KPI_ENGINE_CONFIG_DIR).
 
 DuckDB/ADLS stay on the platform. Set `kpi_engine.host_runtime.HOST_DUCKDB_GETTER` to the existing helper (`module.path:function_name`) when you copy this tree in. The engine reuses that session and does not `duckdb.connect()` in production. Context `datasets.*.table_type` chooses `delta_scan` (DELTA) or `read_parquet` (PARQUET). In SQL models prefer `$alias_scan` so the same YAML works for both.
 
@@ -144,7 +144,7 @@ Each `compute` / `validate` writes `logs/kpi-<kind>-<kpi_id>-<timestamp>.log` wi
 
 ## 3. Checklist (standard KPI)
 
-- [ ] `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml` exists; `kpi_id` matches context (ids unique across groups)
+- [ ] `kpi_config/kpis/<kpi_group>/<kpi_id>.yaml` exists; `kpi_id` matches context (ids unique across groups)
 - [ ] `model` points at a model whose aliases exist on the context
 - [ ] `time.filter_code` matches the selected-month filter
 - [ ] `base_measures` column exists on the extract
@@ -153,7 +153,7 @@ Each `compute` / `validate` writes `logs/kpi-<kind>-<kpi_id>-<timestamp>.log` wi
 - [ ] `validate(context)` succeeds
 - [ ] A local parquet test covers at least one lookback (if you use previous year / 3m)
 
-**Do not change** `kpi_engine/core/` for this path.
+**Do not change** `kpi_engine/pipeline/` for this path.
 
 ---
 
@@ -167,8 +167,8 @@ Work **top-down**. Stop at the first row that fits.
 
 | Change | Do not change |
 |---|---|
-| `udfs/config/kpis/<kpi_group>/<id>.yaml` | `kpi_engine/**` |
-| `udfs/config/models/<kpi_group>/<name>.yaml` only if the source is new | `udfs/kpi_engine/main.py` |
+| `kpi_config/kpis/<kpi_group>/<id>.yaml` | `kpi_engine/**` |
+| `kpi_config/models/<kpi_group>/<name>.yaml` only if the source is new | `kpi_engine/main.py` |
 | `tests/` for this KPI | `adapter.py`, `orchestrator.py` |
 
 ### 4.2 New source shape (joins or CTE)
@@ -177,8 +177,8 @@ Work **top-down**. Stop at the first row that fits.
 
 | Change | Do not change |
 |---|---|
-| `udfs/config/models/<kpi_group>/<name>.yaml` (`kind: physical` or `sql`) | KPI `measures` math (keep catalog ops) |
-| KPI `model:` pointer | `core/` (a new measure name is capabilities + registries) |
+| `kpi_config/models/<kpi_group>/<name>.yaml` (`kind: physical` or `sql`) | KPI `measures` math (keep catalog ops) |
+| KPI `model:` pointer | `pipeline/` (a new measure name is capabilities + registries) |
 
 Put messy SQL in the **model**, not in `measures.sql` (that field is a **column name** only).
 
@@ -220,16 +220,16 @@ No engine change.
 
 **Examples:** a new measure kind, a series hook, a named column/measure function.
 
-Check [CAPABILITIES.md](udfs/kpi_engine/registries/CAPABILITIES.md) first — the name may already exist.
+Check [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) first — the name may already exist.
 
 A new **name** is not an engine change. Add the body under `capabilities/` and the allowlist key under `registries/`. Then regenerate `registries/CAPABILITIES.md`. KPI YAML can name it immediately (section 4.3).
 
 | Change | Do not change |
 |---|---|
-| `capabilities/ops/` + `registries/ops.yaml` | `core/`, `contracts.py` |
+| `capabilities/ops/` + `registries/ops.yaml` | `pipeline/`, `contracts.py` |
 | `capabilities/hooks/` + `registries/hooks.yaml` (`requires_value` / `extra_keys` if needed) | `importlib` of a path from YAML |
 | `capabilities/functions/` + `registries/functions/` (`min_args` if the fn is variadic and not the default 2) | A one-off `if kpi_id == 3004` |
-| Optional: a `compute()` test under `tests/` | `udfs/kpi_engine/main.py` |
+| Optional: a `compute()` test under `tests/` | `kpi_engine/main.py` |
 
 **Still engine work** (not a new catalog name): a new `agg:`, filter operator, compose template, time format, or a new *common* measure field like `offset`. A new extras allowlist key (`min_args`, `requires_value`, `extra_keys`) is a rare one-line loader change.
 
@@ -249,14 +249,14 @@ If two KPIs need the same hook, promote it to a catalog op (4.4) instead. Full s
 
 | Change | Do not change |
 |---|---|
-| `kpi_engine/core/adapter.py` — parse the new envelope | KPI YAML as a workaround for a context bug |
+| `kpi_engine/pipeline/adapter.py` — parse the new envelope | KPI YAML as a workaround for a context bug |
 | `tests/test_adapter.py` | `calc_engine` for parsing JSON |
 
 Month filter **name** is per-KPI (`time.filter_code`). A new name for one KPI is YAML only (4.1), not an adapter change.
 
 ### 4.7 New UDF module name
 
-Do not add a second entry. Metadata calls `udfs.kpi_engine.main` for every KPI. Routing is `execution.kpi_id` → `config/kpis/<kpi_group>/<id>.yaml` (or flat `kpis/<id>.yaml`).
+Do not add a second entry. Metadata calls `kpi_engine.main` for every KPI. Routing is `execution.kpi_id` → `kpi_config/kpis/<kpi_group>/<id>.yaml` (or flat `kpis/<id>.yaml`).
 
 ---
 
@@ -266,31 +266,31 @@ Do not add a second entry. Metadata calls `udfs.kpi_engine.main` for every KPI. 
 
 | File | Change when |
 |---|---|
-| `udfs/config/kpis/<kpi_group>/<kpi_id>.yaml` | New or updated KPI definition |
-| `udfs/config/models/<kpi_group>/<model_id>.yaml` | New extract / joins / SQL model |
+| `kpi_config/kpis/<kpi_group>/<kpi_id>.yaml` | New or updated KPI definition |
+| `kpi_config/models/<kpi_group>/<model_id>.yaml` | New extract / joins / SQL model |
 | `tests/test_*.py` | Prove this KPI or this op |
 
 ### Engine (change rarely)
 
 | File | Change when | Do not use for |
 |---|---|---|
-| `core/adapter.py` | Context JSON shape | KPI formulas |
-| `core/binder.py` | A new *common* measure field (shared by every kind) | A new measure name |
-| `core/loader.py` | A new extras allowlist key (`min_args`, `requires_value`, `extra_keys`) | A new catalog name |
-| `core/op_protocol.py` | The `OpPlugin` façade itself | A new op body |
-| `core/time_planner.py` | A new time format / grain | Lookback for one catalog name |
-| `core/filters.py` | Filter bind / `ignore_filters` | Hierarchy expansion (upstream) |
-| `core/model_sql.py` | DuckDB retrieve (scans, joins, filters, model columns) | KPI YAML formulas |
-| `core/cuts.py` | Cut walk / finest grain | Listing G/R in Python |
-| `core/calc_engine.py` | Pipeline dispatch (not a new op body) | A new measure kind |
-| `core/fn_apply.py` | Function maps and Pandas apply (engine) | New function bodies |
-| `core/hook_registry.py` | In-memory hook map (loader fills it) | New hook bodies |
-| `core/orchestrator.py` | Pipeline order | Business metrics |
+| `pipeline/adapter.py` | Context JSON shape | KPI formulas |
+| `pipeline/binder.py` | A new *common* measure field (shared by every kind) | A new measure name |
+| `pipeline/loader.py` | A new extras allowlist key (`min_args`, `requires_value`, `extra_keys`) | A new catalog name |
+| `pipeline/op_protocol.py` | The `OpPlugin` façade itself | A new op body |
+| `pipeline/time_planner.py` | A new time format / grain | Lookback for one catalog name |
+| `pipeline/filters.py` | Filter bind / `ignore_filters` | Hierarchy expansion (upstream) |
+| `pipeline/model_sql.py` | DuckDB retrieve (scans, joins, filters, model columns) | KPI YAML formulas |
+| `pipeline/cuts.py` | Cut walk / finest grain | Listing G/R in Python |
+| `pipeline/calc_engine.py` | Pipeline dispatch (not a new op body) | A new measure kind |
+| `pipeline/fn_apply.py` | Function maps and Pandas apply (engine) | New function bodies |
+| `pipeline/hook_registry.py` | In-memory hook map (loader fills it) | New hook bodies |
+| `pipeline/orchestrator.py` | Pipeline order | Business metrics |
 | `capabilities/functions/` + `registries/functions/` | A function every KPI should reuse | Per-KPI formulas |
 | `capabilities/ops/` + `registries/ops.yaml` | A new measure kind | Per-KPI formulas |
 | `capabilities/hooks/` + `registries/hooks.yaml` | A new named hook | Import paths from context |
 | `registries/CAPABILITIES.md` | Regenerated after a registry change (`write_generated_docs()`) | Hand edits |
-| `udfs/kpi_engine/main.py` | Never, except the UDF signature | Calculations |
+| `kpi_engine/main.py` | Never, except the UDF signature | Calculations |
 | `contracts.py` | New typed fields for YAML/context | Parsing or SQL |
 
 ### Never put in KPI YAML
@@ -307,13 +307,13 @@ Do not add a second entry. Metadata calls `udfs.kpi_engine.main` for every KPI. 
 ```text
 Need a new KPI?
   ├─ Same SUM + 3m/12m/YoY/trend/cuts?
-  │    → udfs/config/kpis/<kpi_group>/<id>.yaml only
+  │    → kpi_config/kpis/<kpi_group>/<id>.yaml only
   ├─ New tables or CTE?
-  │    → udfs/config/models/<kpi_group>/<id>.yaml + KPI YAML
+  │    → kpi_config/models/<kpi_group>/<id>.yaml + KPI YAML
   ├─ New combo of existing catalog names?
   │    → KPI YAML measures only (see CAPABILITIES.md)
   ├─ New named op / function / hook?
-  │    → capabilities/ + registries/ + regenerate CAPABILITIES.md; not core/
+  │    → capabilities/ + registries/ + regenerate CAPABILITIES.md; not pipeline/
   ├─ One-off algorithm?
   │    → capabilities/hooks/ + registries/hooks.yaml; not core forks
   └─ Context JSON changed?
@@ -326,7 +326,7 @@ Need a new KPI?
 
 ### A. New KPI, same Sotif model, add 9m and keep G/R
 
-1. Copy `udfs/config/kpis/sotif/3004.yaml` → `udfs/config/kpis/sotif/3010.yaml`.
+1. Copy `kpi_config/kpis/sotif/3004.yaml` → `kpi_config/kpis/sotif/3010.yaml`.
 2. Set `kpi_id: 3010`.
 3. Add:
 
@@ -343,8 +343,8 @@ value_9m:
 
 ### B. Need “same month last year” on a new fact table
 
-1. New `udfs/config/models/orders/orders.yaml` (`required_aliases: [orders]`).
-2. New `udfs/config/kpis/orders/4001.yaml` with `model: orders`, `base_measures` on that fact, `measures.previous_year_value` with `op: point`, `offset: { years: 1 }`.
+1. New `kpi_config/models/orders/orders.yaml` (`required_aliases: [orders]`).
+2. New `kpi_config/kpis/orders/4001.yaml` with `model: orders`, `base_measures` on that fact, `measures.previous_year_value` with `op: point`, `offset: { years: 1 }`.
 3. **Files not touched:** `calc_engine.py` (point + years already exists).
 
 ### C. Need a new op `rolling_median`
@@ -353,7 +353,7 @@ value_9m:
 2. Add a row in `registries/ops.yaml`.
 3. Regenerate `registries/CAPABILITIES.md`.
 4. Optional: a `compute()` test under `tests/`.
-5. After that, KPIs only add YAML `op: rolling_median`. No `core/` edit.
+5. After that, KPIs only add YAML `op: rolling_median`. No `pipeline/` edit.
 
 ---
 

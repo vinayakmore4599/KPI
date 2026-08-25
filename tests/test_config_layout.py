@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from kpi_engine.core.binder import load_kpi, load_model
+from kpi_engine.pipeline.binder import load_kpi, load_model
 from kpi_engine.exceptions import BindError
 from tests.conftest import minimal_kpi, write_yaml
 
@@ -101,3 +101,36 @@ def test_missing_files_mention_flat_and_nested_paths(extra_config):
         load_kpi(9998, extra_config)
     with pytest.raises(BindError, match=r"No model YAML for model_id='nope'.*\*/nope\.yaml"):
         load_model("nope", extra_config)
+
+
+def test_kpi_engine_config_dir_env_loads_gold_kpi(monkeypatch, config_dir):
+    """KPI_ENGINE_CONFIG_DIR is used when load_kpi is not given config_dir=."""
+    monkeypatch.setenv("KPI_ENGINE_CONFIG_DIR", str(config_dir))
+    kpi = load_kpi(3004)
+    assert kpi.kpi_id == 3004
+
+
+def test_kpi_engine_config_dir_without_kpis_is_bind_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("KPI_ENGINE_CONFIG_DIR", str(tmp_path))
+    from kpi_engine.pipeline.binder import default_config_dir
+
+    with pytest.raises(BindError, match="No kpis/ directory"):
+        default_config_dir()
+
+
+def test_package_dir_on_sys_path_is_catalog_error():
+    from kpi_engine._bootstrap import assert_sys_path_safe, package_dir
+    from kpi_engine.exceptions import CatalogError
+
+    with pytest.raises(CatalogError, match="is on sys.path"):
+        assert_sys_path_safe(package_dir(), [str(package_dir())])
+
+
+def test_sibling_kpi_config_is_default_when_env_unset(monkeypatch):
+    monkeypatch.delenv("KPI_ENGINE_CONFIG_DIR", raising=False)
+    from kpi_engine.pipeline.binder import default_config_dir
+
+    root = default_config_dir()
+    assert (root / "kpis").is_dir()
+    kpi = load_kpi(3004)
+    assert kpi.kpi_id == 3004

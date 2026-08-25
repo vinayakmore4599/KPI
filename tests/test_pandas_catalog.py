@@ -18,8 +18,8 @@ import pytest
 
 from kpi_engine import compute
 from kpi_engine.contracts import OutputSpec, TimeSpec
-from kpi_engine.core.binder import load_kpi
-from kpi_engine.core.time_planner import lookback_for
+from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.time_planner import lookback_for
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
 
 

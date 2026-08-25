@@ -9,8 +9,8 @@ from typing import Any
 
 from kpi_engine.capabilities.ops import support
 from kpi_engine.contracts import KpiSpec, OutputSpec
-from kpi_engine.core.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
-from kpi_engine.core.op_registry import get_op
+from kpi_engine.pipeline.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
+from kpi_engine.pipeline.op_registry import get_op
 from kpi_engine.exceptions import BindError, CatalogError
 from kpi_engine.runlog import log_measure_calc
 

@@ -1,1 +1,1 @@
-"""Capability implementations. Add logic here; do not edit core/."""
+"""Capability implementations. Add logic here; do not edit pipeline/."""

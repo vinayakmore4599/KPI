@@ -98,7 +98,10 @@ Identifiers: `^[A-Za-z_][A-Za-z0-9_]*$`. Formula reserved words: `case when then
 | SUM/COUNT/MIN/MAX/AVG/distinct of a column at the selected period | `base_measures.x: { sql: col, agg: … }` + `measures.k: { of: x, op: point }` |
 | Same metric **previous calendar** year/month/quarter/week/day | `op: point` + `offset: { years\|months\|quarters\|weeks\|days: 1 }` |
 | Same metric **previous period at current grain** (e.g. prior quarter when grain=quarter) | `op: point` + `offset: { periods: 1 }` |
-| YoY / growth % | two `point` measures + `op: fn` or `op: arithmetic` with `fn: growth_pct` (`0.05` = +5%; use `percent` for 0–100) |
+| Period compare (YoY / MoM / WoW / QoQ / prior bucket / gap) on a **named base** | `op: compare` + `of:` the base + `mode:` (table below). One host key. |
+| Conditional SUM/COUNT from a **physical column** (no extra named base) | `op: filtered_point` (or `filtered_window` / `filtered_trend`) + `column:` + `where:` |
+| Conditional fact **and** period compare in one key | `op: filtered_compare` + `column:` or `of:` + `where:` + `mode:` |
+| Host must also request current **and** previous as their own keys | two `point` measures + `op: fn`/`arithmetic` `fn: growth_pct` (gold 3004). Do not rewrite 3004. |
 | Trailing N as **one number** | `op: window` + `trailing: { months: N }` + `inclusive: true` |
 | YTD/QTD/MTD/WTD | `op: window` + `range: ytd` (etc.). `qtd` ≠ trailing 3. `wtd` needs grain `day` |
 | Graph / sparkline array | `op: trend` + `trailing:`. Default cut only unless `cuts:` |
@@ -107,28 +110,58 @@ Identifiers: `^[A-Za-z_][A-Za-z0-9_]*$`. Formula reserved words: `case when then
 | This group as % of all groups on this cut | `op: percent_of_total` (**not** `fn: percent`) |
 | Share of **another cut's** total | `percent_of_total` + `versus_cut:` |
 | Rank groups | `op: rank` + `order: desc\|asc`. Rank a lagged measure; never `lag { of: rank }` |
-| Last period of a composite (ratio/OEE/window/hook) | `op: lag`/`diff`/`index`/`pct_change` of that measure. Not of `trend`/`rank`/row helper |
+| Last period of a composite (ratio/OEE/window/hook) | `op: compare` / `lag` / `diff` / `pct_change` of that measure. Not of `trend`/`rank`/row helper |
 | Trend prior year | `offset:` **on the trend measure**, not a separate `lag { of: trend }` |
 | Per-row product then SUM | helper `expr:` base, then another base with `agg: sum` |
-| Mask rows / ignore one context filter on **one** measure | `where:` / `ignore_filters:` on the measure; `of:` must be a **base** |
+| Mask rows / ignore one context filter on **one** measure | `where:` / `ignore_filters:` on the measure; `of:` must be a **base**. Or `filtered_*` + `column:` / `of:` |
 | Hit-rate / EWMA / CAGR / MAD / forecast | `op: hook` + catalog name + `trailing:` |
 | Keep rows vs drop groups | `op: predicate` (1/0) vs top-level `having:` |
 | Fixed target / goal | `op: constant` + `value:` (scalar or map + `by:` + `default:`) |
 | Echo a dimension as a requestable column | `kind: dimension` (key must match a `dimensions:` name) |
 | Entity lag / running sum on order rows | `over:` on a pre-fold base (not calendar `op: lag`) |
 | Code→fee map | `lookup:` on a base |
-| No period column | omit `time:`; only `point` offset 0 and `constant` |
+| No period column | omit `time:`; only `point` / `filtered_point` offset 0 and `constant` |
 | Math no catalog row covers | **Stop.** Name the missing catalog entry. Do not fake with `expr:` |
 
-**YoY example (prefer gold style):**
+**Period compare (canonical — one host key):**
 
 ```yaml
 measures:
-  current_value:       { of: fact, op: point, offset: { months: 0 } }
-  previous_year_value: { of: fact, op: point, offset: { years: 1 } }
-  yoy:                 { op: fn, fn: growth_pct, inputs: { current: current_value, previous: previous_year_value } }
-  # or: { op: arithmetic, fn: growth_pct, left: current_value, right: previous_year_value }
+  yoy: { op: compare, of: fact, mode: yoy }
 ```
+
+Gold 3004 still uses two `point` keys + `growth_pct` because the host requests current and previous as their own `measure_key`s. Do not rewrite 3004. Use that shape only when the page needs those extra keys.
+
+| `mode` | Expands to | Grain guard |
+|---|---|---|
+| `yoy` | `pct_change` + `offset: { years: 1 }` | none |
+| `mom` | `pct_change` + `offset: { months: 1 }` | `time.grain` must be `month` |
+| `wow` | `pct_change` + `offset: { weeks: 1 }` | `time.grain` must be `week` |
+| `qoq` | `pct_change` + `offset: { periods: 1 }` | `time.grain` must be `quarter` |
+| `pop` | `pct_change` + `offset: { periods: 1 }` | none — prior bucket at **effective** grain |
+| `diff` / `pct_change` | `diff` / `pct_change` | `versus:` required (same keys as `offset:`) |
+
+`mode: pop` when the KPI declares `parameters.time_grain` (named `mom`/`wow`/`qoq` bind against YAML `time.grain` only). Do not combine a preset with `versus:` (`use mode: pct_change` or `mode: diff` with `versus:`). `compare` does not take `column:` — that is `filtered_*` only.
+
+YoY of a **window** is that window vs the same window one year earlier (not a window of YoY): `{ op: compare, of: value_3m, mode: yoy }`.
+
+**Filtered fact (canonical):**
+
+```yaml
+measures:
+  closed_amount:
+    op: filtered_point
+    column: amount
+    agg: sum                    # default sum; omit agg: when of: names a base
+    where: { column: status, op: eq, value: closed }
+  closed_yoy:
+    op: filtered_compare
+    column: amount
+    where: { column: status, op: eq, value: closed }
+    mode: yoy
+```
+
+`column:` xor `of:` (a **base** with `agg:`). `where:` required; `WHERE_OPS` only (no `like`). `agg:` only with `column:`. Snapshot: `filtered_point` only. Keys starting `__` are reserved.
 
 ---
 
@@ -157,6 +190,16 @@ These patterns cause the most bind errors. Fix before emitting.
 | `periods:` and `compose:` together | pick one | mutually exclusive |
 | Invented `op: rolling_mean` | catalog hook or `op: fn` | unknown op |
 | UI helper in `measures:` only | helpers in `base_measures:`; only host keys in `measures:` | orphan or missing keys |
+| `op: compare` + `column:` | `filtered_compare` + `column:` (or `compare` + `of:` a named base) | `column` is filtered-only |
+| `mode: yoy` + `versus:` | `mode:` preset **or** `mode: pct_change`/`diff` + `versus:` | `versus` + `pct_change`/`diff` |
+| `mode: qoq` at `time.grain: month` | `time.grain: quarter`, or `mode: pop` | `qoq` + `quarter` + `pop` |
+| `mode: mom` at non-month grain | `time.grain: month`, or `mode: pop` | `mom` + `month` |
+| `filtered_*` with both `column:` and `of:` | pick one | `column` + `of` |
+| `filtered_*` without `where:` | add `where:` | `where` |
+| `filtered_* of:` a measure | `of:` a **base** (or `column:`) | `requires of: a base` |
+| `agg:` on `filtered_* of:` a base | `agg:` only with `column:` | `agg` |
+| Authored `measures.__x` / `base_measures.__x` | names must not start with `__` | `reserved` |
+| Snapshot + `compare` / `filtered_window` / `filtered_trend` / `filtered_compare` | snapshot allows `filtered_point` only | `needs a time` / `no time: block` |
 
 ---
 
@@ -174,7 +217,18 @@ These patterns cause the most bind errors. Fix before emitting.
 - **Calendar units** (`years`, `months`, …) keep calendar meaning after a `time_grain` pick.
 - **`periods: N`** = N steps at the **effective grain** (prior quarter when grain=quarter, prior month when grain=month).
 - **Never mix** `periods` with any calendar unit in the same block.
-- Snapshot KPIs: only `offset: { months: 0 }` on `point`; no window/trend/hook/period hooks.
+- Snapshot KPIs: only `offset: { months: 0 }` on `point` / `filtered_point`; no window/trend/compare/`filtered_window`/`filtered_trend`/`filtered_compare`/hook/period hooks.
+
+| `compare` `mode` | Offset | Required `time.grain` |
+|---|---|---|
+| `yoy` | `{ years: 1 }` | any |
+| `mom` | `{ months: 1 }` | `month` |
+| `wow` | `{ weeks: 1 }` | `week` |
+| `qoq` | `{ periods: 1 }` | `quarter` |
+| `pop` | `{ periods: 1 }` | any (prior bucket at effective grain) |
+| `diff` / `pct_change` | `versus:` | any |
+
+Named `mom`/`wow`/`qoq` bind against YAML `time.grain` only. If the KPI declares `parameters.time_grain`, use `mode: pop`.
 
 ```yaml
 # Previous month (calendar) at month grain
@@ -226,7 +280,7 @@ If a name is not listed here or in CAPABILITIES.md, **stop and ask** — do not 
 
 **`agg:`** `sum` `avg` `count` `count_distinct` `min` `max` `median` `percentile` (+ `percentile:`) `first` `last` `stddev` `variance` `mode`.
 
-**Measure `op:` / `kind:`** `point` `window` `trend` `trend_arithmetic` `arithmetic` `fn` `expr` `constant` `dimension` `predicate` `hook` `rank` `percent_of_total` `ntile` `dense_rank` `row_number` `cumulative_share` `running_total` `contribution` `lag` `lead` `index` `vs_target` `threshold` `percent_rank` `gap_to_leader` `gap_to_avg` `zscore` `running_avg` `top_n` `diff` `pct_change`.
+**Measure `op:` / `kind:`** `point` `window` `trend` `trend_arithmetic` `arithmetic` `fn` `expr` `constant` `dimension` `predicate` `hook` `rank` `percent_of_total` `ntile` `dense_rank` `row_number` `cumulative_share` `running_total` `contribution` `lag` `lead` `index` `vs_target` `threshold` `percent_rank` `gap_to_leader` `gap_to_avg` `zscore` `running_avg` `top_n` `diff` `pct_change` `compare` `filtered_point` `filtered_window` `filtered_trend` `filtered_compare`.
 
 Prefer `op: fn` + `inputs:` when operand order must not swap. `arithmetic` = `left`/`right` or `of: [a,b]`. Measure `expr` = nested `+ - * /` and CASE over **measure keys** only.
 
@@ -293,7 +347,7 @@ Copy structure from [3004.yaml](kpi_config/kpis/sotif/3004.yaml); replace ids, c
 
 ## 10. Rules that fail bind if ignored
 
-**Time.** Need `column` + `grain` plus one of `filter_code` / `periods:` / `compose:` (not `periods` and `compose` together). Scalar `filter_code` on the context = exactly one value and **wins**. `periods:` parts conjoin; missing part = not applied; lists = union. Month part accepts `3`, `"03"`, `March`, `Mar`. Never `WHERE month IN (one month)` for lookback — the engine scans a date range. Finer pick than `source_grain` fails. `time.timezone` rejected. Fiscal = quarter/year only. Snapshot: no window/trend/nonzero offset/period hooks.
+**Time.** Need `column` + `grain` plus one of `filter_code` / `periods:` / `compose:` (not `periods` and `compose` together). Scalar `filter_code` on the context = exactly one value and **wins**. `periods:` parts conjoin; missing part = not applied; lists = union. Month part accepts `3`, `"03"`, `March`, `Mar`. Never `WHERE month IN (one month)` for lookback — the engine scans a date range. Finer pick than `source_grain` fails. `time.timezone` rejected. Fiscal = quarter/year only. Snapshot: no window/trend/nonzero offset/period hooks; `filtered_point` is allowed, `compare` / other `filtered_*` are not.
 
 **Cuts.** `group_by` = **extras only**. Effective grain = request dims − `exclude_from_grain` + extras. Dim-named `ignore_filters` must pair with `exclude_from_grain`. `measures.*.cuts` only limits trend/rank/`percent_of_total` (cut-phase ops). Trend default = `default_cut` (50k cells/cut).
 

@@ -26,6 +26,7 @@ For key-by-key detail: [kpi-yaml-reference.md](../../kpi-yaml-reference.md).
 - **Offset/trailing keys:** plural only — `years`, `months`, `quarters`, `weeks`, `days`, `periods`. Singular (`year:`, `month:`) is BindError.
 - **Cuts:** `group_by` = extras only. Pair `ignore_filters: [dim]` with `exclude_from_grain: [dim]`.
 - **Shares:** `op: percent_of_total`, not `fn: percent`.
+- **Period compare:** `op: compare` + `mode:` on a named base. Physical-column mask: `filtered_*` + `column:`. Filter + compare in one key: `filtered_compare`. Not `compare` + `column:`.
 - **Trends of ratios:** `op: trend_arithmetic`, not `op: trend` on a composite.
 - **Closed names only** — if not in CAPABILITIES.md, stop and report the gap; do not invent ops.
 

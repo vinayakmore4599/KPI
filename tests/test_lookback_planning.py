@@ -206,6 +206,33 @@ def test_yyyymm_previous_year_widens_from_202607(parquet_path, extra_config):
     assert max_lookback_months(kpi, ("previousyearvalue",)) == 12
 
 
+def test_compare_mode_yoy_lookback_is_twelve_months(extra_config):
+    spec = minimal_kpi(
+        9211,
+        measures={"yoy": {"op": "compare", "of": "sotif_value", "mode": "yoy"}},
+    )
+    write_yaml(extra_config / "kpis" / "9211.yaml", spec)
+    kpi = load_kpi(9211, extra_config)
+    assert max_lookback_months(kpi, ("yoy",)) == 12
+
+
+def test_filtered_compare_lookback_is_twelve_months(extra_config):
+    spec = minimal_kpi(
+        9212,
+        measures={
+            "late_yoy": {
+                "op": "filtered_compare",
+                "column": "amount",
+                "where": {"column": "reason_code", "op": "eq", "value": "LATE_SUPPLIER"},
+                "mode": "yoy",
+            }
+        },
+    )
+    write_yaml(extra_config / "kpis" / "9212.yaml", spec)
+    kpi = load_kpi(9212, extra_config)
+    assert max_lookback_months(kpi, ("late_yoy",)) == 12
+
+
 def test_claim_month_filter_returns_none_when_absent(parquet_path):
     """Nothing is claimed when the KPI's filter_code is not on the context."""
     filters = adapt(make_context(parquet_path, measures=["current_value"])).filters

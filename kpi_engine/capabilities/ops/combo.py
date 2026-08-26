@@ -1019,3 +1019,67 @@ def _compose(ctx: EvalCtx, *, kind: str) -> Any:
         inputs=dict(zip(keys, values)),
     )
     return result
+
+
+_FILTERED_EXTRAS = frozenset({"column", "agg", "percentile", "model"})
+
+
+def _stash_filtered_params(
+    spec: OutputSpec, common: CommonMeasureFields, extra: frozenset[str] = frozenset()
+) -> OutputSpec:
+    """Copy authoring-only keys onto params for binder desugar."""
+    raw = dict(common.raw)
+    keys = _FILTERED_EXTRAS | extra
+    stashed = {name: raw.get(name) for name in keys if name in raw or name in _FILTERED_EXTRAS}
+    return OutputSpec(**{**spec.__dict__, "params": {**spec.params, **stashed}})
+
+
+class FilteredPoint(OpPlugin):
+    """Bind-time sugar. Binder expands to point of a masked base; never evaluated."""
+
+    name = "filtered_point"
+    extra_keys = _FILTERED_EXTRAS
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        return _stash_filtered_params(super().parse(key, common), common)
+
+
+class FilteredWindow(OpPlugin):
+    """Bind-time sugar. Binder expands to window of a masked base; never evaluated."""
+
+    name = "filtered_window"
+    extra_keys = _FILTERED_EXTRAS
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        return _stash_filtered_params(super().parse(key, common), common)
+
+
+class FilteredTrend(OpPlugin):
+    """Bind-time sugar. Binder expands to trend of a masked base; never evaluated."""
+
+    name = "filtered_trend"
+    extra_keys = _FILTERED_EXTRAS
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        return _stash_filtered_params(super().parse(key, common), common)
+
+
+class FilteredCompare(OpPlugin):
+    """Bind-time sugar. Binder expands to compare then pct_change/diff; never evaluated."""
+
+    name = "filtered_compare"
+    extra_keys = _FILTERED_EXTRAS | frozenset({"mode", "versus"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = _stash_filtered_params(super().parse(key, common), common)
+        raw = dict(common.raw)
+        return OutputSpec(
+            **{
+                **spec.__dict__,
+                "params": {
+                    **spec.params,
+                    "mode": raw.get("mode"),
+                    "versus": raw.get("versus"),
+                },
+            }
+        )

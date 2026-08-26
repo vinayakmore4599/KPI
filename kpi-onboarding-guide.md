@@ -106,7 +106,9 @@ Set `kpi_id` and `model` to match.
 | `point` | One period (current, previous year) | `of`, `offset` |
 | `window` | Trailing N, QTD/YTD/MTD, or a full period as **one number** | `of`, `trailing:` or `range:` |
 | `trend` | Graph: array of monthly values | `of`, `trailing.months`, optional `cuts` |
-| `arithmetic` / `fn` / `expr` | YoY, ratio, or a formula over other measures | `fn` + `left`/`right` or `inputs:` or `expr:` |
+| `compare` | YoY / MoM / WoW / QoQ / pop / gap on a named base (bind-time sugar) | `of`, `mode:` |
+| `filtered_point` / `filtered_window` / `filtered_trend` / `filtered_compare` | Masked fact from `column:` or a base; compare in one key | `where:`, plus `column:` xor `of:` |
+| `arithmetic` / `fn` / `expr` | YoY (when current and previous are also host keys), ratio, or a formula over other measures | `fn` + `left`/`right` or `inputs:` or `expr:` |
 | `constant` | A literal target / goal | `value` |
 | `rank` / `percent_of_total` | Rank or share of groups on a cut | `of`, optional `partition_by`, `cuts` |
 | `hook` | Logic no listed kind can express | `hook` (an allowlisted name), plus `offset`/`trailing` for lookback |
@@ -302,7 +304,7 @@ Do not add a second entry. Metadata calls `kpi_engine.main` for every KPI. Routi
 - Delta / ABFSS paths
 - Python / `eval` / `df['col'].sum()`
 - DuckDB connection or credentials
-- YoY implemented as ad-hoc SQL instead of `op: arithmetic`
+- YoY implemented as ad-hoc SQL instead of `op: compare` (or two host `point` keys + `growth_pct` when the page needs those keys)
 
 ---
 

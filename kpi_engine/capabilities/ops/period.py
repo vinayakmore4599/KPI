@@ -486,3 +486,24 @@ class PctChange(_Shift):
 
     def periods(self, spec, kpi, plan):
         return support.compare_period_meta(spec, kpi, plan)
+
+
+class Compare(OpPlugin):
+    """Bind-time sugar. Binder expands to pct_change or diff; never evaluated."""
+
+    name = "compare"
+    extra_keys = frozenset({"mode", "versus"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        raw = dict(common.raw)
+        return OutputSpec(
+            **{
+                **spec.__dict__,
+                "params": {
+                    **spec.params,
+                    "mode": raw.get("mode"),
+                    "versus": raw.get("versus"),
+                },
+            }
+        )

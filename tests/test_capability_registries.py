@@ -208,6 +208,24 @@ def test_generated_catalog_mentions_point():
     assert "point" in dest.read_text()
 
 
+def test_compare_and_filtered_ops_are_platform():
+    reload_packaged()
+    roles = {row["name"]: row["role"] for row in list_capabilities() if row["type"] == "op"}
+    for name in (
+        "pct_change",
+        "diff",
+        "compare",
+        "filtered_point",
+        "filtered_window",
+        "filtered_trend",
+        "filtered_compare",
+    ):
+        assert roles[name] == "platform"
+    text = generate_capabilities_markdown()
+    assert "Bind-time sugar" in text
+    assert "`compare`" in text
+
+
 def test_committed_catalog_matches_generate():
     committed = (registries_dir() / "CAPABILITIES.md").read_text()
     assert committed == generate_capabilities_markdown()

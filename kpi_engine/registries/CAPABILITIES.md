@@ -374,7 +374,7 @@ top_reason:
 ### `diff`
 
 of minus the same measure over the selection shifted by offset. Source is a base or shiftable measure.  
-`role: addon` · `enabled: on`
+`role: platform` · `enabled: on`
 
 ```yaml
 vs_last_year:
@@ -386,13 +386,83 @@ vs_last_year:
 ### `pct_change`
 
 growth_pct(of, lagged of) over the selection vs the shifted selection. Source is a base or shiftable measure. Same scale as fn growth_pct.  
-`role: addon` · `enabled: on`
+`role: platform` · `enabled: on`
 
 ```yaml
 yoy:
   op: pct_change
   of: current_value
   offset: { years: 1 }
+```
+
+### `compare`
+
+Bind-time sugar; expands to pct_change or diff. Not evaluated. Period comparison presets (yoy, mom, wow, qoq, pop, diff, pct_change).  
+`role: platform` · `enabled: on`
+
+```yaml
+yoy:
+  op: compare
+  of: sotif_value
+  mode: yoy
+```
+
+### `filtered_point`
+
+Bind-time sugar; expands to point of a masked base. Not evaluated. Conditional sum/count at the selected period (column: or of: a base).  
+`role: platform` · `enabled: on`
+
+```yaml
+closed_amount:
+  op: filtered_point
+  column: amount
+  agg: sum
+  where: { column: status, op: eq, value: closed }
+```
+
+### `filtered_window`
+
+Bind-time sugar; expands to window of a masked base. Not evaluated. Trailing or period-to-date aggregate of a filtered fact.  
+`role: platform` · `enabled: on`
+
+```yaml
+closed_3m:
+  op: filtered_window
+  column: amount
+  agg: sum
+  where: { column: status, op: eq, value: closed }
+  trailing: { months: 3 }
+  inclusive: true
+```
+
+### `filtered_trend`
+
+Bind-time sugar; expands to trend of a masked base. Not evaluated. Sparkline of a filtered fact.  
+`role: platform` · `enabled: on`
+
+```yaml
+closed_trend_12m:
+  op: filtered_trend
+  column: amount
+  agg: sum
+  where: { column: status, op: eq, value: closed }
+  trailing: { months: 12 }
+  inclusive: true
+  cuts: [G]
+```
+
+### `filtered_compare`
+
+Bind-time sugar; expands to compare then pct_change/diff of a masked base. Not evaluated. Filtered fact plus a compare preset in one measure key.  
+`role: platform` · `enabled: on`
+
+```yaml
+closed_yoy:
+  op: filtered_compare
+  column: amount
+  agg: sum
+  where: { column: status, op: eq, value: closed }
+  mode: yoy
 ```
 
 ## Column functions (`base_measures.op`)

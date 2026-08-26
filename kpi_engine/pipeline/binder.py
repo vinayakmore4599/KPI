@@ -84,7 +84,7 @@ from kpi_engine.pipeline.filter_ops import FILTER_ARITY, assert_filter_arity, ca
 from kpi_engine.pipeline.loader import ensure_loaded
 from kpi_engine.pipeline.op_protocol import CommonMeasureFields
 from kpi_engine.pipeline.op_registry import get_op, require_op
-from kpi_engine.runlog import traced
+from kpi_engine.runlog import log_step, traced
 
 ensure_loaded()
 
@@ -565,6 +565,11 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
             f"Parameter name(s) {clash} collide with measure keys. "
             "Rename the parameter."
         )
+    default_model = str(raw.get("model") or "") or None
+    measures, bases = _desugar_filtered(measures, bases, default_model=default_model)
+    measures = _desugar_compare(measures, time=time)
+    _assert_no_sugar_kinds_remain(measures)
+    _assert_base_pipeline(tuple(bases), default_model=default_model)
     measures, bases = _rewrite_measure_filters(
         measures, bases, cuts, filter_specs, dimensions
     )
@@ -862,6 +867,7 @@ def _parse_base_measure(
     """Parse sql:/columns:/op:/expr:/lookup:/over:/agg:/where for one base fact."""
     if not isinstance(spec, dict):
         raise BindError(f"base_measures.{name} must be an object.")
+    _assert_not_reserved_ident(name, what="base_measures")
     lookup = _parse_lookup(name, spec.get("lookup"))
     over = _parse_over(name, spec.get("over"))
     replace_col = bool(spec.get("replace"))
@@ -1578,7 +1584,11 @@ def _assert_measure_graph(
                         )
                 continue
             if name in known_bases:
-                if spec.kind == "trend_arithmetic" or get_op(spec.kind).phase == "cut":
+                if (
+                    spec.kind == "trend_arithmetic"
+                    or get_op(spec.kind).phase == "cut"
+                    or name not in helpers
+                ):
                     continue
             if name in helpers:
                 raise BindError(
@@ -1859,6 +1869,291 @@ def _parse_trailing(key: str, raw: Any) -> tuple[int | None, str | None, str | N
     return trailing, trailing_unit, trailing_from
 
 
+_SUGAR_KINDS = frozenset(
+    {
+        "compare",
+        "filtered_point",
+        "filtered_window",
+        "filtered_trend",
+        "filtered_compare",
+    }
+)
+_FILTERED_KINDS = _SUGAR_KINDS - {"compare"}
+_FILTERED_TARGET = {
+    "filtered_point": "point",
+    "filtered_window": "window",
+    "filtered_trend": "trend",
+    "filtered_compare": "compare",
+}
+_COMPARE_MODES = ("yoy", "mom", "wow", "qoq", "pop", "diff", "pct_change")
+_COMPARE_PRESET_OFFSET = {
+    "yoy": Offset(years=1),
+    "mom": Offset(months=1),
+    "wow": Offset(weeks=1),
+    "qoq": Offset(periods=1),
+    "pop": Offset(periods=1),
+}
+_COMPARE_GRAIN = {
+    "mom": "month",
+    "wow": "week",
+    "qoq": "quarter",
+}
+_SUGAR_PARAM_KEYS = frozenset({"mode", "versus", "column", "agg", "percentile", "model"})
+_ALLOWED_AGGS = {
+    "sum",
+    "avg",
+    "count",
+    "min",
+    "max",
+    "count_distinct",
+    "median",
+    "percentile",
+    "first",
+    "last",
+    "stddev",
+    "variance",
+    "mode",
+}
+
+
+def _assert_not_reserved_ident(name: str, *, what: str) -> None:
+    """Authored keys starting with __ are reserved for engine clones."""
+    if str(name).startswith("__"):
+        raise BindError(f"{what} {name!r} is reserved for engine clones.")
+
+
+def _replace_spec(spec: OutputSpec, **changes: Any) -> OutputSpec:
+    """Copy an OutputSpec with field overrides."""
+    return OutputSpec(**{**spec.__dict__, **changes})
+
+
+def _clear_sugar_params(spec: OutputSpec, **keep: Any) -> dict[str, Any]:
+    """Drop authoring-only sugar keys from params, then merge keep."""
+    params = {
+        name: value
+        for name, value in dict(spec.params).items()
+        if name not in _SUGAR_PARAM_KEYS
+    }
+    params.update(keep)
+    return params
+
+
+def _where_key(where: MeasureWhere | None) -> tuple[Any, ...] | None:
+    """Canonical mask for synthetic-base dedupe."""
+    if where is None:
+        return None
+    return (where.column, where.op, where.values)
+
+
+def _assert_no_sugar_kinds_remain(measures: tuple[OutputSpec, ...]) -> None:
+    """Sugar ops must be rewritten before plugin validate/evaluate."""
+    leftover = [spec.key for spec in measures if spec.kind in _SUGAR_KINDS]
+    if leftover:
+        raise BindError(
+            f"internal desugar left sugar kinds on {leftover}."
+        )
+
+
+def _desugar_filtered(
+    measures: tuple[OutputSpec, ...],
+    bases: list[BaseMeasure],
+    *,
+    default_model: str | None,
+) -> tuple[tuple[OutputSpec, ...], list[BaseMeasure]]:
+    """Expand filtered_* into point/window/trend/compare plus optional synthetic bases."""
+    by_base = {base.name: base for base in bases}
+    shared: dict[tuple[Any, ...], str] = {}
+    rewritten: list[OutputSpec] = []
+    rewrites: list[dict[str, str]] = []
+    for spec in measures:
+        if spec.kind not in _FILTERED_KINDS:
+            rewritten.append(spec)
+            continue
+        if spec.params.get("model") is not None:
+            raise BindError(
+                f"measures.{spec.key} cannot set model:; filtered_* inherit the KPI model."
+            )
+        column = spec.params.get("column")
+        of = spec.of
+        if column and of:
+            raise BindError(
+                f"measures.{spec.key} cannot set both column: and of:."
+            )
+        if not column and not of:
+            raise BindError(
+                f"measures.{spec.key} op={spec.kind} requires column: or of:."
+            )
+        if spec.where is None:
+            raise BindError(f"measures.{spec.key} where is required on filtered ops.")
+        target = _FILTERED_TARGET[spec.kind]
+        if spec.kind == "filtered_compare":
+            params = _clear_sugar_params(
+                spec,
+                mode=spec.params.get("mode"),
+                versus=spec.params.get("versus"),
+            )
+        else:
+            params = _clear_sugar_params(spec)
+        offset = spec.offset
+        if target == "point" and offset is None:
+            offset = Offset()
+        if of:
+            if spec.params.get("agg") is not None:
+                raise BindError(
+                    f"measures.{spec.key} cannot set agg: when of: names an existing base."
+                )
+            if of not in by_base:
+                raise BindError(
+                    f"measures.{spec.key} where:/ignore_filters: requires of: a base "
+                    "measure (clone the fact you want to mask)."
+                )
+            helper = by_base[of]
+            if helper.agg is None:
+                raise BindError(
+                    f"measures.{spec.key} of={of!r} is a row helper (no agg:)."
+                )
+            next_spec = _replace_spec(
+                spec, kind=target, of=of, offset=offset, params=params
+            )
+        else:
+            ident = require_ident(str(column), what=f"measures.{spec.key}.column")
+            agg = spec.params.get("agg") or "sum"
+            if agg not in _ALLOWED_AGGS:
+                raise BindError(f"Unknown agg {agg!r} on {spec.key}.")
+            percentile = spec.params.get("percentile")
+            pvalue = None
+            if percentile is not None:
+                pvalue = float(percentile)
+                if pvalue > 1:
+                    pvalue = pvalue / 100.0
+                if pvalue < 0 or pvalue > 1:
+                    raise BindError(
+                        f"measures.{spec.key}.percentile must be in 0-1 or 0-100."
+                    )
+            if agg == "percentile" and pvalue is None:
+                raise BindError(
+                    f"measures.{spec.key} agg=percentile requires percentile:."
+                )
+            if agg != "percentile":
+                pvalue = None
+            dedupe_key = (ident, agg, _where_key(spec.where), default_model or "", pvalue)
+            base_name = shared.get(dedupe_key)
+            if base_name is None:
+                base_name = f"__{spec.key}__base"
+                if base_name in by_base:
+                    raise BindError(
+                        f"base_measures.{base_name} collides with a generated clone."
+                    )
+                clone = BaseMeasure(
+                    name=base_name,
+                    sql=ident,
+                    agg=agg,  # type: ignore[arg-type]
+                    model_id=default_model,
+                    percentile=pvalue,
+                    where=spec.where,
+                )
+                bases.append(clone)
+                by_base[base_name] = clone
+                shared[dedupe_key] = base_name
+            next_spec = _replace_spec(
+                spec,
+                kind=target,
+                of=base_name,
+                offset=offset,
+                where=None,
+                params=params,
+            )
+        rewrites.append(
+            {
+                "key": spec.key,
+                "from_kind": spec.kind,
+                "to_kind": next_spec.kind,
+                "of": next_spec.of or "",
+            }
+        )
+        rewritten.append(next_spec)
+    if rewrites:
+        log_step("desugar_filtered", rewrites=rewrites)
+    return tuple(rewritten), bases
+
+
+def _desugar_compare(
+    measures: tuple[OutputSpec, ...], *, time: TimeSpec | None
+) -> tuple[OutputSpec, ...]:
+    """Expand compare presets into pct_change or diff."""
+    rewritten: list[OutputSpec] = []
+    rewrites: list[dict[str, str]] = []
+    listed = ", ".join(_COMPARE_MODES)
+    for spec in measures:
+        if spec.kind != "compare":
+            rewritten.append(spec)
+            continue
+        mode_raw = spec.params.get("mode")
+        if mode_raw is None or str(mode_raw).strip() == "":
+            raise BindError(
+                f"measures.{spec.key} op=compare requires mode: "
+                f"({listed})."
+            )
+        mode = str(mode_raw).strip().lower()
+        if mode not in _COMPARE_MODES:
+            raise BindError(
+                f"measures.{spec.key} unknown mode {mode!r}. "
+                f"mode must be one of {listed}."
+            )
+        if not spec.of:
+            raise BindError(
+                f"measures.{spec.key} op=compare requires `of:` naming a base "
+                "or a shiftable measure."
+            )
+        if spec.offset is not None:
+            raise BindError(
+                f"measures.{spec.key} op=compare does not use offset:; "
+                "use mode: or versus:."
+            )
+        if spec.trailing_months or spec.trailing_from or spec.window_range:
+            raise BindError(
+                f"measures.{spec.key} op=compare does not use trailing: or range:."
+            )
+        versus = spec.params.get("versus")
+        if mode in _COMPARE_PRESET_OFFSET:
+            if versus is not None:
+                raise BindError(
+                    f"measures.{spec.key} cannot set versus: with mode: {mode}. "
+                    "Use mode: pct_change or mode: diff with versus:."
+                )
+            required = _COMPARE_GRAIN.get(mode)
+            if required and time is not None and time.grain != required:
+                raise BindError(
+                    f"measures.{spec.key} mode: {mode} requires time.grain "
+                    f"{required}. Use mode: pop for a prior bucket at the "
+                    "current grain."
+                )
+            offset = _COMPARE_PRESET_OFFSET[mode]
+            kind = "pct_change"
+        else:
+            if versus is None:
+                raise BindError(
+                    f"measures.{spec.key} mode: {mode} requires versus:."
+                )
+            offset = _parse_offset(spec.key, versus)
+            kind = "diff" if mode == "diff" else "pct_change"
+        next_spec = _replace_spec(
+            spec, kind=kind, offset=offset, params=_clear_sugar_params(spec)
+        )
+        rewrites.append(
+            {
+                "key": spec.key,
+                "from_kind": "compare",
+                "to_kind": kind,
+                "of": spec.of,
+            }
+        )
+        rewritten.append(next_spec)
+    if rewrites:
+        log_step("desugar_compare", rewrites=rewrites)
+    return tuple(rewritten)
+
+
 def _parse_measure(
     key: str,
     raw: Any,
@@ -1868,6 +2163,7 @@ def _parse_measure(
     """Parse one requestable measure via the registered OpPlugin."""
     if not isinstance(raw, dict):
         raise BindError(f"measures.{key} must be an object.")
+    _assert_not_reserved_ident(key, what="measures")
     kind = raw.get("kind") or raw.get("op")
     hint = ""
     if kind in {"percent_of_cut_total", "percent_gt", "share_of_total"}:

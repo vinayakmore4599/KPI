@@ -107,6 +107,9 @@ measures:                    # every measure_key the UI can send
 | Trailing / leading / YTD window | `op: window` (`range: trailing` / `leading` / `cumulative`) |
 | An array for a graph | `op: trend` |
 | Per-period ratio of two aggregated bases (S-OTIF %) | `op: trend_arithmetic` |
+| YoY / MoM / prior-bucket % or gap on a named base | `op: compare` + `mode:` (bind-time sugar → `pct_change` / `diff`; §5.10) |
+| Conditional fact from a physical column | `op: filtered_point` / `filtered_window` / `filtered_trend` + `column:` + `where:` (§5.10) |
+| Conditional fact **and** period compare | `op: filtered_compare` (§5.10) |
 | YoY, ratio, same-row share, n-ary add/sub | `op: arithmetic` |
 | Share of **all groups on this cut** | `op: percent_of_total` (see §5.3c) |
 | Rank of groups on a cut | `op: rank` |
@@ -159,7 +162,7 @@ The practical consequences:
 | `anchor` | `selection_end`, `last_observed` | `selection_end` | `selection_end` is `max(S)`. `last_observed` probes the extract and sets `anchor = min(selection end, last observed bucket)`. `validate()` reports `anchor: null` and `anchor_source: "data"` in this mode. Suppresses the `unobserved_anchor` note. |
 | `max_span_years` | positive int | omitted | After the span is final, a span longer than this many years is `TimePlanError` (narrow the time filters). Uncapped KPIs still get a `wide_time_span` note above 10 years. |
 
-Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Leftover host period filters (`reporting_month`, `month`, `year`, `as_of_period`, and compose year-month keys) are skipped with `reason: no_time` even if mapped — they are not IN-filters on a snapshot. Other unmapped valued filters stay FilterError. A snapshot measure may not use a nonzero `offset`, `trailing`, or any kind that needs time (`window`, `trend`, `lag`, period hooks, …). `point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not. Snapshot KPIs may still use `over:` with a non-time `order_by`.
+Omit the entire `time:` block when the KPI has no period column. The engine then aggregates the filtered extract as a snapshot: no month filter, no date range, no dense spine. Leftover host period filters (`reporting_month`, `month`, `year`, `as_of_period`, and compose year-month keys) are skipped with `reason: no_time` even if mapped — they are not IN-filters on a snapshot. Other unmapped valued filters stay FilterError. A snapshot measure may not use a nonzero `offset`, `trailing`, or any kind that needs time (`window`, `trend`, `lag`, `compare`, `filtered_window`, `filtered_trend`, `filtered_compare`, period hooks, …). `point` / `filtered_point` + `offset: { months: 0 }` is allowed. `constant` + `trailing` is not. Snapshot KPIs may still use `over:` with a non-time `order_by`.
 
 Rules the engine enforces:
 
@@ -167,7 +170,7 @@ Rules the engine enforces:
 - A scalar `time.filter_code` on the context is still **exactly one** value (two values is an error, not a range). That path is byte-identical to today's single-bucket KPIs.
 - Missing time filters on a time-based KPI are legal: the engine probes min/max under the part predicates and bound dimension filters. `validate()` reports `anchor: null` and `anchor_source: "data"` until compute fills them. An empty selection (impossible combo, or no matching data) sets `anchor` to null, returns null measures / empty trend axis, and adds a `notes` entry — it does not raise.
 - Point measures fold the observed buckets of S. An offset shifts **each** bucket (`years: 1` on a year-only 2026 selection is the full 2025 total). Windows and named ranges (`mtd`, `ytd`) measure from `anchor` (`trailing: 3` from June is Apr–Jun; `mtd` under `year=2026` is December).
-- `parameters.time_grain` (context.parameters, not a filter, not `execution`) picks one allowlisted grain. The KPI must declare `parameters.time_grain`. Missing on the context → YAML `default` or `time.grain`. Not in `time.grains` (or not equal to `grain` when `grains` is omitted) → bind error. After bind, plan / DuckDB bucket / densify / `trailing.periods` use the pick, then part predicates apply at that grain. Response `parameters.time_grain` is the effective grain; bound request values are `request_parameters`.
+- `parameters.time_grain` (context.parameters, not a filter, not `execution`) picks one allowlisted grain. The KPI must declare `parameters.time_grain`. Missing on the context → YAML `default` or `time.grain`. Not in `time.grains` (or not equal to `grain` when `grains` is omitted) → bind error. After bind, plan / DuckDB bucket / densify / `trailing.periods` use the pick, then part predicates apply at that grain. Response `parameters.time_grain` is the effective grain; bound request values are `request_parameters`. Named `compare` modes `mom` / `wow` / `qoq` are checked against YAML `time.grain` at bind, not the later pick — use `mode: pop` when `parameters.time_grain` is declared.
 - A day pick requires a full `YYYY-MM-DD` unless `time.format` says otherwise. Week / month / quarter / year may accept `YYYY-MM` and truncate to the pick.
 - Truncation happens in SQL (ISO Monday for `week`; otherwise `date_trunc` after the column is parsed with `time.format`), so a mid-period date anchors on the period start.
 - Top-level `data_points` is a positive int when `grains` is omitted or a single grain. More than one allowed grain requires a map with a positive int for **every** listed grain. `trailing: { from: data_points }` reads the pick's length.
@@ -481,7 +484,7 @@ Every `measures_required[].measure_key` the UI can send must be a key here. Unkn
 
 `op:` and `kind:` are interchangeable spellings.
 
-Platform kinds are documented below. Add-on kinds (`ntile`, `lag`, `diff`, `top_n`, …) and hooks (`ewma`, `hit_rate`, `cagr`, `mad`, `projection`, `period_median` / alias `rolling_median`, …) are listed with examples in [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). A new name is `capabilities/` + `registries/` — not `pipeline/`.
+Platform kinds are documented below. `compare` and `filtered_*` are **bind-time sugar** (expand-only; §5.10). Add-on kinds (`ntile`, `lag`, `top_n`, …) and hooks (`ewma`, `hit_rate`, `cagr`, `mad`, `projection`, `period_median` / alias `rolling_median`, …) are listed with examples in [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). A new name is `capabilities/` + `registries/` — not `pipeline/`.
 
 ### JSON measure cells
 
@@ -847,9 +850,58 @@ Only needed when the platform sends a dimension as a `measure_key`. The key must
 
 See §10.3. The function must be listed in `registries/hooks.yaml`.
 
-### 5.9 Add-on kinds
+### 5.9 Period compare (`diff`, `pct_change`) and add-on kinds
 
-Cut-phase (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_share`, `running_total`, `running_avg`, `contribution`, `gap_to_leader`, `gap_to_avg`, `zscore`, `top_n`) and period-phase (`lag`, `lead`, `index`, `vs_target`, `threshold`, `diff`, `pct_change`) ops are allowlisted add-ons. YAML keys are kind-specific (`tiles`, `n`, `vs`, `cmp`, `offset`). `lag` / `lead` / `index` / `diff` / `pct_change` may `of:` a base or a shiftable measure (`point`, `window`, `fn`, `expr`, …). They cannot shift `trend`, `hook`, `rank`, or a row helper (`agg` omitted). Copy the example from [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). Do not invent a name that is not in the registry.
+`diff` and `pct_change` are **platform**. They evaluate the same `of:` at the current selection vs the selection shifted by `offset`. Prefer `op: compare` presets when authoring (bind-time sugar; §5.10) — those expand to these kinds. `lag` / `lead` / `index` / `diff` / `pct_change` may `of:` a base or a shiftable measure (`point`, `window`, `fn`, `expr`, …). They cannot shift `trend`, `hook`, `rank`, or a row helper (`agg` omitted).
+
+Cut-phase add-ons (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_share`, `running_total`, `running_avg`, `contribution`, `gap_to_leader`, `gap_to_avg`, `zscore`, `top_n`) and other period add-ons (`lag`, `lead`, `index`, `vs_target`, `threshold`) are allowlisted. YAML keys are kind-specific (`tiles`, `n`, `vs`, `cmp`, `offset`). Copy the example from [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). Do not invent a name that is not in the registry.
+
+### 5.10 Bind-time sugar (`compare`, `filtered_*`) — expand-only
+
+These ops are **not evaluated**. After bind the graph is only existing kinds (`point`, `window`, `trend`, `pct_change`, `diff`). Sugar is legal inside `when:` case bodies (desugar runs after overlay pick).
+
+| Intent | Use |
+|---|---|
+| Period compare on an **existing named base** (optional extra `where:`) | `op: compare` |
+| Conditional fact from a **physical column** (no named base) | `op: filtered_*` + `column:` |
+| Conditional fact **and** compare in one key | `op: filtered_compare` |
+
+`compare` + `column:` is BindError (`column:` is filtered-only). Sugar never invents extra **measure** keys. `column:` invents a hidden base `__{key}__base` (deduped by `sql`/`agg`/`where`/`model_id`). `of:` + `where:` still clones `__{key}__of` in the existing rewrite. Authored keys matching `^__` are reserved.
+
+```yaml
+yoy: { op: compare, of: sotif_value, mode: yoy }
+pop: { op: compare, of: sotif_value, mode: pop }
+gap: { op: compare, of: sotif_value, mode: diff, versus: { years: 1 } }
+
+closed_amount:
+  op: filtered_point
+  column: amount
+  agg: sum
+  where: { column: status, op: eq, value: closed }
+
+closed_yoy:
+  op: filtered_compare
+  column: amount
+  where: { column: status, op: eq, value: closed }
+  mode: yoy
+```
+
+| `mode` | Offset | Grain guard (YAML `time.grain`) |
+|---|---|---|
+| `yoy` | `{ years: 1 }` | none |
+| `mom` | `{ months: 1 }` | must be `month` |
+| `wow` | `{ weeks: 1 }` | must be `week` |
+| `qoq` | `{ periods: 1 }` | must be `quarter` |
+| `pop` | `{ periods: 1 }` | none — prior bucket at **effective** grain |
+| `diff` / `pct_change` | required `versus:` | none |
+
+Do not combine a named preset with `versus:` (use `mode: pct_change` or `mode: diff` with `versus:`). Named `mom`/`wow`/`qoq` are **not** re-checked after `parameters.time_grain` — use `mode: pop` when that parameter is declared.
+
+**Window compare.** `{ op: compare, of: value_3m, mode: yoy }` is the 3-month window vs the **same window one year earlier**, not a window of YoY. Unshiftable `of:` (`trend`, `rank`, `percent_of_total`) is BindError.
+
+**Filtered rules.** `where:` required; same ops as base `where:` (no `like`). `column:` xor `of:` a base with `agg:`. `agg:` only on the `column:` path (default `sum`). Optional `model:` on `filtered_*` is rejected. `ignore_filters:` stays on the measure. `cuts:` pass through (only trend/rank/`percent_of_total` honor them). Snapshot: `filtered_point` only.
+
+Gold [3004.yaml](kpi_config/kpis/sotif/3004.yaml) stays two `point` + `growth_pct` because those keys are host-requested. Do not rewrite it to `compare`.
 
 ---
 
@@ -1398,6 +1450,14 @@ pytest -q
 | `agg=percentile requires percentile:` | Missing quantile | Add `percentile: 90` |
 | `default_cut '<x>' is not a declared cut` | Typo in `default_cut` or `also_emit` | Match a `cuts[].name` |
 | `Unknown op/kind 'percent_of_cut_total'` | That name is not an op | Use `op: percent_of_total` |
+| `unknown mode` / `mode must be one of yoy, mom, wow, qoq, pop, diff, pct_change` | Bad `compare` / `filtered_compare` `mode:` | Use a listed preset |
+| `mode: qoq requires time.grain quarter` | QoQ at a non-quarter grain | Set `time.grain: quarter`, or `mode: pop` |
+| `cannot set versus: with mode:` | Preset plus `versus:` | Use `mode: pct_change` or `mode: diff` with `versus:` |
+| `cannot set both column: and of:` | Filtered sugar xor | Pick `column:` or `of:` a base |
+| `where is required on filtered ops` | Missing mask | Add `where:` |
+| `requires of: a base` | `filtered_* of:` a measure | `of:` a folded base, or `column:` |
+| `is reserved for engine clones` | Authored `__` key | Rename; `__` is for generated clones |
+| `cannot set agg: when of: names an existing base` | `agg:` on the `of:` path | `agg:` only with `column:` |
 | `measures.<k> op=percent_of_total requires of:` | Missing source | Point at a measure or base_measure |
 | `partition_by '…' is not a cut group_by` | Window key is not a dimension | Use a name from `dimensions` / `cuts[].group_by` |
 | `measures.<k> spans models … declare model_relations` | A requested graph reads two extracts with no join | Add `model_relations` (§8), or request one extract at a time |

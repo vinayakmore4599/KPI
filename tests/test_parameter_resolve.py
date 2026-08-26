@@ -71,6 +71,41 @@ def test_when_picks_g_vs_else(parquet_path, extra_config):
     assert value_of(row_r, "picked") == 3.0
 
 
+def test_when_case_body_can_be_compare(parquet_path, extra_config):
+    spec = minimal_kpi(
+        9930,
+        parameters={
+            "Level": {
+                "type": "string",
+                "default": "G",
+                "allowed": ["G", "Y"],
+            }
+        },
+        measures={
+            "picked": {
+                "when": {
+                    "param": "Level",
+                    "cases": {
+                        "G": {"op": "compare", "of": "sotif_value", "mode": "yoy"},
+                    },
+                    "else": {"of": "sotif_value", "op": "point"},
+                }
+            }
+        },
+    )
+    write_yaml(extra_config / "kpis" / "9930.yaml", spec)
+    kpi = load_kpi(9930, extra_config)
+    spec_g = {m.key: m for m in kpi.measures}["picked"]
+    assert spec_g.kind == "pct_change"
+    ctx = make_context(
+        parquet_path, measures=["picked"], supplier=["ABC"], kpi_id=9930
+    )
+    row = find_row(compute(ctx, config_dir=extra_config), cut="G", reason="LATE_SUPPLIER")
+    assert value_of(row, "picked") is not None
+    kpi_y = load_kpi(9930, extra_config, parameters={"Level": "Y"})
+    assert {m.key: m for m in kpi_y.measures}["picked"].kind == "point"
+
+
 def test_when_missing_else_errors(extra_config):
     spec = _level_pack(9811)
     spec["measures"]["picked"]["when"].pop("else")

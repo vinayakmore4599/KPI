@@ -18,7 +18,7 @@ import pandas as pd
 from kpi_engine import compute, validate
 from kpi_engine.contracts import TimeSpec
 from kpi_engine.dates import iso_period, truncate_period
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, value_of
 
 
 def test_fiscal_year_and_quarter_truncate():
@@ -70,14 +70,14 @@ def test_day_grain_trailing_window(tmp_path, extra_config):
     )
     planned = validate(ctx, config_dir=extra_config)
     assert planned["anchor"] == "2026-03-15"
-    assert planned["lookback_months"] == 2
+    assert value_of(planned, "lookback_months") == 2
     assert planned["span_start"] == "2026-03-13"
     sql = planned["sql"]
     assert "date_trunc('day'" in sql
     result = compute(ctx, config_dir=extra_config)
     row = result["rows"][0]
-    assert row["current_value"] == 4.0
-    assert row["value_3p"] == 7.0
+    assert value_of(row, "current_value") == 4.0
+    assert value_of(row, "value_3p") == 7.0
 
 
 def test_gregorian_quarter_rolls_three_months(tmp_path, extra_config):
@@ -105,7 +105,7 @@ def test_gregorian_quarter_rolls_three_months(tmp_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     assert result["parameters"]["anchor"] == "2026-01-01"
-    assert result["rows"][0]["current_value"] == 60.0
+    assert value_of(result["rows"][0], "current_value") == 60.0
 
 
 def test_fiscal_quarter_differs_from_gregorian(tmp_path, extra_config):
@@ -131,7 +131,7 @@ def test_fiscal_quarter_differs_from_gregorian(tmp_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     assert result["parameters"]["anchor"] == "2026-02-01"
-    assert result["rows"][0]["current_value"] == 12.0
+    assert value_of(result["rows"][0], "current_value") == 12.0
     assert "INTERVAL" in result["sql"]
 
 

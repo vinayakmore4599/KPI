@@ -15,7 +15,7 @@ When to use
 import pandas as pd
 
 from kpi_engine import compute
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, value_of
 
 
 def test_count_distinct_window_is_not_sum_of_months(tmp_path, extra_config):
@@ -33,8 +33,8 @@ def test_count_distinct_window_is_not_sum_of_months(tmp_path, extra_config):
         for r in result["rows"]
         if r["output_cut"] == "R" and r["region"] == "NA"
     )
-    assert na["distinct_now"] == 2.0
-    assert na["distinct_3m"] == 3.0
+    assert value_of(na, "distinct_now") == 2.0
+    assert value_of(na, "distinct_3m") == 3.0
 
 
 def test_count_distinct_g_is_not_sum_of_r(tmp_path, extra_config):
@@ -44,9 +44,9 @@ def test_count_distinct_g_is_not_sum_of_r(tmp_path, extra_config):
     ctx = make_context(path, measures=["distinct_now"], kpi_id=9031)
     result = compute(ctx, config_dir=extra_config)
     g = next(r for r in result["rows"] if r["output_cut"] == "G")
-    r_sum = sum(r["distinct_now"] for r in result["rows"] if r["output_cut"] == "R")
+    r_sum = sum(value_of(r, "distinct_now") for r in result["rows"] if r["output_cut"] == "R")
     # NA has ABC+XYZ (2), EU has ABC (1); G has ABC+XYZ (2), not 3
-    assert g["distinct_now"] == 2.0
+    assert value_of(g, "distinct_now") == 2.0
     assert r_sum == 3.0
 
 
@@ -66,8 +66,8 @@ def test_median_and_percentile_from_rows(tmp_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     row = result["rows"][0]
-    assert row["median_now"] == 20.0
-    assert row["p90_now"] == 28.0
+    assert value_of(row, "median_now") == 20.0
+    assert value_of(row, "p90_now") == 28.0
 
 
 def test_median_g_is_not_median_of_r_medians(tmp_path, extra_config):
@@ -97,10 +97,10 @@ def test_median_g_is_not_median_of_r_medians(tmp_path, extra_config):
     ctx = make_context(path, measures=["median_now"], supplier=["ABC"], kpi_id=9036)
     result = compute(ctx, config_dir=extra_config)
     g = next(r for r in result["rows"] if r["output_cut"] == "G")
-    r_medians = [r["median_now"] for r in result["rows"] if r["output_cut"] == "R"]
-    assert g["median_now"] == 30.0
+    r_medians = [value_of(r, "median_now") for r in result["rows"] if r["output_cut"] == "R"]
+    assert value_of(g, "median_now") == 30.0
     assert sorted(r_medians) == [20.0, 150.0]
-    assert g["median_now"] != sum(r_medians) / len(r_medians)
+    assert value_of(g, "median_now") != sum(r_medians) / len(r_medians)
 
 
 def _facts(tmp_path):

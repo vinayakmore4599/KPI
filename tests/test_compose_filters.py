@@ -22,7 +22,7 @@ from kpi_engine.pipeline.compose import expand_compose, parse_compose_template
 from kpi_engine.pipeline.time_planner import plan_time
 from kpi_engine.dates import parse_date
 from kpi_engine.exceptions import BindError, TimePlanError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _ctx_year_month(parquet_path, extra_config, kpi_id, *, year=2026, month=7, measures=None, extra=None):
@@ -130,15 +130,15 @@ def test_compose_does_not_replace_lookback(parquet_path, extra_config):
         extra=spec,
     )
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 12
+    assert value_of(planned, "lookback_months") == 12
     assert planned["span_start"] == "2025-03-01"
     sql = " ".join(planned["sql"].split())
     assert " IN (2026" not in sql
     assert '"year" IN' not in sql
     result = compute(ctx, config_dir=extra_config)
     late = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert late["current_value"] == 45.0
-    assert late["previous_year_value"] == 15.0
+    assert value_of(late, "current_value") == 45.0
+    assert value_of(late, "previous_year_value") == 15.0
 
 
 def test_host_scalar_period_wins_and_compose_keys_are_still_stripped(parquet_path, extra_config):
@@ -227,6 +227,6 @@ def test_non_time_compose_skips_when_a_part_is_blank(parquet_path, extra_config)
         extra_filters={"reason_a": {"values": ["LATE"], "input_text": "simple"}},
     )
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
     assert {"filter_code": "reason_code", "reason": "blank"} in result["skipped_filters"]
     assert all(f["filter_code"] != "reason_code" for f in result["applied_filters"])

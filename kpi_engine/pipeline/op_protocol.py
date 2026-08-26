@@ -72,11 +72,16 @@ class CommonMeasureFields:
 
 
 def offset_is_nonzero(offset: Offset | None) -> bool:
-    """True when a calendar offset actually shifts the anchor."""
+    """True when a calendar or grain-period offset actually shifts the anchor."""
     if offset is None:
         return False
     return bool(
-        offset.months or offset.years or offset.days or offset.quarters or offset.weeks
+        offset.months
+        or offset.years
+        or offset.days
+        or offset.quarters
+        or offset.weeks
+        or offset.periods
     )
 
 

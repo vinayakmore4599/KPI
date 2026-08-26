@@ -15,7 +15,7 @@ from kpi_engine.contracts import OutputSpec
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.capabilities.ops.cut import PercentOfTotal
 from kpi_engine.exceptions import BindError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def test_percent_of_total_across_reason_codes_on_cut_g(parquet_path, extra_config):
@@ -36,10 +36,10 @@ def test_percent_of_total_across_reason_codes_on_cut_g(parquet_path, extra_confi
     result = compute(ctx, config_dir=extra_config)
     g_late = find_row(result, cut="G", reason="LATE_SUPPLIER")
     g_other = find_row(result, cut="G", reason="OTHER")
-    assert g_late["current_value"] == 45.0
-    assert g_other["current_value"] == 6.0
-    assert abs(g_late["percent_gt"] - (45.0 / 51.0) * 100) < 1e-9
-    assert abs(g_other["percent_gt"] - (6.0 / 51.0) * 100) < 1e-9
+    assert value_of(g_late, "current_value") == 45.0
+    assert value_of(g_other, "current_value") == 6.0
+    assert abs(value_of(g_late, "percent_gt") - (45.0 / 51.0) * 100) < 1e-9
+    assert abs(value_of(g_other, "percent_gt") - (6.0 / 51.0) * 100) < 1e-9
     r_rows = [r for r in result["rows"] if r["output_cut"] == "R"]
     assert all("percent_gt" not in r for r in r_rows)
 
@@ -62,8 +62,8 @@ def test_percent_of_total_of_base_measure(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     g_late = find_row(result, cut="G", reason="LATE_SUPPLIER")
     g_other = find_row(result, cut="G", reason="OTHER")
-    assert abs(g_late["percent_gt"] - (45.0 / 51.0) * 100) < 1e-9
-    assert abs(g_other["percent_gt"] - (6.0 / 51.0) * 100) < 1e-9
+    assert abs(value_of(g_late, "percent_gt") - (45.0 / 51.0) * 100) < 1e-9
+    assert abs(value_of(g_other, "percent_gt") - (6.0 / 51.0) * 100) < 1e-9
 
 
 def test_percent_of_total_partition_by_reason_on_cut_r(parquet_path, extra_config):
@@ -86,11 +86,11 @@ def test_percent_of_total_partition_by_reason_on_cut_r(parquet_path, extra_confi
     na_late = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
     eu_late = find_row(result, cut="R", reason="LATE_SUPPLIER", region="EU")
     na_other = find_row(result, cut="R", reason="OTHER", region="NA")
-    assert na_late["current_value"] == 30.0
-    assert eu_late["current_value"] == 15.0
-    assert abs(na_late["percent_gt"] - (30.0 / 45.0) * 100) < 1e-9
-    assert abs(eu_late["percent_gt"] - (15.0 / 45.0) * 100) < 1e-9
-    assert abs(na_other["percent_gt"] - 100.0) < 1e-9
+    assert value_of(na_late, "current_value") == 30.0
+    assert value_of(eu_late, "current_value") == 15.0
+    assert abs(value_of(na_late, "percent_gt") - (30.0 / 45.0) * 100) < 1e-9
+    assert abs(value_of(eu_late, "percent_gt") - (15.0 / 45.0) * 100) < 1e-9
+    assert abs(value_of(na_other, "percent_gt") - 100.0) < 1e-9
 
 
 def test_percent_of_total_zero_total_is_null():

@@ -25,7 +25,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, unwrap_cell, value_of
 
 FUEL_PCT = {"NA": 0.12, "EU": 0.18}
 LATE_PENALTY = 15.0
@@ -421,6 +421,7 @@ def _iso(value) -> str:
 
 
 def _approx_list(actual, expected) -> None:
+    actual = unwrap_cell(actual)
     assert actual is not None, expected
     assert len(actual) == len(expected), (actual, expected)
     for got, want in zip(actual, expected):
@@ -518,7 +519,7 @@ def test_e2e_freight_settlement_rank_having_fill_zero(tmp_path, extra_config):
         assert row["green"] is want_green
 
     na_std = _pick(result, region="NA", lane="Standard")
-    assert na_std["charge_rank"] == 1
+    assert value_of(na_std, "charge_rank") == 1
     assert na_std["green"] is True
     eu_std = _pick(result, region="EU", lane="Standard")
     assert eu_std["healthy"] == pytest.approx(0.0)

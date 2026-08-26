@@ -328,13 +328,14 @@ class CutSpec:
 
 @dataclass(frozen=True)
 class Offset:
-    """Calendar offset for a point measure (months and years added together)."""
+    """Calendar offset, or grain-step ``periods``, for a point / lag measure."""
 
     months: int = 0
     years: int = 0
     days: int = 0
     quarters: int = 0
     weeks: int = 0
+    periods: int = 0
 
     @property
     def total_months(self) -> int:

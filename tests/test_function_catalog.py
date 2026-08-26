@@ -26,7 +26,7 @@ from kpi_engine.pipeline.fn_apply import (
     unregister_column_fn,
     unregister_measure_fn,
 )
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, unwrap_cell, value_of
 
 
 @pytest.fixture
@@ -111,7 +111,7 @@ def _only_value(path, extra_config, kpi_id, measure="current_value"):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    return row[measure]
+    return unwrap_cell(row[measure])
 
 
 def test_builtin_ops_are_registered():
@@ -145,7 +145,7 @@ def test_custom_column_function_receives_declared_columns(tmp_path, extra_config
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 60.0  # 2 * 3 * 10
+    assert value_of(row, "current_value") == 60.0  # 2 * 3 * 10
 
 
 def test_custom_column_function_folds_multiple_rows(tmp_path, extra_config, weighted_fn):
@@ -169,7 +169,7 @@ def test_custom_column_function_folds_multiple_rows(tmp_path, extra_config, weig
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 50.0  # 1*1*10 + 2*2*10
+    assert value_of(row, "current_value") == 50.0  # 1*1*10 + 2*2*10
 
 
 def test_unknown_column_op_is_rejected_at_bind(extra_config):
@@ -384,7 +384,7 @@ def test_diamond_dependency_is_computed_once(tmp_path, extra_config):
             reason="LATE_SUPPLIER",
             region="NA",
         )
-        assert row["top"] == 40.0
+        assert value_of(row, "top") == 40.0
         # One combo on cut R plus one on cut G: 3 fn calls each, not 7.
         assert len(calls) == 6
     finally:

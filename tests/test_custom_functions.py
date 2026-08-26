@@ -21,7 +21,7 @@ from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.dates import add_months
 from kpi_engine.exceptions import BindError, CatalogError
 from kpi_engine.pipeline.hook_registry import REGISTRY, register, run, unregister
-from tests.conftest import find_row, make_context, write_yaml
+from tests.conftest import find_row, make_context, write_yaml, value_of
 
 
 def _at(series: pd.DataFrame, time_col: str, measure: str, month: date) -> float | None:
@@ -82,11 +82,11 @@ def test_yaml_hook_computes_custom_scalars(parquet_path, extra_config):
         )
         result = compute(ctx, config_dir=extra_config)
         g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-        assert g["current_value"] == 45.0
-        assert g["doubled"] == 90.0
+        assert value_of(g, "current_value") == 45.0
+        assert value_of(g, "doubled") == 90.0
         # 0.5 * 45 + 0.5 * 30
-        assert g["blended"] == 37.5
-        assert result["parameters"]["lookback_months"] == 1
+        assert value_of(g, "blended") == 37.5
+        assert value_of(result["parameters"], "lookback_months") == 1
     finally:
         unregister("double_anchor")
         unregister("blend_mom")

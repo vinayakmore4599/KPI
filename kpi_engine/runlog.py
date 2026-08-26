@@ -2,6 +2,7 @@
 
 What this file provides
     start_run / end_run — one timestamped log file per compute() or validate().
+    write_result_json — opt-in dump of the compute() payload after period wrap.
     traced — decorator that records invoke + return for pipeline functions.
     log_sql — writes the DuckDB query, bound parameters, and the same SQL with
     values inlined so it can be copied into DuckDB. Never truncated.
@@ -11,14 +12,16 @@ What this file provides
 
 Where it is used
     orchestrator starts a run; core functions use @traced. Tests isolate files
-    via KPI_ENGINE_LOG_DIR or compute(..., log_dir=...).
+    via KPI_ENGINE_LOG_DIR or compute(..., log_dir=...). Result JSON is off
+    unless KPI_ENGINE_RESULT_LOG=1 or compute(..., result_log=True).
 
 Capabilities
     Default directory is ./logs (or $KPI_ENGINE_LOG_DIR). Disable with
-    KPI_ENGINE_LOG=0 when no log_dir is passed. A host session is never
-    described beyond its type. SQL (parameterized and inlined) and the inbound
-    context are always written in full. Percent signs in SQL or JSON cannot drop
-    a log line.
+    KPI_ENGINE_LOG=0 when no log_dir is passed. Result JSON uses
+    KPI_ENGINE_RESULT_DIR when set, else the text-log directory. A host session
+    is never described beyond its type. SQL (parameterized and inlined) and the
+    inbound context are always written in full. Percent signs in SQL or JSON
+    cannot drop a log line.
 
 When to use
     Change formatting here, not by scattering print() in core modules.
@@ -68,10 +71,22 @@ class _SafeFormatter(logging.Formatter):
 class _Run:
     """One compute/validate log file and its logging.Logger."""
 
-    def __init__(self, path: Path, logger: logging.Logger, handler: logging.Handler) -> None:
+    def __init__(
+        self,
+        path: Path,
+        logger: logging.Logger,
+        handler: logging.Handler,
+        *,
+        stamp: str,
+        seq: int,
+        safe_kpi: str,
+    ) -> None:
         self.path = path
         self.logger = logger
         self.handler = handler
+        self.stamp = stamp
+        self.seq = seq
+        self.safe_kpi = safe_kpi
 
 
 def logging_enabled(*, log_dir: str | Path | None = None) -> bool:
@@ -88,6 +103,59 @@ def default_log_dir() -> Path:
     if env:
         return Path(env)
     return Path.cwd() / "logs"
+
+
+def default_result_dir() -> Path:
+    """KPI_ENGINE_RESULT_DIR, else the text-log directory."""
+    env = os.environ.get("KPI_ENGINE_RESULT_DIR", "").strip()
+    if env:
+        return Path(env)
+    return default_log_dir()
+
+
+def result_logging_enabled(*, result_log: bool | None = None) -> bool:
+    """Result JSON file is off unless env or an explicit kwarg turns it on."""
+    if result_log is True:
+        return True
+    if result_log is False:
+        return False
+    flag = os.environ.get("KPI_ENGINE_RESULT_LOG", "0").strip().lower()
+    return flag in {"1", "true", "yes", "on"}
+
+
+def write_result_json(
+    result: dict[str, Any],
+    *,
+    result_log: bool | None = None,
+    result_log_dir: str | Path | None = None,
+) -> dict[str, str] | None:
+    """Write the compute payload after wrap. Returns a note dict on failure."""
+    if not result_logging_enabled(result_log=result_log):
+        return None
+    root = Path(result_log_dir) if result_log_dir is not None else default_result_dir()
+    run = _active.get()
+    if run is not None:
+        stamp, seq, safe_kpi = run.stamp, run.seq, run.safe_kpi
+    else:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        seq = next(_FILE_COUNTER)
+        safe_kpi = _SAFE_NAME.sub("_", str(result.get("kpi_id") or "unknown"))[:80]
+    path = root / f"kpi-result-{safe_kpi}-{stamp}-{seq:04d}.json"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(result, indent=2, allow_nan=False, default=str, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        info("RESULT log failed path=%s error=%s", path, exc)
+        return {
+            "code": "result_log_failed",
+            "measure": "",
+            "detail": str(exc),
+        }
+    info("RESULT log_file=%s", path)
+    return None
 
 
 def start_run(
@@ -117,7 +185,7 @@ def start_run(
     handler = logging.FileHandler(path, encoding="utf-8")
     handler.setFormatter(_SafeFormatter(datefmt="%Y-%m-%d %H:%M:%S"))
     logger.addHandler(handler)
-    _active.set(_Run(path, logger, handler))
+    _active.set(_Run(path, logger, handler, stamp=stamp, seq=seq, safe_kpi=safe_kpi))
     info(
         "RUN start kind=%s kpi_id=%s request_id=%s log_file=%s",
         kind,

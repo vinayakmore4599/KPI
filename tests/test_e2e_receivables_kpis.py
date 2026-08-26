@@ -29,7 +29,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.dates import month_range_inclusive
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, value_of
 
 ANCHOR = date(2026, 3, 1)
 MONTHS = month_range_inclusive(date(2025, 1, 1), ANCHOR)
@@ -413,7 +413,7 @@ def test_ar_l1_fx_normalised_balances(tmp_path, extra_config):
         assert row["billed"] == pytest.approx(want["billed_usd"])
         assert row["collected"] == pytest.approx(want["collected_usd"])
         assert row["ar_balance"] == pytest.approx(want["outstanding_usd"])
-        assert row["ar_balance"] == pytest.approx(row["billed"] - row["collected"])
+        assert row["ar_balance"] == pytest.approx(value_of(row, "billed") - value_of(row, "collected"))
         assert row["invoices"] == pytest.approx(want["invoices"])
 
     # CUST-5 bills 4,000,000 + 2,000,000 + 1,000,000 INR at 0.012.
@@ -468,7 +468,9 @@ def test_ar_l2_aging_buckets_reconcile(tmp_path, extra_config):
             want["overdue_usd"] * 100.0 / want["outstanding_usd"]
         )
         # Current is exactly the balance that is not overdue.
-        assert row["ar_balance"] - row["aging_current"] == pytest.approx(row["overdue_amount"])
+        assert value_of(row, "ar_balance") - value_of(row, "aging_current") == pytest.approx(
+            value_of(row, "overdue_amount")
+        )
 
     # Every bucket carries balance somewhere in the ledger this month.
     company = _by_grain(ANCHOR, ())[()]
@@ -509,7 +511,7 @@ def test_ar_l3_days_sales_outstanding(tmp_path, extra_config):
     # Equivalent framing: the uncollected share of the book, expressed in days.
     collected_share = truth["collected_usd"] / truth["billed_usd"]
     assert total["dso"] == pytest.approx((1.0 - collected_share) * DAYS_IN_PERIOD)
-    assert 0.0 < total["dso"] < DAYS_IN_PERIOD
+    assert 0.0 < value_of(total, "dso") < DAYS_IN_PERIOD
 
 
 # --------------------------------------------------------------------------
@@ -539,7 +541,7 @@ def test_ar_l4_expected_credit_loss(tmp_path, extra_config):
     assert total["expected_credit_loss"] == pytest.approx(by_hand)
     assert total["expected_credit_loss"] == pytest.approx(truth["ecl_usd"])
     # The provision must sit between the best and worst single-bucket rate.
-    assert 0.5 < total["coverage_rate"] < 40.0
+    assert 0.5 < value_of(total, "coverage_rate") < 40.0
 
 
 # --------------------------------------------------------------------------
@@ -561,7 +563,7 @@ def test_ar_l5_collection_effectiveness_index(tmp_path, extra_config):
         assert row["opening_ar"] == pytest.approx(begin)
         assert row["cei"] == pytest.approx(numerator * 100.0 / denominator)
         # CEI is bounded by 100: you cannot collect more than was collectable.
-        assert 0.0 < row["cei"] <= 100.0
+        assert 0.0 < value_of(row, "cei") <= 100.0
 
 
 # --------------------------------------------------------------------------

@@ -96,11 +96,13 @@ constant:
   role: platform
   enabled: true
   aliases: []
-  description: A literal number on every row.
+  description: A literal number, or a per-dimension map with default.
   example: |
-    target:
+    region_target:
       op: constant
-      value: 95
+      by: region
+      value: { APAC: 90, EMEA: 85 }
+      default: null
   module: kpi_engine.capabilities.ops.combo
   attr: Constant
 

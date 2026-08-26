@@ -84,7 +84,18 @@ Each `compute` / `validate` writes a new file under `logs/` (or `$KPI_ENGINE_LOG
 
 The file traces every pipeline step (adapt, bind, extract, calculate), logs the **full DuckDB SQL** (parameterized, each bound value, and the same statement with values inlined so you can paste it into DuckDB), and records each function invoke/return. Pass `log_dir=` to override the folder. Set `KPI_ENGINE_LOG=0` to disable.
 
-`business_date` on the context is ignored. The **selected month** in filters is the anchor.
+Opt-in **result JSON** (the same dict `compute()` returns, after period wrap) is **off** by default:
+
+| Control | Default | Effect |
+|---|---|---|
+| `KPI_ENGINE_RESULT_LOG` | off (`0`) | Set `1` / `true` / `yes` / `on` to write `kpi-result-<kpi_id>-<timestamp>-<seq>.json` |
+| `compute(..., result_log=True\|False)` | unset | Wins over the env flag |
+| `KPI_ENGINE_RESULT_DIR` | same as the text-log directory | Folder for result files |
+| `compute(..., result_log_dir=...)` | unset | Overrides the folder |
+
+A write failure is recorded as `notes` `result_log_failed` and does not fail the request. `validate()` does not write result JSON.
+
+`business_date` on the context is ignored. The **selected month** in filters is the anchor. Measure tooltips must use each cell's `period`, not `parameters.anchor`.
 
 ---
 

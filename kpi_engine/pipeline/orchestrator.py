@@ -93,6 +93,7 @@ from kpi_engine.runlog import (
     peek_request_id,
     start_run,
     traced,
+    write_result_json,
 )
 
 
@@ -102,6 +103,8 @@ def compute(
     config_dir: str | Path | None = None,
     connection: Any | None = None,
     log_dir: str | Path | None = None,
+    result_log: bool | None = None,
+    result_log_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run the full KPI request: bind YAML, extract in DuckDB, calculate in Pandas, return JSON."""
     start_run(
@@ -111,9 +114,15 @@ def compute(
         log_dir=log_dir,
     )
     try:
-        return _compute(
+        result = _compute(
             context, config_dir=config_dir, connection=connection
         )
+        note = write_result_json(
+            result, result_log=result_log, result_log_dir=result_log_dir
+        )
+        if note:
+            result = {**result, "notes": list(result.get("notes") or []) + [note]}
+        return result
     except Exception:
         log_exception("compute failed")
         raise
@@ -896,70 +905,36 @@ def _stamp_dimension_roles(
 
 
 def _measure_cell(payload: dict[str, Any]) -> dict[str, Any]:
-    """Period-labelled cell that JSON-encodes as a dict and equals its bare value."""
-    return MeasureCell(payload)
+    """Period-labelled cell as a plain JSON object."""
+    return dict(payload)
 
 
-class MeasureCell(dict):
-    """``{value, period}`` (or trend point) that still ``==`` the scalar value."""
-
-    def _number(self):
-        return self.get("value")
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, (int, float)) or other is None:
-            return self._number() == other
-        if type(other).__name__.startswith("Approx"):
-            return other == self._number()
-        return dict.__eq__(self, other)
-
-    def __float__(self) -> float:
-        return float(self._number())
-
-    def __int__(self) -> int:
-        return int(self._number())
-
-    def __lt__(self, other: object) -> bool:
-        return self._number() < _cell_number(other)
-
-    def __le__(self, other: object) -> bool:
-        return self._number() <= _cell_number(other)
-
-    def __gt__(self, other: object) -> bool:
-        return self._number() > _cell_number(other)
-
-    def __ge__(self, other: object) -> bool:
-        return self._number() >= _cell_number(other)
-
-    def __add__(self, other: object):
-        return self._number() + _cell_number(other)
-
-    def __radd__(self, other: object):
-        return _cell_number(other) + self._number()
-
-    def __sub__(self, other: object):
-        return self._number() - _cell_number(other)
-
-    def __rsub__(self, other: object):
-        return _cell_number(other) - self._number()
-
-    def __mul__(self, other: object):
-        return self._number() * _cell_number(other)
-
-    def __rmul__(self, other: object):
-        return _cell_number(other) * self._number()
-
-    def __truediv__(self, other: object):
-        return self._number() / _cell_number(other)
-
-    def __rtruediv__(self, other: object):
-        return _cell_number(other) / self._number()
+def _coerce_numeric_cell(raw: Any) -> Any:
+    """Python int/float when the cell is numeric; otherwise the original value."""
+    if raw is None or isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return raw
+    if hasattr(raw, "item"):
+        try:
+            raw = raw.item()
+        except (ValueError, AttributeError):
+            return raw
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float):
+            return raw
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return raw
 
 
-def _cell_number(other: object):
-    if isinstance(other, MeasureCell):
-        return other._number()
-    return other
+_WRAP_META_FIELDS = ("period", "period_start", "period_end", "baseline_period")
 
 
 def _wrap_timed_measures(
@@ -980,10 +955,25 @@ def _wrap_timed_measures(
         plugin = get_op(spec.kind)
         try:
             meta = plugin.periods(spec, kpi, plan)
-        except BindError:
+        except BindError as exc:
+            notes.append(
+                {
+                    "code": "period_wrap_skipped",
+                    "measure": spec.key,
+                    "detail": str(exc),
+                }
+            )
             continue
         if meta:
             meta_by_key[spec.key] = meta
+        elif kpi.time is not None and plugin.needs_time(spec):
+            notes.append(
+                {
+                    "code": "period_wrap_skipped",
+                    "measure": spec.key,
+                    "detail": "no selection or anchor",
+                }
+            )
     if not meta_by_key:
         return rows, notes
     for row in rows:
@@ -1009,15 +999,25 @@ def _wrap_timed_measures(
                     )
                     continue
                 row[key] = [
-                    _measure_cell({"period": period, "value": value})
+                    _measure_cell(
+                        {"period": period, "value": _coerce_numeric_cell(value)}
+                    )
                     for period, value in zip(axis, raw)
                 ]
                 continue
-            if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            coerced = _coerce_numeric_cell(raw)
+            if not isinstance(coerced, (int, float)) or isinstance(coerced, bool):
+                notes.append(
+                    {
+                        "code": "period_wrap_skipped",
+                        "measure": key,
+                        "detail": f"non-numeric {type(raw).__name__}",
+                    }
+                )
                 continue
-            wrapped = {"value": raw}
+            wrapped = {"value": coerced}
             wrapped.update(
-                {name: meta[name] for name in ("period", "period_start", "period_end") if name in meta}
+                {name: meta[name] for name in _WRAP_META_FIELDS if name in meta}
             )
             row[key] = _measure_cell(wrapped)
     return rows, notes

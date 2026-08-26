@@ -21,7 +21,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, unwrap_cell, value_of
 
 TAX = 1.18
 REBATE_PCT = {"Gold": 0.05, "Silver": 0.02, "Bronze": 0.0}
@@ -483,6 +483,7 @@ def _context(
 
 
 def _approx(actual, expected, key: str) -> None:
+    actual = unwrap_cell(actual)
     if expected is None:
         assert actual is None or (isinstance(actual, float) and pd.isna(actual)), (key, actual)
         return
@@ -515,14 +516,14 @@ def test_e2e_commerce_steps_agg_rank_predicate(tmp_path, extra_config):
     eu_elec = _pick(result, region="EU", product_category="Electronics")
     na_app = _pick(result, region="NA", product_category="Apparel")
     eu_app = _pick(result, region="EU", product_category="Apparel")
-    assert na_elec["revenue_rank"] == 1
-    assert eu_elec["revenue_rank"] == 2
-    assert na_app["revenue_rank"] == 1
-    assert eu_app["revenue_rank"] == 2
-    assert na_elec["healthy"] == 1.0
-    assert na_app["healthy"] == 1.0
-    assert eu_elec["healthy"] == 0.0
-    assert eu_app["healthy"] == 0.0
+    assert value_of(na_elec, "revenue_rank") == 1
+    assert value_of(eu_elec, "revenue_rank") == 2
+    assert value_of(na_app, "revenue_rank") == 1
+    assert value_of(eu_app, "revenue_rank") == 2
+    assert value_of(na_elec, "healthy") == 1.0
+    assert value_of(na_app, "healthy") == 1.0
+    assert value_of(eu_elec, "healthy") == 0.0
+    assert value_of(eu_app, "healthy") == 0.0
     assert na_elec["overall_margin"] != pytest.approx(na_elec["avg_margin_pct"])
 
 
@@ -563,7 +564,9 @@ def test_e2e_commerce_customer_windows_by_order_date(tmp_path, extra_config):
     _approx(o3["running_total_per_customer"], float(c1.iloc[2]["running_total_per_customer"]), "run")
     _approx(o1["total_revenue"], float(c1.iloc[0]["final"]), "final")
     assert o3["running_total_per_customer"] == pytest.approx(
-        o1["total_revenue"] + o2["total_revenue"] + o3["total_revenue"]
+        value_of(o1, "total_revenue")
+        + value_of(o2, "total_revenue")
+        + value_of(o3, "total_revenue")
     )
 
     zero = _pick(result, customer_id="C5", order_id="O9")
@@ -590,15 +593,17 @@ def test_e2e_commerce_region_rollup_and_partition_bind(tmp_path, extra_config):
     _approx(na["total_profit"], na_e["total_profit"], "na_profit")
     _approx(na["order_count"], na_e["order_count"], "na_n")
     _approx(eu["total_revenue"], eu_e["total_revenue"], "eu_rev")
-    assert na["healthy"] == 1.0
-    assert eu["healthy"] == 0.0
+    assert value_of(na, "healthy") == 1.0
+    assert value_of(eu, "healthy") == 0.0
 
     cat_ctx = _context(path, extra_config, 9962, ["total_revenue", "avg_margin_pct", "order_count"])
     by_cat = compute(cat_ctx, config_dir=extra_config)
     na_elec = _pick(by_cat, region="NA", product_category="Electronics")
     na_app = _pick(by_cat, region="NA", product_category="Apparel")
-    assert na["total_revenue"] == pytest.approx(na_elec["total_revenue"] + na_app["total_revenue"])
-    mean_of_avgs = (na_elec["avg_margin_pct"] + na_app["avg_margin_pct"]) / 2
+    assert na["total_revenue"] == pytest.approx(
+        value_of(na_elec, "total_revenue") + value_of(na_app, "total_revenue")
+    )
+    mean_of_avgs = (value_of(na_elec, "avg_margin_pct") + value_of(na_app, "avg_margin_pct")) / 2
     assert na["avg_margin_pct"] != pytest.approx(mean_of_avgs)
 
     ranked = _context(

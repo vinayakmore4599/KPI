@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
+
 from kpi_engine.capabilities.ops import support
 from kpi_engine.contracts import (
     NON_ADDITIVE_AGGS,
@@ -14,7 +16,7 @@ from kpi_engine.contracts import (
     OutputSpec,
     TimeSpec,
 )
-from kpi_engine.pipeline.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
+from kpi_engine.pipeline.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin, offset_is_nonzero
 from kpi_engine.exceptions import BindError, CatalogError
 from kpi_engine.identifiers import (
     assert_expr_calls,
@@ -35,11 +37,7 @@ def _combo(ctx: EvalCtx) -> dict[str, Any]:
 
 
 def _offset_nonzero(offset) -> bool:
-    if offset is None:
-        return False
-    return bool(
-        offset.months or offset.years or offset.days or offset.quarters or offset.weeks
-    )
+    return offset_is_nonzero(offset)
 
 
 class Point(OpPlugin):
@@ -61,22 +59,7 @@ class Point(OpPlugin):
             )
 
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
-        if not spec.offset:
-            return 0
-        if time is None or (
-            time.grain == "month"
-            and spec.offset.days == 0
-            and spec.offset.quarters == 0
-            and spec.offset.weeks == 0
-        ):
-            return spec.offset.total_months
-        from kpi_engine.dates import apply_offset, periods_between, truncate_period
-        from datetime import date as date_cls
-
-        dummy = date_cls(2021, 6, 15)
-        dummy_t = truncate_period(dummy, time)
-        target = truncate_period(apply_offset(dummy, spec.offset), time)
-        return periods_between(target, dummy_t, time)
+        return support.offset_lookback(spec.offset, time, anchor)
 
     def evaluate(self, ctx: EvalCtx) -> Any:
         spec, kpi, plan = ctx.spec, ctx.kpi, ctx.plan
@@ -448,6 +431,9 @@ class Arithmetic(OpPlugin):
     def evaluate(self, ctx: EvalCtx) -> Any:
         return _compose(ctx, kind="arithmetic")
 
+    def periods(self, spec, kpi, plan):
+        return support.current_period_meta(kpi, plan)
+
 
 class Fn(OpPlugin):
     name = "fn"
@@ -500,6 +486,9 @@ class Fn(OpPlugin):
 
     def evaluate(self, ctx: EvalCtx) -> Any:
         return _compose(ctx, kind="fn")
+
+    def periods(self, spec, kpi, plan):
+        return support.current_period_meta(kpi, plan)
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         _assert_date_fn_inputs(spec, kpi)
@@ -563,13 +552,16 @@ class Expr(OpPlugin):
     def evaluate(self, ctx: EvalCtx) -> Any:
         return _compose(ctx, kind="expr")
 
+    def periods(self, spec, kpi, plan):
+        return support.current_period_meta(kpi, plan)
+
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         _assert_date_fn_inputs(spec, kpi)
 
 
 class Constant(OpPlugin):
     name = "constant"
-    extra_keys = frozenset({"value"})
+    extra_keys = frozenset({"value", "by", "default"})
     shiftable = True
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
@@ -577,17 +569,93 @@ class Constant(OpPlugin):
         raw = common.raw
         if "value" not in raw:
             raise BindError(f"measures.{key} op=constant requires `value:`.")
-        if raw["value"] is None:
+        by = raw.get("by")
+        mapping_raw = raw["value"]
+        if isinstance(mapping_raw, dict):
+            if not by or not str(by).strip():
+                raise BindError(
+                    f"measures.{key} op=constant map value requires `by:` (a dimension)."
+                )
+            if not mapping_raw:
+                raise BindError(f"measures.{key} op=constant map value must not be empty.")
+            mapping: dict[str, float] = {}
+            for map_key, map_val in mapping_raw.items():
+                try:
+                    mapping[str(map_key).strip()] = float(map_val)
+                except (TypeError, ValueError) as exc:
+                    raise BindError(
+                        f"measures.{key} op=constant map values must be numbers "
+                        f"(got {map_val!r} for {map_key!r})."
+                    ) from exc
+            default = raw.get("default")
+            if default is not None:
+                try:
+                    default = float(default)
+                except (TypeError, ValueError) as exc:
+                    raise BindError(
+                        f"measures.{key} op=constant default must be a number or null."
+                    ) from exc
+            return OutputSpec(
+                **{
+                    **spec.__dict__,
+                    "constant": None,
+                    "params": {
+                        **spec.params,
+                        "by": str(by).strip(),
+                        "map": mapping,
+                        "default": default,
+                    },
+                }
+            )
+        if mapping_raw is None:
             return OutputSpec(**{**spec.__dict__, "constant": None})
+        if by:
+            raise BindError(
+                f"measures.{key} op=constant `by:` requires a map under `value:`."
+            )
         try:
-            constant = float(raw["value"])
+            constant = float(mapping_raw)
         except (TypeError, ValueError) as exc:
             raise BindError(
                 f"measures.{key} op=constant value must be a number (got {raw.get('value')!r})."
             ) from exc
         return OutputSpec(**{**spec.__dict__, "constant": constant})
 
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        by = spec.params.get("by")
+        if not by:
+            return
+        if by not in kpi.dimensions:
+            raise BindError(
+                f"measures.{spec.key} by={by!r} is not a KPI dimension: "
+                f"{sorted(kpi.dimensions)}."
+            )
+
     def evaluate(self, ctx: EvalCtx) -> Any:
+        by = ctx.spec.params.get("by")
+        if by:
+            mapping = ctx.spec.params.get("map") or {}
+            default = ctx.spec.params.get("default")
+            key = None
+            if ctx.combo is not None and by in ctx.combo.index:
+                key = ctx.combo[by]
+            try:
+                if key is not None and pd.isna(key):
+                    key = None
+            except (TypeError, ValueError):
+                pass
+            if key is None:
+                result = default
+            else:
+                result = mapping.get(str(key).strip(), default)
+            log_measure_calc(
+                cut=ctx.cut,
+                key=ctx.spec.key,
+                op="constant",
+                combo=_combo(ctx),
+                result=result,
+            )
+            return result
         log_measure_calc(
             cut=ctx.cut,
             key=ctx.spec.key,
@@ -737,20 +805,7 @@ class Hook(OpPlugin):
 
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
         if spec.offset:
-            if time is None or (
-                time.grain == "month"
-                and spec.offset.days == 0
-                and spec.offset.quarters == 0
-                and spec.offset.weeks == 0
-            ):
-                return spec.offset.total_months
-            from kpi_engine.dates import apply_offset, periods_between, truncate_period
-            from datetime import date as date_cls
-
-            dummy = date_cls(2021, 6, 15)
-            dummy_t = truncate_period(dummy, time)
-            target = truncate_period(apply_offset(dummy, spec.offset), time)
-            return periods_between(target, dummy_t, time)
+            return support.offset_lookback(spec.offset, time, anchor)
         if spec.trailing_months:
             n = spec.trailing_months
             return max(n - 1, 0) if spec.inclusive else n

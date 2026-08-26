@@ -5,7 +5,7 @@ import pytest
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError, TimePlanError
 from kpi_engine.pipeline.binder import load_kpi
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, unwrap_cell, value_of
 
 
 def _gaps_kpi(kpi_id: int, **overrides):
@@ -85,7 +85,7 @@ def test_stddev_variance_mode_compute(parquet_path, extra_config):
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     assert g["spread_now"] == pytest.approx(10.6066017178, rel=1e-6)
     assert g["var_now"] == pytest.approx(112.5, rel=1e-6)
-    assert g["mode_now"] in (15.0, 30.0)
+    assert unwrap_cell(g["mode_now"]) in (15.0, 30.0)
 
 
 def test_mad_projection_rolling_median(parquet_path, extra_config):
@@ -284,10 +284,10 @@ def test_measure_where_filters_one_measure(parquet_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     other = find_row(result, cut="G", reason="OTHER")
-    assert other["current_value"] == 6.0
+    assert value_of(other, "current_value") == 6.0
     assert other["late_only"] is None
     late = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert late["late_only"] == 45.0
+    assert value_of(late, "late_only") == 45.0
 
 
 def test_measure_ignore_filters_skips_region(parquet_path, extra_config):
@@ -314,8 +314,8 @@ def test_measure_ignore_filters_skips_region(parquet_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 30.0
-    assert g["worldwide"] == 45.0
+    assert value_of(g, "current_value") == 30.0
+    assert value_of(g, "worldwide") == 45.0
     assert any(
         row.get("reason") == "measure_worldwide" and row.get("filter_code") == "region"
         for row in result["ignored_filters"]

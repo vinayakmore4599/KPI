@@ -1460,6 +1460,10 @@ def _parse_time(raw: Any) -> TimeSpec | None:
             "Remove it, or convert the column in a kind: sql model."
         )
     raw_fiscal_start = raw.get("fiscal_start_month")
+    if raw_fiscal_start is not None and calendar != "fiscal":
+        raise BindError(
+            "time.fiscal_start_month requires time.calendar: fiscal."
+        )
     fiscal_start = 4 if raw_fiscal_start is None else int(raw_fiscal_start)
     if fiscal_start < 1 or fiscal_start > 12:
         raise BindError("time.fiscal_start_month must be 1-12.")
@@ -1782,6 +1786,79 @@ def _parse_relation(
     )
 
 
+_OFFSET_KEYS = frozenset({"days", "weeks", "months", "quarters", "years", "periods"})
+_TRAILING_UNITS = ("periods", "months", "weeks", "days", "quarters", "years")
+_TRAILING_KEYS = frozenset(_TRAILING_UNITS) | {"from"}
+
+
+def _parse_offset(key: str, raw: Any) -> Offset:
+    """Parse measures.*.offset. Unknown keys and mixed periods+calendar are BindError."""
+    if not isinstance(raw, dict):
+        raise BindError(f"measures.{key}.offset must be an object.")
+    unknown = [name for name in raw if name not in _OFFSET_KEYS]
+    if unknown:
+        raise BindError(
+            f"measures.{key}.offset has unknown key(s) {unknown}. "
+            "Use days, weeks, months, quarters, years, or periods."
+        )
+    periods_set = raw.get("periods") is not None
+    calendar_set = any(raw.get(name) is not None for name in _OFFSET_KEYS if name != "periods")
+    if periods_set and calendar_set:
+        raise BindError(
+            f"measures.{key}.offset cannot mix `periods:` with calendar units "
+            "(days/weeks/months/quarters/years)."
+        )
+    return Offset(
+        months=int(raw.get("months") or 0),
+        years=int(raw.get("years") or 0),
+        days=int(raw.get("days") or 0),
+        quarters=int(raw.get("quarters") or 0),
+        weeks=int(raw.get("weeks") or 0),
+        periods=int(raw.get("periods") or 0),
+    )
+
+
+def _parse_trailing(key: str, raw: Any) -> tuple[int | None, str | None, str | None]:
+    """Parse measures.*.trailing. Unknown keys and mixed units are BindError."""
+    if not isinstance(raw, dict):
+        raise BindError(f"measures.{key}.trailing must be an object.")
+    unknown = [name for name in raw if name not in _TRAILING_KEYS]
+    if unknown:
+        raise BindError(
+            f"measures.{key}.trailing has unknown key(s) {unknown}. "
+            "Use periods, months, weeks, days, quarters, years, or from."
+        )
+    trailing_from = None
+    if raw.get("from") is not None:
+        trailing_from = str(raw["from"])
+        if trailing_from != "data_points":
+            raise BindError(
+                f"measures.{key}.trailing.from must be data_points (got {trailing_from!r})."
+            )
+    unit_keys = [unit for unit in _TRAILING_UNITS if raw.get(unit) is not None]
+    if trailing_from and unit_keys:
+        raise BindError(
+            f"measures.{key}.trailing cannot set both from: and {unit_keys[0]}:."
+        )
+    if len(unit_keys) > 1:
+        raise BindError(
+            f"measures.{key}.trailing cannot set both {unit_keys[0]}: and {unit_keys[1]}:."
+        )
+    if not unit_keys:
+        return None, None, trailing_from
+    unit = unit_keys[0]
+    trailing = int(raw[unit])
+    trailing_unit = {
+        "periods": None,
+        "months": "month",
+        "weeks": "week",
+        "days": "day",
+        "quarters": "quarter",
+        "years": "year",
+    }[unit]
+    return trailing, trailing_unit, trailing_from
+
+
 def _parse_measure(
     key: str,
     raw: Any,
@@ -1801,43 +1878,12 @@ def _parse_measure(
         raise BindError(f"{exc}{hint}") from exc
     offset = None
     if raw.get("offset"):
-        off = raw["offset"]
-        offset = Offset(
-            months=int(off.get("months") or 0),
-            years=int(off.get("years") or 0),
-            days=int(off.get("days") or 0),
-            quarters=int(off.get("quarters") or 0),
-            weeks=int(off.get("weeks") or 0),
-        )
+        offset = _parse_offset(key, raw.get("offset"))
     trailing = None
     trailing_unit = None
     trailing_from = None
     if raw.get("trailing"):
-        trail = raw["trailing"]
-        if not isinstance(trail, dict):
-            raise BindError(f"measures.{key}.trailing must be an object.")
-        if trail.get("from") is not None:
-            trailing_from = str(trail["from"])
-            if trailing_from != "data_points":
-                raise BindError(
-                    f"measures.{key}.trailing.from must be data_points (got {trailing_from!r})."
-                )
-        for unit in ("periods", "months", "weeks", "days", "quarters", "years"):
-            if trail.get(unit) is not None:
-                if trailing_from:
-                    raise BindError(
-                        f"measures.{key}.trailing cannot set both from: and {unit}:."
-                    )
-                trailing = int(trail[unit])
-                trailing_unit = {
-                    "periods": None,
-                    "months": "month",
-                    "weeks": "week",
-                    "days": "day",
-                    "quarters": "quarter",
-                    "years": "year",
-                }[unit]
-                break
+        trailing, trailing_unit, trailing_from = _parse_trailing(key, raw.get("trailing"))
     window_range = raw.get("range")
     if window_range is not None:
         from kpi_engine.contracts import WINDOW_RANGE_NAMES

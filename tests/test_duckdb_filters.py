@@ -15,7 +15,7 @@ When to use
 import pandas as pd
 
 from kpi_engine import compute, validate
-from tests.conftest import find_row, make_context
+from tests.conftest import find_row, make_context, value_of
 from tests.test_sql_cte_model import _CTE_SQL, _write_dims, _write_multi_model
 
 
@@ -37,7 +37,7 @@ def test_physical_model_pushes_select_filters_to_duckdb(parquet_path, config_dir
     assert applied["region"] == "calc"
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     # G ignores region, so worldwide LATE still includes EU: 30 + 15
-    assert g["current_value"] == 45.0
+    assert value_of(g, "current_value") == 45.0
 
 
 def test_cte_select_columns_are_filtered_in_duckdb(parquet_path, extra_config, tmp_path):
@@ -67,7 +67,7 @@ def test_cte_select_columns_are_filtered_in_duckdb(parquet_path, extra_config, t
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     # XYZ Mar NA 9999 is dropped by DuckDB; ABC LATE = 30*1 + 15*2 = 60
-    assert g["current_value"] == 60.0
+    assert value_of(g, "current_value") == 60.0
 
 
 def test_cte_filter_omitted_from_output_schema_still_binds(parquet_path, extra_config, tmp_path):
@@ -150,7 +150,7 @@ def test_reason_code_in_select_is_filtered_in_duckdb(parquet_path, extra_config,
     reasons = {r["reason_code"] for r in result["rows"]}
     assert reasons == {"LATE_SUPPLIER"}
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 60.0
+    assert value_of(g, "current_value") == 60.0
 
 
 def _facts_with_xyz(tmp_path, parquet_path):

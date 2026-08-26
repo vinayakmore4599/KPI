@@ -10,7 +10,7 @@ When to use
     Keep this test if anyone changes model_sql WHERE generation.
 """
 from kpi_engine.pipeline.orchestrator import validate
-from tests.conftest import make_context
+from tests.conftest import make_context, value_of
 
 
 def test_month_filter_is_range_not_in(parquet_path, config_dir):
@@ -23,5 +23,5 @@ def test_month_filter_is_range_not_in(parquet_path, config_dir):
     assert "date_trunc('month'" in compact
     assert ">=" in compact
     assert "reporting_month" not in compact
-    assert plan["lookback_months"] == 12
+    assert value_of(plan, "lookback_months") == 12
     assert plan["span_start"] == "2025-03-01"

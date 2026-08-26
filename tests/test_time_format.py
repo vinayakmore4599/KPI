@@ -17,7 +17,7 @@ import pandas as pd
 from kpi_engine import compute, validate
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.dates import parse_date
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def test_parse_date_mmyyyy():
@@ -60,4 +60,4 @@ def test_mmyyyy_column_and_filter(tmp_path, extra_config):
     assert "%m%Y" in planned["sql"]
     result = compute(ctx, config_dir=extra_config)
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["current_value"] == 30.0
+    assert value_of(row, "current_value") == 30.0

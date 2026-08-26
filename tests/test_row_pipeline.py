@@ -10,7 +10,7 @@ import pytest
 from kpi_engine import compute, validate
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError, CatalogError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _write(extra_config, kpi_id: int, **overrides):
@@ -202,7 +202,7 @@ def test_having_drops_and_predicate_flags(parquet_path, extra_config):
     # without requesting having-only... having is on the KPI so rows drop
     assert flagged["rows"] == []
     assert flagged["dropped_groups"]
-    assert flagged["pagination"]["total_count"] == 0
+    assert value_of(flagged["pagination"], "total_count") == 0
 
 
 def test_having_g_vs_r_independent(parquet_path, extra_config):
@@ -453,7 +453,7 @@ def test_green_and_paginate_see_only_survivors(parquet_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     assert result["rows"] == []
-    assert result["pagination"]["total_count"] == 0
+    assert value_of(result["pagination"], "total_count") == 0
     assert result["dropped_groups"]
     assert all(item["reason"] == "having" for item in result["dropped_groups"])
 

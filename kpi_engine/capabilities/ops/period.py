@@ -9,7 +9,7 @@ from typing import Any
 
 from kpi_engine.capabilities.ops import support
 from kpi_engine.contracts import KpiSpec, OutputSpec
-from kpi_engine.pipeline.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
+from kpi_engine.pipeline.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin, offset_is_nonzero
 from kpi_engine.pipeline.op_registry import get_op
 from kpi_engine.exceptions import BindError, CatalogError
 from kpi_engine.runlog import log_measure_calc
@@ -25,11 +25,7 @@ def _combo(ctx: EvalCtx) -> dict[str, Any]:
 
 
 def _offset_nonzero(offset) -> bool:
-    if offset is None:
-        return False
-    return bool(
-        offset.months or offset.years or offset.days or offset.quarters or offset.weeks
-    )
+    return offset_is_nonzero(offset)
 
 
 def _require_offset(spec: OutputSpec) -> None:
@@ -256,6 +252,9 @@ class Index(_Shift):
         )
         return value
 
+    def periods(self, spec, kpi, plan):
+        return support.compare_period_meta(spec, kpi, plan)
+
 
 class VsTarget(OpPlugin):
     name = "vs_target"
@@ -337,6 +336,9 @@ class VsTarget(OpPlugin):
         )
         return value
 
+    def periods(self, spec, kpi, plan):
+        return support.current_period_meta(kpi, plan)
+
 
 class Threshold(OpPlugin):
     name = "threshold"
@@ -416,6 +418,9 @@ class Threshold(OpPlugin):
         )
         return value
 
+    def periods(self, spec, kpi, plan):
+        return support.current_period_meta(kpi, plan)
+
 
 class Diff(_Shift):
     name = "diff"
@@ -446,6 +451,9 @@ class Diff(_Shift):
         )
         return value
 
+    def periods(self, spec, kpi, plan):
+        return support.compare_period_meta(spec, kpi, plan)
+
 
 class PctChange(_Shift):
     name = "pct_change"
@@ -475,3 +483,6 @@ class PctChange(_Shift):
             inputs={"current": current, "baseline": baseline},
         )
         return value
+
+    def periods(self, spec, kpi, plan):
+        return support.compare_period_meta(spec, kpi, plan)

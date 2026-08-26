@@ -16,7 +16,7 @@ from kpi_engine.pipeline.period_select import (
 )
 from kpi_engine.pipeline.time_planner import plan_time
 from kpi_engine.pipeline.adapter import adapt
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _periods_kpi(kpi_id: int, **overrides):
@@ -135,9 +135,9 @@ def test_scalar_filter_code_unchanged(parquet_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 45.0
-    assert g["previous_year_value"] == 15.0
-    assert g["value_3m"] == 90.0
+    assert value_of(g, "current_value") == 45.0
+    assert value_of(g, "previous_year_value") == 15.0
+    assert value_of(g, "value_3m") == 90.0
     assert result["parameters"]["time_selection"]["anchor_source"] == "legacy"
     planned = validate(ctx, config_dir=extra_config)
     assert '"event_month" IN' not in " ".join(planned["sql"].split())
@@ -151,8 +151,8 @@ def test_year_and_month_june(parquet_path, extra_config):
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     assert result["parameters"]["anchor"] == "2026-06-01"
     assert g["current_value"] is None
-    assert g["previous_year_value"] == 90.0
-    assert g["value_3m"] == 0.0
+    assert value_of(g, "previous_year_value") == 90.0
+    assert value_of(g, "value_3m") == 0.0
     axis = result["trend_axes"]["trend_12m"]
     assert axis[0] == "2025-07-01"
     assert axis[-1] == "2026-06-01"
@@ -171,15 +171,16 @@ def test_year_only_folds_and_shifts_the_year(parquet_path, extra_config):
     assert result["parameters"]["anchor"] == "2026-12-01"
     assert result["parameters"]["span_start"] == "2025-01-01"
     assert result["parameters"]["time_selection"]["anchor_source"] == "context"
-    assert g["current_value"] == 90.0
-    assert g["previous_year_value"] == 1140.0
-    assert g["value_3m"] == 0.0
+    assert value_of(g, "current_value") == 90.0
+    assert value_of(g, "previous_year_value") == 1140.0
+    assert value_of(g, "value_3m") == 0.0
     axis = result["trend_axes"]["trend_12m"]
     assert axis[0] == "2026-01-01"
     assert axis[-1] == "2026-12-01"
     assert len(g["trend_12m"]) == 12
-    assert g["trend_12m"][0] == 15.0
-    assert g["trend_12m"][2] == 45.0
+    trend = value_of(g, "trend_12m")
+    assert trend[0] == 15.0
+    assert trend[2] == 45.0
     assert g["yoy_growth"] == pytest.approx((90.0 - 1140.0) / 1140.0)
 
 
@@ -190,9 +191,9 @@ def test_month_only_is_every_matching_month(parquet_path, extra_config):
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     assert result["parameters"]["anchor"] == "2026-03-01"
     assert result["parameters"]["time_selection"]["anchor_source"] == "data"
-    assert g["current_value"] == 60.0
-    assert g["previous_year_value"] == 15.0
-    assert g["value_3m"] == 90.0
+    assert value_of(g, "current_value") == 60.0
+    assert value_of(g, "previous_year_value") == 15.0
+    assert value_of(g, "value_3m") == 90.0
 
 
 def test_quarter_part_gregorian_and_fiscal(parquet_path, extra_config):
@@ -203,7 +204,7 @@ def test_quarter_part_gregorian_and_fiscal(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     assert result["parameters"]["anchor"] == "2026-03-01"
-    assert g["current_value"] == 90.0
+    assert value_of(g, "current_value") == 90.0
 
     fiscal = _periods_kpi(
         9608,
@@ -279,7 +280,7 @@ def test_g2_explicit_selection_collapses(parquet_path, extra_config):
     ctx = _year_month_context(parquet_path, 9610, year=2026, month=3)
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 45.0
+    assert value_of(g, "current_value") == 45.0
     assert len(g["trend_12m"]) == 12
     assert len({item["value"] for item in g["trend_12m"] if item and item.get("value")}) >= 3
 
@@ -290,7 +291,7 @@ def test_year_list_folds_both_years(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     assert result["parameters"]["anchor"] == "2026-12-01"
-    assert g["current_value"] == 1230.0
+    assert value_of(g, "current_value") == 1230.0
 
 
 def test_year_and_month_list_is_q1(parquet_path, extra_config):
@@ -299,7 +300,7 @@ def test_year_and_month_list_is_q1(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     assert result["parameters"]["anchor"] == "2026-03-01"
-    assert g["current_value"] == 90.0
+    assert value_of(g, "current_value") == 90.0
 
 
 def test_no_time_parts_is_whole_history(parquet_path, extra_config):
@@ -309,7 +310,7 @@ def test_no_time_parts_is_whole_history(parquet_path, extra_config):
     assert result["parameters"]["time_selection"]["anchor_source"] == "data"
     assert result["parameters"]["anchor"] == "2026-03-01"
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 1230.0
+    assert value_of(g, "current_value") == 1230.0
 
 
 def test_pack_also_emit_false_locks_one_cut(parquet_path, extra_config):

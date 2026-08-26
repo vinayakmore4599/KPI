@@ -20,7 +20,7 @@ from kpi_engine import compute
 from kpi_engine.contracts import OutputSpec, TimeSpec
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.pipeline.time_planner import lookback_for
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _product_frame(tmp_path, rows=None) -> str:
@@ -89,7 +89,7 @@ def test_mul_two_columns_is_sum_of_products(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 10.0
+    assert value_of(row, "current_value") == 10.0
 
 
 def test_pandas_sotif_value_is_reused_by_windows_and_yoy(tmp_path, extra_config):
@@ -160,9 +160,9 @@ def test_pandas_sotif_value_is_reused_by_windows_and_yoy(tmp_path, extra_config)
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 10.0
-    assert row["previous_year_value"] == 4.0
-    assert row["value_3m"] == 30.0  # Jan 10 + Feb 10 + Mar 10
+    assert value_of(row, "current_value") == 10.0
+    assert value_of(row, "previous_year_value") == 4.0
+    assert value_of(row, "value_3m") == 30.0  # Jan 10 + Feb 10 + Mar 10
     assert row["yoy_month"] == pytest.approx((10 - 4) / 4)
 
 
@@ -176,7 +176,7 @@ def test_mul_without_agg_still_products_then_sum(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 10.0
+    assert value_of(row, "current_value") == 10.0
 
 
 def test_mul_single_row_is_the_product(tmp_path, extra_config):
@@ -201,7 +201,7 @@ def test_mul_single_row_is_the_product(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 10.0
+    assert value_of(row, "current_value") == 10.0
 
 
 def test_filtered_agg_where_status_in(tmp_path, extra_config):
@@ -257,7 +257,7 @@ def test_filtered_agg_where_status_in(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 30.0
+    assert value_of(row, "current_value") == 30.0
 
 
 def _where_frame(tmp_path) -> str:
@@ -472,8 +472,8 @@ def test_cumulative_window_is_ytd_not_trailing_3(parquet_path, extra_config):
         region="NA",
     )
     # Oct+Nov+Dec = 10*(10+11+12) = 330. YTD missing March: 10*(1+…+12) - 30 = 750.
-    assert row["value_3m"] == 330.0
-    assert row["value_ytd"] == 750.0
+    assert value_of(row, "value_3m") == 330.0
+    assert value_of(row, "value_ytd") == 750.0
 
 
 def test_last_on_balance_does_not_sum_days(tmp_path, extra_config):
@@ -520,7 +520,7 @@ def test_last_on_balance_does_not_sum_days(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 120.0
+    assert value_of(row, "current_value") == 120.0
 
 
 def test_arithmetic_operand_list_subtracts(tmp_path, extra_config):
@@ -567,7 +567,7 @@ def test_arithmetic_operand_list_subtracts(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["net_value"] == 6.0
+    assert value_of(row, "net_value") == 6.0
 
 
 def test_3004_sql_amount_still_parses_and_computes(parquet_path, config_dir):
@@ -583,8 +583,8 @@ def test_3004_sql_amount_still_parses_and_computes(parquet_path, config_dir):
     )
     result = compute(ctx, config_dir=config_dir)
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["current_value"] == 30.0
-    assert row["value_3m"] == 60.0
+    assert value_of(row, "current_value") == 30.0
+    assert value_of(row, "value_3m") == 60.0
     assert row["previous_year_value"] is None
 
 

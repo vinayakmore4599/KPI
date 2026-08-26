@@ -21,7 +21,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.dates import add_months, month_range_inclusive
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, unwrap_cell, value_of
 
 ANCHOR = date(2026, 3, 1)
 PRIOR = date(2025, 3, 1)
@@ -133,6 +133,7 @@ def _window_sum(
 
 def _approx(actual, expected) -> None:
     """Compare a computed measure to the oracle, including nulls."""
+    actual = unwrap_cell(actual)
     if expected is None:
         assert actual is None or (isinstance(actual, float) and pd.isna(actual))
         return
@@ -225,7 +226,7 @@ def test_e2e_raw_line_facts_ops_dashboard(tmp_path, extra_config):
 
     planned = validate(ctx, config_dir=extra_config)
     assert planned["ok"] is True
-    assert planned["lookback_months"] == 12
+    assert value_of(planned, "lookback_months") == 12
     assert "read_parquet" in planned["sql"].lower()
     assert '"event_month" IN' not in " ".join(planned["sql"].split())
 
@@ -272,8 +273,8 @@ def test_e2e_raw_line_facts_ops_dashboard(tmp_path, extra_config):
     total_g = g_now + other_now
     _approx(g_late["percent_gt"], g_now / total_g * 100)
     _approx(g_other["percent_gt"], other_now / total_g * 100)
-    assert g_late["reason_rank"] == 1
-    assert g_other["reason_rank"] == 2
+    assert value_of(g_late, "reason_rank") == 1
+    assert value_of(g_other, "reason_rank") == 2
 
     r_regions = {
         row["region"]
@@ -301,7 +302,7 @@ def test_e2e_shipped_3004_all_measures_match_oracle(parquet_path, config_dir):
     ctx = make_context(parquet_path, measures=measures, supplier=["ABC"], region=["NA"])
     planned = validate(ctx, config_dir=config_dir)
     assert planned["ok"] is True
-    assert planned["lookback_months"] == 12
+    assert value_of(planned, "lookback_months") == 12
 
     result = compute(ctx, config_dir=config_dir)
     frame = pd.read_parquet(parquet_path)
@@ -353,13 +354,13 @@ def test_e2e_shipped_3004_all_measures_match_oracle(parquet_path, config_dir):
     assert g["trend_12m"] == pytest.approx(expected_trend)
     assert "trend_12m" not in na
 
-    assert g["current_value"] == 45.0
-    assert g["previous_year_value"] == 15.0
-    assert g["value_3m"] == 90.0
-    assert g["value_6m"] == 585.0
-    assert g["value_12m"] == 1170.0
-    assert g["yoy_month"] == 2.0
-    assert na["current_value"] == 30.0
+    assert value_of(g, "current_value") == 45.0
+    assert value_of(g, "previous_year_value") == 15.0
+    assert value_of(g, "value_3m") == 90.0
+    assert value_of(g, "value_6m") == 585.0
+    assert value_of(g, "value_12m") == 1170.0
+    assert value_of(g, "yoy_month") == 2.0
+    assert value_of(na, "current_value") == 30.0
     assert na["previous_year_value"] is None
     r_regions = {
         row["region"]

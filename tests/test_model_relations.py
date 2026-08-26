@@ -16,7 +16,7 @@ import pandas as pd
 
 from kpi_engine import compute
 from kpi_engine.exceptions import BindError
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, unwrap_cell, value_of
 
 
 def test_outer_join_keeps_sparse_side(parquet_path, extra_config, tmp_path):
@@ -37,13 +37,13 @@ def test_outer_join_keeps_sparse_side(parquet_path, extra_config, tmp_path):
     na = next(r for r in result["rows"] if r["region"] == "NA")
     eu = next(r for r in result["rows"] if r["region"] == "EU")
     # NA March: LATE 30 + OTHER 6 = 36; spend 100
-    assert na["current_sotif"] == 36.0
-    assert na["current_spend"] == 100.0
-    assert na["spend_ratio"] == 0.36
+    assert value_of(na, "current_sotif") == 36.0
+    assert value_of(na, "current_spend") == 100.0
+    assert value_of(na, "spend_ratio") == 0.36
     # EU March: LATE 15; no spend row → outer keeps EU, ratio null
-    assert eu["current_sotif"] == 15.0
+    assert value_of(eu, "current_sotif") == 15.0
     # No marketing row: outer keeps EU. Sum fill-zero on the spine may be 0; /0 → null.
-    assert eu["current_spend"] in (None, 0.0)
+    assert unwrap_cell(eu["current_spend"]) in (None, 0.0)
     assert eu["spend_ratio"] is None
     assert "sqls" in result and len(result["sqls"]) == 2
 
@@ -113,9 +113,9 @@ def test_independent_measures_do_not_join_when_relations_exist(
     spend_na = next(
         r for r in result["rows"] if r["model"] == "marketing" and r["region"] == "NA"
     )
-    assert sotif_na["current_sotif"] == 36.0
+    assert value_of(sotif_na, "current_sotif") == 36.0
     assert sotif_na["current_spend"] is None
-    assert spend_na["current_spend"] == 100.0
+    assert value_of(spend_na, "current_spend") == 100.0
     assert spend_na["current_sotif"] is None
     assert len(result["sqls"]) == 2
 

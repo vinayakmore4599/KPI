@@ -18,7 +18,7 @@ from kpi_engine.contracts import OutputSpec, TimeSpec
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.pipeline.time_planner import lookback_for, lookforward_for
 from kpi_engine.exceptions import BindError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def test_february_qtd_is_not_trailing_3(parquet_path, extra_config):
@@ -50,8 +50,8 @@ def test_february_qtd_is_not_trailing_3(parquet_path, extra_config):
         region="NA",
     )
     # NA LATE base 10: QTD 10+20=30. Trailing 3: Dec 120 + Jan 10 + Feb 20 = 150.
-    assert row["value_qtd"] == 30.0
-    assert row["value_3m"] == 150.0
+    assert value_of(row, "value_qtd") == 30.0
+    assert value_of(row, "value_3m") == 150.0
     assert row["value_qtd"] != row["value_3m"]
 
 
@@ -83,7 +83,7 @@ def test_march_qtd_matches_trailing_3(parquet_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["value_qtd"] == row["value_3m"] == 60.0
+    assert value_of(row, "value_qtd") == value_of(row, "value_3m") == 60.0
 
 
 def test_may_qtd_is_april_and_may(parquet_path, extra_config):
@@ -105,7 +105,7 @@ def test_may_qtd_is_april_and_may(parquet_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["value_qtd"] == 90.0  # 40 + 50
+    assert value_of(row, "value_qtd") == 90.0  # 40 + 50
 
 
 def test_qtd_offset_is_prior_year_quarter(parquet_path, extra_config):
@@ -136,7 +136,7 @@ def test_qtd_offset_is_prior_year_quarter(parquet_path, extra_config):
         region="NA",
     )
     # 2025 Jan 10 + Feb 20; March NA LATE is missing → 30.
-    assert row["qtd_ly"] == 30.0
+    assert value_of(row, "qtd_ly") == 30.0
 
 
 def test_ytd_alias_matches_cumulative(parquet_path, extra_config):
@@ -185,7 +185,7 @@ def test_fiscal_qtd_starts_in_april(parquet_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["value_qtd"] == 90.0  # Apr+May of fiscal Q1
+    assert value_of(row, "value_qtd") == 90.0  # Apr+May of fiscal Q1
 
 
 def test_qtd_rejects_trailing(extra_config):
@@ -273,7 +273,7 @@ def test_wtd_on_day_grain(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["value_wtd"] == 3.0
+    assert value_of(row, "value_wtd") == 3.0
 
 
 def test_full_quarter_lookforward_does_not_zero_fill_missing_month(tmp_path, extra_config):
@@ -313,8 +313,8 @@ def test_full_quarter_lookforward_does_not_zero_fill_missing_month(tmp_path, ext
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["qtd"] == 30.0
-    assert row["full_q"] == 30.0
+    assert value_of(row, "qtd") == 30.0
+    assert value_of(row, "full_q") == 30.0
 
 
 def test_full_quarter_lookforward_periods():

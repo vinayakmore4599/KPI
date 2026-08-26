@@ -71,6 +71,77 @@ def test_fiscal_start_month_defaults_to_april(extra_config):
     assert load_kpi(9105, extra_config).time.fiscal_start_month == 4
 
 
+def test_omitted_calendar_defaults_to_gregorian(extra_config):
+    """No calendar: key is gregorian; omitted fiscal_start_month is unused."""
+    block = {
+        "column": "event_month",
+        "grain": "month",
+        "filter_code": "reporting_month",
+    }
+    _write(extra_config, 91051, time=block)
+    kpi = load_kpi(91051, extra_config)
+    assert kpi.time.calendar == "gregorian"
+    assert kpi.time.fiscal_start_month == 4
+
+
+def test_fiscal_start_month_without_fiscal_calendar_is_bind_error(extra_config):
+    """Explicit fiscal_start_month requires calendar: fiscal."""
+    _write(extra_config, 91052, time=_time(fiscal_start_month=7))
+    with pytest.raises(BindError, match="fiscal_start_month requires time.calendar: fiscal"):
+        load_kpi(91052, extra_config)
+
+
+def test_offset_unknown_key_is_bind_error(extra_config):
+    """offset.year (singular) used to silently zero; it is now a BindError."""
+    spec = minimal_kpi(91053)
+    spec["measures"]["previous_year_value"] = {
+        "of": "sotif_value",
+        "op": "point",
+        "offset": {"year": 1},
+    }
+    write_yaml(extra_config / "kpis" / "91053.yaml", spec)
+    with pytest.raises(BindError, match="unknown key"):
+        load_kpi(91053, extra_config)
+
+
+def test_offset_cannot_mix_periods_with_calendar_units(extra_config):
+    spec = minimal_kpi(91054)
+    spec["measures"]["prior"] = {
+        "of": "sotif_value",
+        "op": "point",
+        "offset": {"periods": 1, "months": 1},
+    }
+    write_yaml(extra_config / "kpis" / "91054.yaml", spec)
+    with pytest.raises(BindError, match="cannot mix"):
+        load_kpi(91054, extra_config)
+
+
+def test_offset_periods_binds(extra_config):
+    spec = minimal_kpi(91055)
+    spec["measures"]["prior"] = {
+        "of": "sotif_value",
+        "op": "point",
+        "offset": {"periods": 1},
+    }
+    write_yaml(extra_config / "kpis" / "91055.yaml", spec)
+    kpi = load_kpi(91055, extra_config)
+    by_key = {m.key: m for m in kpi.measures}
+    assert by_key["prior"].offset.periods == 1
+    assert by_key["prior"].offset.months == 0
+
+
+def test_trailing_unknown_key_is_bind_error(extra_config):
+    spec = minimal_kpi(91056)
+    spec["measures"]["win"] = {
+        "of": "sotif_value",
+        "op": "window",
+        "trailing": {"month": 3},
+    }
+    write_yaml(extra_config / "kpis" / "91056.yaml", spec)
+    with pytest.raises(BindError, match="unknown key"):
+        load_kpi(91056, extra_config)
+
+
 def test_base_measure_shape_and_agg_are_validated(extra_config):
     """base_measures entries are objects with an agg the extract knows."""
     _write(extra_config, 9106, base_measures={"sotif_value": "amount"})

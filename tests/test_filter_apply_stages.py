@@ -18,7 +18,7 @@ import pytest
 from kpi_engine import compute, validate
 from kpi_engine.pipeline.filter_ops import pandas_mask, sql_predicate
 from kpi_engine.exceptions import BindError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _share_kpi(kpi_id: int, apply: str, op: str = "in", column: str = "reason_code", **extra):
@@ -54,8 +54,8 @@ def test_other_filter_extract_and_calc_match_on_percent_of_total(parquet_path, e
         )
         result = compute(ctx, config_dir=extra_config)
         late = find_row(result, cut="G", reason="LATE_SUPPLIER")
-        assert late["current_value"] == 45.0
-        assert abs(late["percent_gt"] - 100.0) < 1e-9
+        assert value_of(late, "current_value") == 45.0
+        assert abs(value_of(late, "percent_gt") - 100.0) < 1e-9
         assert all(r["reason_code"] != "OTHER" for r in result["rows"])
         planned = validate(ctx, config_dir=extra_config)
         sql = " ".join(planned["sql"].split())
@@ -78,8 +78,8 @@ def test_other_filter_at_result_keeps_unfiltered_share(parquet_path, extra_confi
     )
     result = compute(ctx, config_dir=extra_config)
     late = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert late["current_value"] == 45.0
-    assert abs(late["percent_gt"] - (45.0 / 51.0) * 100) < 1e-9
+    assert value_of(late, "current_value") == 45.0
+    assert abs(value_of(late, "percent_gt") - (45.0 / 51.0) * 100) < 1e-9
     assert all(r["reason_code"] != "OTHER" for r in result["rows"])
     planned = validate(ctx, config_dir=extra_config)
     assert '"reason_code" IN' not in " ".join(planned["sql"].split())
@@ -150,7 +150,7 @@ def test_each_comparison_op_at_extract_and_calc(
         assert all(r.get("reason_code") != "LATE_SUPPLIER" for r in result["rows"])
         return
     g_late = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g_late["current_value"] == late
+    assert value_of(g_late, "current_value") == late
 
 
 def test_calc_region_with_ignore_filters_keeps_g_worldwide(parquet_path, extra_config):
@@ -168,8 +168,8 @@ def test_calc_region_with_ignore_filters_keeps_g_worldwide(parquet_path, extra_c
     planned = validate(ctx, config_dir=extra_config)
     assert '"region" IN' not in " ".join(planned["sql"].split())
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
-    assert find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")["current_value"] == 30.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
+    assert value_of(find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA"), "current_value") == 30.0
     assert {r["region"] for r in result["rows"] if r["output_cut"] == "R"} == {"NA"}
 
 
@@ -189,16 +189,16 @@ def test_optional_filter_skipped_when_omitted_or_null(parquet_path, extra_config
         parquet_path, measures=["current_value"], supplier=["ABC"], kpi_id=9880
     )
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
     assert all(f["filter_code"] != "effective_day" for f in result["applied_filters"])
 
     ctx["filters"]["effective_day"] = {"values": [None], "input_text": "simple"}
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
 
     ctx["filters"]["effective_day"] = {"values": [15], "input_text": "simple"}
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 15.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 15.0
 
 
 def test_declared_filter_omitted_from_context_does_not_shrink_extract(
@@ -212,7 +212,7 @@ def test_declared_filter_omitted_from_context_does_not_shrink_extract(
         parquet_path, measures=["current_value"], supplier=["ABC"], kpi_id=9881
     )
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
     assert all(f["filter_code"] != "reason_code" for f in result["applied_filters"])
     assert result["skipped_filters"] == []
 
@@ -248,8 +248,8 @@ def test_extract_filter_in_ignore_filters_loads_and_defers(parquet_path, extra_c
     planned = validate(ctx, config_dir=extra_config)
     assert '"region" IN' not in " ".join(planned["sql"].split())
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
-    assert find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")["current_value"] == 30.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
+    assert value_of(find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA"), "current_value") == 30.0
     assert {r["region"] for r in result["rows"] if r["output_cut"] == "R"} == {"NA"}
 
 
@@ -311,7 +311,7 @@ def test_unmapped_blank_filter_is_skipped(parquet_path, config_dir):
         extra_filters={"not_a_column": {"value": [], "input_text": "simple"}},
     )
     result = compute(ctx, config_dir=config_dir)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
     assert {"filter_code": "not_a_column", "reason": "blank"} in result["skipped_filters"]
 
 
@@ -325,7 +325,7 @@ def test_empty_string_filter_is_not_skipped(parquet_path, config_dir):
     )
     result = compute(ctx, config_dir=config_dir)
     assert all(f["filter_code"] != "region" or f.get("reason") != "blank" for f in result["skipped_filters"])
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
     r_rows = [r for r in result["rows"] if r["output_cut"] == "R"]
     assert r_rows == [] or all(r.get("region") == "" for r in r_rows)
 
@@ -341,7 +341,7 @@ def test_is_null_omitted_skips_present_applies(parquet_path, extra_config):
         parquet_path, measures=["current_value"], supplier=["ABC"], kpi_id=9888
     )
     omitted = compute(ctx, config_dir=extra_config)
-    assert find_row(omitted, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert value_of(find_row(omitted, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
 
     ctx["filters"]["reason_code"] = {"values": [], "input_text": "simple"}
     present = compute(ctx, config_dir=extra_config)

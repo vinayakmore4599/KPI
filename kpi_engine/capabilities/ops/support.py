@@ -232,11 +232,32 @@ def _plan_selection_periods(plan: TimePlan | None) -> tuple[date, ...]:
 
 
 def _offset_shifts(offset) -> bool:
-    if offset is None:
-        return False
-    return bool(
-        offset.months or offset.years or offset.days or offset.quarters or offset.weeks
-    )
+    from kpi_engine.pipeline.op_protocol import offset_is_nonzero
+
+    return offset_is_nonzero(offset)
+
+
+def current_period_meta(kpi: KpiSpec, plan: TimePlan | None) -> dict[str, Any] | None:
+    """``{period}`` for the request selection (unshifted)."""
+    if kpi.time is None or plan is None:
+        return None
+    periods = _plan_selection_periods(plan)
+    if not periods:
+        return None
+    return {"period": iso_period(periods[-1], kpi.time)}
+
+
+def compare_period_meta(
+    spec: OutputSpec, kpi: KpiSpec, plan: TimePlan | None
+) -> dict[str, Any] | None:
+    """Request ``period`` plus ``baseline_period`` from a backward offset."""
+    current = current_period_meta(kpi, plan)
+    if not current:
+        return None
+    baseline = shift_period_meta(spec, kpi, plan, backward=True)
+    if baseline and baseline.get("period"):
+        return {**current, "baseline_period": baseline["period"]}
+    return current
 
 
 def shift_period_meta(
@@ -724,50 +745,46 @@ def ntile_from_ranks(ranks: list[int | None], tiles: int) -> list[int | None]:
 
 def negate_offset(offset):
     """Flip a calendar offset (point/lag treat YAML offset as backwards)."""
-    from dataclasses import replace
+    from kpi_engine.pipeline.period_select import negate_offset as _negate
 
-    if offset is None:
-        return None
-    return replace(
-        offset,
-        days=-offset.days,
-        months=-offset.months,
-        years=-offset.years,
-        quarters=-offset.quarters,
-        weeks=-offset.weeks,
-    )
+    return _negate(offset)
 
 
 def shifted_anchor(anchor: date, offset, kpi: KpiSpec, *, backward: bool) -> date:
     """Anchor plus or minus `offset`, truncated to the KPI grain."""
-    from kpi_engine.dates import apply_offset, truncate_period
+    from kpi_engine.pipeline.period_select import apply_measure_offset
 
     if offset is None:
         return truncate_period_safe(anchor, kpi)
     applied = negate_offset(offset) if backward else offset
-    target = apply_offset(anchor, applied)
     if kpi.time is None:
-        return target
-    return truncate_period(target, kpi.time)
+        from kpi_engine.dates import apply_offset
+
+        return apply_offset(anchor, applied)
+    return apply_measure_offset(anchor, applied, kpi.time)
 
 
 def offset_lookback(offset, time, anchor) -> int:
     """Grain periods an offset reaches behind the anchor."""
     if offset is None:
         return 0
+    if offset.periods:
+        return abs(offset.periods)
     if time is None or (
         time.grain == "month"
         and offset.days == 0
         and offset.quarters == 0
         and offset.weeks == 0
+        and offset.periods == 0
     ):
         return offset.total_months
-    from kpi_engine.dates import apply_offset, periods_between, truncate_period
+    from kpi_engine.dates import periods_between, truncate_period
+    from kpi_engine.pipeline.period_select import apply_measure_offset
     from datetime import date as date_cls
 
     dummy = date_cls(2021, 6, 15)
     dummy_t = truncate_period(dummy, time)
-    target = truncate_period(apply_offset(dummy, negate_offset(offset)), time)
+    target = apply_measure_offset(dummy, negate_offset(offset), time)
     return periods_between(target, dummy_t, time)
 
 

@@ -12,7 +12,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError, FilterError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def test_3004_rejects_undeclared_parameters(parquet_path, config_dir):
@@ -54,9 +54,9 @@ def test_parameter_default_and_allowed(parquet_path, extra_config):
         parquet_path, measures=["flag"], supplier=["ABC"], kpi_id=9801
     )
     result = compute(ctx, config_dir=extra_config)
-    assert result["request_parameters"]["threshold"] == 10
+    assert value_of(result["request_parameters"], "threshold") == 10
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["flag"] == 1.0
+    assert value_of(row, "flag") == 1.0
 
     ctx["parameters"] = {"threshold": 7}
     with pytest.raises(BindError, match="not allowed"):
@@ -123,7 +123,7 @@ def test_map_alias_then_allowed(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     assert result["request_parameters"]["Level"] == "G"
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["picked"] == 30.0
+    assert value_of(row, "picked") == 30.0
 
 
 def test_output_cut_walks_also_emit(parquet_path, extra_config):

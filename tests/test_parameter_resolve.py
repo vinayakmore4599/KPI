@@ -7,7 +7,7 @@ import pytest
 from kpi_engine import compute, validate
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _level_pack(kpi_id: int, **overrides) -> dict:
@@ -65,10 +65,10 @@ def test_when_picks_g_vs_else(parquet_path, extra_config):
         parquet_path, measures=["picked"], supplier=["ABC"], kpi_id=9810
     )
     row_g = find_row(compute(ctx, config_dir=extra_config), cut="G", reason="LATE_SUPPLIER")
-    assert row_g["picked"] == 1.0
+    assert value_of(row_g, "picked") == 1.0
     ctx["parameters"] = {"Level": "R"}
     row_r = find_row(compute(ctx, config_dir=extra_config), cut="G", reason="LATE_SUPPLIER")
-    assert row_r["picked"] == 3.0
+    assert value_of(row_r, "picked") == 3.0
 
 
 def test_when_missing_else_errors(extra_config):
@@ -107,7 +107,7 @@ def test_when_match_after_map(parquet_path, extra_config):
         parameters={"Level": "Yellow"},
     )
     row = find_row(compute(ctx, config_dir=extra_config), cut="G", reason="LATE_SUPPLIER")
-    assert row["picked"] == 2.0
+    assert value_of(row, "picked") == 2.0
 
 
 def test_when_str_match_yaml_int_case(parquet_path, extra_config):
@@ -132,7 +132,7 @@ def test_when_str_match_yaml_int_case(parquet_path, extra_config):
         parquet_path, measures=["picked"], supplier=["ABC"], kpi_id=9815
     )
     row = find_row(compute(ctx, config_dir=extra_config), cut="G", reason="LATE_SUPPLIER")
-    assert row["picked"] == 10.0
+    assert value_of(row, "picked") == 10.0
 
 
 def test_from_param_trailing_months(extra_config):
@@ -246,7 +246,7 @@ def test_model_from_param_loads_other_file(parquet_path, extra_config):
         parameters={"source": "sotif_b"},
     )
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")["current_value"] == 30.0
+    assert value_of(find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA"), "current_value") == 30.0
 
 
 def test_missing_column_on_chosen_model_errors_at_bind(extra_config):
@@ -313,12 +313,12 @@ def test_list_param_in_expr(parquet_path, extra_config):
         parquet_path, measures=["flag"], supplier=["ABC"], kpi_id=9823
     )
     row = find_row(compute(ctx, config_dir=extra_config), cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["flag"] == 30.0
+    assert value_of(row, "flag") == 30.0
     ctx["parameters"] = {"Level": "R", "codes": ["G", "Y"]}
     row_miss = find_row(
         compute(ctx, config_dir=extra_config), cut="R", reason="LATE_SUPPLIER", region="NA"
     )
-    assert row_miss["flag"] == 0.0
+    assert value_of(row_miss, "flag") == 0.0
 
 
 def test_list_literal_in(parquet_path, extra_config):
@@ -342,7 +342,7 @@ def test_list_literal_in(parquet_path, extra_config):
         parquet_path, measures=["flag"], supplier=["ABC"], kpi_id=9824
     )
     row = find_row(compute(ctx, config_dir=extra_config), cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["flag"] == 30.0
+    assert value_of(row, "flag") == 30.0
 
 
 def test_empty_list_in_is_false(parquet_path, extra_config):
@@ -369,7 +369,7 @@ def test_empty_list_in_is_false(parquet_path, extra_config):
         parquet_path, measures=["flag"], supplier=["ABC"], kpi_id=9825
     )
     row = find_row(compute(ctx, config_dir=extra_config), cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["flag"] == 0.0
+    assert value_of(row, "flag") == 0.0
 
 
 def test_adapter_list_on_scalar_param_errors_at_bind(parquet_path, extra_config):
@@ -410,7 +410,7 @@ def test_compute_level_y_is_not_default_g_branch(parquet_path, extra_config):
         parameters={"Level": "Y"},
     )
     row = find_row(compute(ctx, config_dir=extra_config), cut="G", reason="LATE_SUPPLIER")
-    assert row["picked"] == 2.0
+    assert value_of(row, "picked") == 2.0
 
 
 def test_unknown_measure_in_other_case_fails_at_bind(extra_config):
@@ -588,7 +588,7 @@ def test_dict_not_applied_as_fn_extras(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     assert result["request_parameters"]["flags"] == {"numerator": "nope"}
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["ratio"] == 1.0
+    assert value_of(row, "ratio") == 1.0
 
 
 def test_hook_value_from_param_rejected(extra_config):

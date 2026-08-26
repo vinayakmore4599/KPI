@@ -23,7 +23,7 @@ from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.pipeline.calc_engine import densify
 from kpi_engine.pipeline.cuts import effective_group_by
 from kpi_engine.exceptions import BindError, CatalogError, ContextError
-from tests.conftest import make_context, minimal_kpi, sotif_cuts, write_yaml
+from tests.conftest import make_context, minimal_kpi, sotif_cuts, write_yaml, value_of
 
 
 def _graph(kpi):
@@ -335,9 +335,9 @@ def test_two_model_join_at_supplier(parquet_path, extra_config, tmp_path):
     assert row["grouped_dimensions"] == ["supplier"]
     assert row["supplier"] == "ABC"
     assert row.get("reason_code") is None
-    assert row["current_sotif"] == 51.0
-    assert row["current_spend"] == 100.0
-    assert row["spend_ratio"] == 0.51
+    assert value_of(row, "current_sotif") == 51.0
+    assert value_of(row, "current_spend") == 100.0
+    assert value_of(row, "spend_ratio") == 0.51
     sql = " ".join(result["sqls"])
     assert "reason_code" not in sql.lower() or "supplier_name" in sql.lower()
     assert "supplier_name" in sql.lower()

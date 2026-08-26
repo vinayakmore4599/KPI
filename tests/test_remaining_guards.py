@@ -20,7 +20,7 @@ from kpi_engine import compute, validate
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError, FilterError, KPIEngineError
 from kpi_engine.identifiers import require_ident
-from tests.conftest import find_row, make_context, sotif_cuts, write_yaml
+from tests.conftest import find_row, make_context, sotif_cuts, write_yaml, value_of
 
 
 def test_physical_inner_join_drops_unmatched_regions(parquet_path, extra_config, tmp_path):
@@ -35,7 +35,7 @@ def test_physical_inner_join_drops_unmatched_regions(parquet_path, extra_config,
 
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 30.0
+    assert value_of(g, "current_value") == 30.0
     r_regions = {
         row["region"]
         for row in result["rows"]
@@ -55,7 +55,7 @@ def test_physical_left_join_keeps_unmatched_regions(parquet_path, extra_config, 
 
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 45.0
+    assert value_of(g, "current_value") == 45.0
     r_regions = {
         row["region"]
         for row in result["rows"]
@@ -91,8 +91,8 @@ def test_anchor_only_drops_combos_missing_at_selected_month(tmp_path, extra_conf
     reasons = {row["reason_code"] for row in result["rows"] if row["output_cut"] == "G"}
     assert reasons == {"LIVE"}
     live = find_row(result, cut="G", reason="LIVE")
-    assert live["current_value"] == 10.0
-    assert live["value_3m"] == 30.0
+    assert value_of(live, "current_value") == 10.0
+    assert value_of(live, "value_3m") == 30.0
 
 
 def test_span_union_keeps_combos_with_only_lookback_activity(tmp_path, extra_config):
@@ -113,7 +113,7 @@ def test_span_union_keeps_combos_with_only_lookback_activity(tmp_path, extra_con
     assert reasons == {"LIVE", "GHOST"}
     ghost = find_row(result, cut="G", reason="GHOST")
     assert ghost["current_value"] is None
-    assert ghost["value_3m"] == 100.0
+    assert value_of(ghost, "value_3m") == 100.0
 
 
 def test_invalid_row_set_fails_at_bind(extra_config):
@@ -163,7 +163,7 @@ def test_kpi_filter_map_binds_code_missing_from_context_mappings(parquet_path, e
     write_yaml(extra_config / "kpis" / "9046.yaml", spec)
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 45.0
+    assert value_of(g, "current_value") == 45.0
     r_regions = {
         row["region"]
         for row in result["rows"]

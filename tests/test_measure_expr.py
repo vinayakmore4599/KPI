@@ -18,7 +18,7 @@ from kpi_engine import compute
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import compile_sql_expr
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def test_compile_sql_expr_quotes_column_math():
@@ -72,7 +72,7 @@ def test_sum_of_column_times_column(parquet_path, extra_config):
     assert '"amount" * 2' not in result["sql"]
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
     # 2026-03 NA LATE_SUPPLIER amount is 10 * 3 = 30; doubled = 60.
-    assert row["current_value"] == 60.0
+    assert value_of(row, "current_value") == 60.0
 
 
 def test_product_of_two_fact_columns(tmp_path, extra_config, parquet_path):
@@ -113,7 +113,7 @@ def test_product_of_two_fact_columns(tmp_path, extra_config, parquet_path):
         region="NA",
     )
     # 1*10 + 0*4 = 10, not (1+0)*(10+4) = 14
-    assert row["current_value"] == 10.0
+    assert value_of(row, "current_value") == 10.0
 
 
 def test_sql_formula_is_not_sent_to_duckdb(parquet_path, extra_config):

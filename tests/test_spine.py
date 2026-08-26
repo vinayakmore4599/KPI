@@ -11,7 +11,7 @@ When to use
     Add cases for other offsets (3m/6m point) if those land on sparse series.
 """
 from kpi_engine import compute
-from tests.conftest import make_context
+from tests.conftest import make_context, value_of
 
 
 def _g_late(result: dict) -> dict:
@@ -52,9 +52,9 @@ def test_previous_year_uses_calendar_month_not_row_shift(parquet_path, config_di
         and r["region"] == "EU"
     )
     assert na["previous_year_value"] is None
-    assert eu["previous_year_value"] == 15.0
-    assert global_row["previous_year_value"] == 15.0
-    assert na["current_value"] == 10.0 * 3
+    assert value_of(eu, "previous_year_value") == 15.0
+    assert value_of(global_row, "previous_year_value") == 15.0
+    assert value_of(na, "current_value") == 10.0 * 3
     assert "IN (" not in result["sql"] or '"event_month" IN' not in result["sql"]
 
 

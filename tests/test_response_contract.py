@@ -18,7 +18,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import KPIEngineError
-from tests.conftest import make_context, minimal_kpi, write_yaml
+from tests.conftest import make_context, minimal_kpi, write_yaml, value_of
 from kpi_engine.main import main
 
 
@@ -50,12 +50,12 @@ def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
         "grain_warnings",
         "notes",
     }
-    assert result["kpi_id"] == 3004
+    assert value_of(result, "kpi_id") == 3004
     assert result["request_id"] == "REQ-page-001"
     assert result["parameters"]["anchor"] == "2026-03-01"
     assert result["parameters"]["time_grain"] == "month"
     assert result["parameters"]["span_start"] == "2025-04-01"
-    assert result["parameters"]["lookback_months"] == 11
+    assert value_of(result["parameters"], "lookback_months") == 11
     assert result["parameters"]["time_selection"]["anchor_source"] == "legacy"
     assert result["parameters"]["time_selection"]["start"] == "2026-03-01"
     assert result["parameters"]["time_selection"]["end"] == "2026-03-01"
@@ -133,7 +133,7 @@ def test_empty_projection_does_not_run_the_catalog(parquet_path, config_dir):
     """An empty measures_required list does not expand to every KPI YAML key."""
     ctx = make_context(parquet_path, measures=[], supplier=["ABC"])
     result = compute(ctx, config_dir=config_dir)
-    assert result["parameters"]["lookback_months"] == 0
+    assert value_of(result["parameters"], "lookback_months") == 0
     for row in result["rows"]:
         for key in ("current_value", "previous_year_value", "value_3m", "yoy_month", "trend_12m"):
             assert key not in row
@@ -149,6 +149,15 @@ def test_response_is_json_serializable_without_nan(parquet_path, config_dir):
     result = compute(ctx, config_dir=config_dir)
     encoded = json.dumps(result, allow_nan=False)
     assert "NaN" not in encoded
+    payload = json.loads(encoded)
+    g = next(
+        row
+        for row in payload["rows"]
+        if row["output_cut"] == "G" and row["reason_code"] == "LATE_SUPPLIER"
+    )
+    assert g["previous_year_value"] == {"value": 15.0, "period": "2025-03-01"}
+    assert g["current_value"]["period"] == "2026-03-01"
+    assert g["yoy_month"]["period"] == "2026-03-01"
     for row in result["rows"]:
         for value in row.values():
             assert isinstance(value, (str, float, int, list, dict, bool, type(None))), value
@@ -199,8 +208,8 @@ def test_limit_is_used_when_page_size_is_absent(parquet_path, config_dir):
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"], limit=2)
     result = compute(ctx, config_dir=config_dir)
     assert len(result["rows"]) == 2
-    assert result["pagination"]["page"] == 1
-    assert result["pagination"]["page_size"] == 2
+    assert value_of(result["pagination"], "page") == 1
+    assert value_of(result["pagination"], "page_size") == 2
     assert result["pagination"]["has_more"] is True
 
 
@@ -211,7 +220,7 @@ def test_page_past_the_end_is_empty_but_reports_the_total(parquet_path, config_d
     )
     result = compute(ctx, config_dir=config_dir)
     assert result["rows"] == []
-    assert result["pagination"]["total_count"] == 5
+    assert value_of(result["pagination"], "total_count") == 5
     assert result["pagination"]["has_more"] is False
 
 
@@ -264,7 +273,7 @@ def test_multi_model_requests_report_one_sql_per_extract(parquet_path, extra_con
     assert len(result["sqls"]) == 1
     assert result["sql"] == result["sqls"][0]
     row = next(r for r in result["rows"] if r["output_cut"] == "G")
-    assert row["supplier_count"] == 1.0
+    assert value_of(row, "supplier_count") == 1.0
 
 
 def test_trend_axes_only_lists_requested_trends(parquet_path, config_dir):

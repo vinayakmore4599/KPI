@@ -17,7 +17,7 @@ When to use
 from kpi_engine import compute, validate
 from kpi_engine.pipeline.binder import resolve_requested_graph, load_kpi
 from kpi_engine.exceptions import BindError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def test_context_amount_is_in_sql_with_filters(parquet_path, config_dir):
@@ -53,7 +53,7 @@ def test_unused_base_column_is_not_required(parquet_path, extra_config):
     assert "delay_days" not in planned["sql"]
     result = compute(ctx, config_dir=extra_config)
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["current_value"] == 30.0
+    assert value_of(row, "current_value") == 30.0
     assert "delay_now" not in row
     assert "trend_12m" not in row
 
@@ -101,7 +101,7 @@ def test_model_id_fold_still_selects_context_columns(parquet_path, extra_config)
     assert '"amount"' in sql
     result = compute(ctx, config_dir=extra_config)
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["current_value"] == 30.0
+    assert value_of(row, "current_value") == 30.0
 
 
 def test_resolve_requested_graph_yoy_needs_sotif_value(config_dir):

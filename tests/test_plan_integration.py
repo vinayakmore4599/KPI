@@ -16,7 +16,7 @@ from __future__ import annotations
 import pandas as pd
 
 from kpi_engine import compute, validate
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 from tests.test_sql_cte_model import _CTE_SQL, _write_dims
 from kpi_engine.main import main
 
@@ -47,18 +47,18 @@ def test_sql_cte_format_names_constant_rank_compute(parquet_path, extra_config, 
     r_other = find_row(result, cut="R", reason="OTHER", region="NA")
 
     # CTE multiplies amount by region weight (NA 1, EU 2). G ignores Region=NA.
-    assert g_late["current_value"] == 60.0
-    assert g_other["current_value"] == 6.0
-    assert r_late["current_value"] == 30.0
-    assert r_other["current_value"] == 6.0
+    assert value_of(g_late, "current_value") == 60.0
+    assert value_of(g_other, "current_value") == 6.0
+    assert value_of(r_late, "current_value") == 30.0
+    assert value_of(r_other, "current_value") == 6.0
     assert {r["region"] for r in result["rows"] if r["output_cut"] == "R"} == {"NA"}
 
-    assert g_late["target"] == 0.98
-    assert r_late["target"] == 0.98
-    assert abs(g_late["percent_gt"] - (60.0 / 0.98) * 100) < 1e-9
+    assert value_of(g_late, "target") == 0.98
+    assert value_of(r_late, "target") == 0.98
+    assert abs(value_of(g_late, "percent_gt") - (60.0 / 0.98) * 100) < 1e-9
 
-    assert g_late["reason_code_rank"] == 1
-    assert g_other["reason_code_rank"] == 2
+    assert value_of(g_late, "reason_code_rank") == 1
+    assert value_of(g_other, "reason_code_rank") == 2
     assert all("reason_code_rank" not in r for r in result["rows"] if r["output_cut"] == "R")
 
     udf = main(ctx, config_dir=str(extra_config))

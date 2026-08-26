@@ -14,6 +14,7 @@ When to use
 
 from __future__ import annotations
 
+import json
 import random
 from datetime import date
 from pathlib import Path
@@ -23,7 +24,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.dates import add_months, month_range_inclusive
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, unwrap_cell, value_of
 
 SEED = 202607
 ANCHOR = date(2026, 7, 1)
@@ -197,6 +198,7 @@ def _host_context(
 
 def _approx(actual, expected):
     """Compare a computed measure to the oracle, including nulls."""
+    actual = unwrap_cell(actual)
     if expected is None:
         assert actual is None or (isinstance(actual, float) and pd.isna(actual))
         return
@@ -227,7 +229,7 @@ def test_yyyymm_current_and_previous_year(tmp_path, extra_config):
     )
 
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 12
+    assert value_of(planned, "lookback_months") == 12
     assert planned["span_start"] == "2025-07-01"
     sql = planned["sql"]
     assert ">=" in sql and "<" in sql
@@ -235,13 +237,18 @@ def test_yyyymm_current_and_previous_year(tmp_path, extra_config):
 
     result = compute(ctx, config_dir=extra_config)
     _assert_requested_only(result["rows"], ["current_value", "previous_year_value"])
-    assert result["parameters"]["lookback_months"] == 12
+    assert value_of(result["parameters"], "lookback_months") == 12
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     _approx(g["current_value"], _at(oracle, ANCHOR, "LATE_SUPPLIER"))
     _approx(g["previous_year_value"], _at(oracle, PRIOR, "LATE_SUPPLIER"))
     na = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
     _approx(na["current_value"], _at(oracle, ANCHOR, "LATE_SUPPLIER", "NA"))
     _approx(na["previous_year_value"], _at(oracle, PRIOR, "LATE_SUPPLIER", "NA"))
+    payload = json.loads(json.dumps(result, allow_nan=False))
+    g_json = find_row(payload, cut="G", reason="LATE_SUPPLIER")
+    assert g_json["previous_year_value"]["period"] == "2025-07-01"
+    assert g_json["current_value"]["period"] == "2026-07-01"
+    assert result["parameters"]["anchor"] == "2026-07-01"
 
 
 def test_yyyymm_yoy_only_walks_previous_year(tmp_path, extra_config):
@@ -253,7 +260,7 @@ def test_yyyymm_yoy_only_walks_previous_year(tmp_path, extra_config):
     ctx = _host_context(facts, measures=["yoy_month"], kpi_id=9902)
 
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 12
+    assert value_of(planned, "lookback_months") == 12
     assert planned["span_start"] == "2025-07-01"
 
     result = compute(ctx, config_dir=extra_config)
@@ -279,7 +286,7 @@ def test_yyyymm_windows_match_oracle(tmp_path, extra_config):
     )
 
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 11
+    assert value_of(planned, "lookback_months") == 11
     assert planned["span_start"] == "2025-08-01"
 
     result = compute(ctx, config_dir=extra_config)
@@ -301,7 +308,7 @@ def test_yyyymm_current_only_stays_one_month(tmp_path, extra_config):
     ctx = _host_context(facts, measures=["current_value"], kpi_id=9904)
 
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 0
+    assert value_of(planned, "lookback_months") == 0
     assert planned["span_start"] == "2026-07-01"
 
     result = compute(ctx, config_dir=extra_config)
@@ -319,7 +326,7 @@ def test_folded_previous_year_measure_key(tmp_path, extra_config):
     ctx = _host_context(facts, measures=["Previous_Year_Value"], kpi_id=9905)
 
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 12
+    assert value_of(planned, "lookback_months") == 12
     assert planned["span_start"] == "2025-07-01"
 
     result = compute(ctx, config_dir=extra_config)
@@ -402,7 +409,7 @@ def test_sql_model_agrees_with_physical_oracle(tmp_path, extra_config):
     )
 
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 12
+    assert value_of(planned, "lookback_months") == 12
     assert "read_parquet(?)" in planned["sql"]
 
     result = compute(ctx, config_dir=extra_config)
@@ -425,7 +432,7 @@ def test_empty_measures_required_does_not_invent_catalog(tmp_path, extra_config)
     ctx = _host_context(facts, measures=[], kpi_id=9909)
 
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 0
+    assert value_of(planned, "lookback_months") == 0
     assert planned["span_start"] == "2026-07-01"
 
     result = compute(ctx, config_dir=extra_config)
@@ -440,7 +447,7 @@ def test_empty_measures_required_does_not_invent_catalog(tmp_path, extra_config)
     }
     for row in result["rows"]:
         assert catalog.isdisjoint(row)
-    assert result["parameters"]["lookback_months"] == 0
+    assert value_of(result["parameters"], "lookback_months") == 0
 
 
 def test_host_measures_requested_computes_previous_year(tmp_path, extra_config):
@@ -460,11 +467,11 @@ def test_host_measures_requested_computes_previous_year(tmp_path, extra_config):
     ]
 
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 12
+    assert value_of(planned, "lookback_months") == 12
     assert planned["span_start"] == "2025-07-01"
 
     result = compute(ctx, config_dir=extra_config)
-    assert result["parameters"]["lookback_months"] == 12
+    assert value_of(result["parameters"], "lookback_months") == 12
     _assert_requested_only(
         result["rows"], ["current_value", "previous_year_value", "value_3m", "value_6m"]
     )

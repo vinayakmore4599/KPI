@@ -25,7 +25,7 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute, validate
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, unwrap_cell, value_of
 
 ANCHOR = date(2026, 3, 1)
 TAX = 1.18
@@ -323,7 +323,11 @@ def _context(
 
 def _approx_row(actual: dict, expected: dict, keys: list[str]) -> None:
     for key in keys:
-        assert actual[key] == pytest.approx(expected[key]), (key, actual[key], expected[key])
+        assert unwrap_cell(actual[key]) == pytest.approx(expected[key]), (
+            key,
+            actual[key],
+            expected[key],
+        )
 
 
 def test_e2e_net_revenue_steps_aggs_rank_at_region_category(tmp_path, extra_config):
@@ -355,13 +359,13 @@ def test_e2e_net_revenue_steps_aggs_rank_at_region_category(tmp_path, extra_conf
         assert row["target_now"] == pytest.approx(target_by[tkey])
         assert row["attainment"] == pytest.approx(exp["total_final_revenue"] / target_by[tkey] * 100)
         assert row["avg_from_ratio"] == pytest.approx(row["avg_order_value"])
-        assert row["tax_add"] == pytest.approx(row["discounted_total"] * 0.18)
+        assert row["tax_add"] == pytest.approx(value_of(row, "discounted_total") * 0.18)
 
     na_elec = _pick(result, region="NA", product_category="Electronics")
     na_app = _pick(result, region="NA", product_category="Apparel")
-    assert na_elec["revenue_rank"] == 1
-    assert na_app["revenue_rank"] == 2
-    assert na_elec["clears_floor"] == 1.0
+    assert value_of(na_elec, "revenue_rank") == 1
+    assert value_of(na_app, "revenue_rank") == 2
+    assert value_of(na_elec, "clears_floor") == 1.0
     assert {(r["region"], r["product_category"]) for r in result["rows"]} == {
         ("NA", "Electronics"),
         ("NA", "Apparel"),
@@ -397,31 +401,33 @@ def test_e2e_net_revenue_region_and_worldwide_grains(tmp_path, extra_config):
     assert na["grouped_dimensions"] == ["region"]
     assert na.get("product_category") is None
     _approx_row(na, na_e, ["total_final_revenue", "avg_order_value", "order_count", "max_single_order"])
-    assert na["revenue_rank"] == 1
-    assert eu["revenue_rank"] == 2
-    assert na["clears_floor"] == 1.0
-    assert eu["clears_floor"] == 0.0
+    assert value_of(na, "revenue_rank") == 1
+    assert value_of(eu, "revenue_rank") == 2
+    assert value_of(na, "clears_floor") == 1.0
+    assert value_of(eu, "clears_floor") == 0.0
     assert na["target_now"] == pytest.approx(region_targets[("NA",)])
     assert na["attainment"] == pytest.approx(na_e["total_final_revenue"] / region_targets[("NA",)] * 100)
 
     na_elec = _pick(by_cat, region="NA", product_category="Electronics")
     na_app = _pick(by_cat, region="NA", product_category="Apparel")
     assert na["total_final_revenue"] == pytest.approx(
-        na_elec["total_final_revenue"] + na_app["total_final_revenue"]
+        value_of(na_elec, "total_final_revenue") + value_of(na_app, "total_final_revenue")
     )
-    mean_of_avgs = (na_elec["avg_order_value"] + na_app["avg_order_value"]) / 2
+    mean_of_avgs = (value_of(na_elec, "avg_order_value") + value_of(na_app, "avg_order_value")) / 2
     assert na["avg_order_value"] != pytest.approx(mean_of_avgs)
-    assert na["order_count"] == pytest.approx(na_elec["order_count"] + na_app["order_count"])
+    assert na["order_count"] == pytest.approx(
+        value_of(na_elec, "order_count") + value_of(na_app, "order_count")
+    )
 
     world = worldwide["rows"][0]
     assert world["grouped_dimensions"] == []
     assert world.get("region") is None
     _approx_row(world, world_exp[0], ["total_final_revenue", "avg_order_value", "order_count"])
-    assert world["revenue_rank"] == 1
-    assert world["clears_floor"] == 1.0
+    assert value_of(world, "revenue_rank") == 1
+    assert value_of(world, "clears_floor") == 1.0
     assert world["target_now"] == pytest.approx(world_targets[()])
     assert world["total_final_revenue"] == pytest.approx(
-        na["total_final_revenue"] + eu["total_final_revenue"]
+        value_of(na, "total_final_revenue") + value_of(eu, "total_final_revenue")
     )
     assert by_cat["selected_dimensions"] == ["region", "product_category"]
     assert by_region["selected_dimensions"] == ["region"]

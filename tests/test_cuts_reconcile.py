@@ -11,7 +11,7 @@ When to use
     Add a case when introducing a new cut or ignore_filters behaviour.
 """
 from kpi_engine import compute
-from tests.conftest import make_context
+from tests.conftest import make_context, value_of
 
 
 def test_additive_window_reconciles_without_region_filter(parquet_path, config_dir):
@@ -28,13 +28,13 @@ def test_additive_window_reconciles_without_region_filter(parquet_path, config_d
         if r["output_cut"] == "G" and r["reason_code"] == "LATE_SUPPLIER"
     )
     r_sum = sum(
-        r["value_3m"]
+        value_of(r, "value_3m")
         for r in result["rows"]
         if r["output_cut"] == "R" and r["reason_code"] == "LATE_SUPPLIER"
     )
-    assert g["value_3m"] == r_sum
+    assert value_of(g, "value_3m") == r_sum
     # Jan+Feb+Mar 2026: NA 10*(1+2+3) + EU 5*(1+2+3) = 60 + 30 = 90
-    assert g["value_3m"] == 90.0
+    assert value_of(g, "value_3m") == 90.0
 
 
 def test_region_filter_applies_only_to_r_when_g_ignores_it(parquet_path, config_dir):
@@ -57,10 +57,10 @@ def test_region_filter_applies_only_to_r_when_g_ignores_it(parquet_path, config_
         if r["output_cut"] == "R" and r["reason_code"] == "LATE_SUPPLIER"
     }
     assert r_regions == {"NA"}
-    assert g["value_3m"] == 90.0
+    assert value_of(g, "value_3m") == 90.0
     na = next(
         r
         for r in result["rows"]
         if r["output_cut"] == "R" and r["region"] == "NA" and r["reason_code"] == "LATE_SUPPLIER"
     )
-    assert na["value_3m"] == 60.0
+    assert value_of(na, "value_3m") == 60.0

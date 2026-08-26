@@ -13,7 +13,7 @@ When to use
 from kpi_engine import compute
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def test_constant_used_as_percent_target(parquet_path, extra_config):
@@ -44,9 +44,9 @@ def test_constant_used_as_percent_target(parquet_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert row["target"] == 0.98
-    assert row["current_value"] == 30.0
-    assert abs(row["percent_gt"] - (30.0 / 0.98) * 100) < 1e-9
+    assert value_of(row, "target") == 0.98
+    assert value_of(row, "current_value") == 30.0
+    assert abs(value_of(row, "percent_gt") - (30.0 / 0.98) * 100) < 1e-9
 
 
 def test_constant_requires_a_number(extra_config):
@@ -89,7 +89,52 @@ def test_constant_null_binds_and_returns_null(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
     assert row["target"] is None
-    assert row["filled"] == 30.0
+    assert value_of(row, "filled") == 30.0
+
+
+def test_constant_map_by_region_uses_default_on_g(parquet_path, extra_config):
+    """G has a null region so the map misses and default applies; R looks up the key."""
+    spec = minimal_kpi(
+        98412,
+        measures={
+            "current_value": {"of": "sotif_value", "op": "point", "offset": {"months": 0}},
+            "region_target": {
+                "op": "constant",
+                "by": "region",
+                "value": {"NA": 90, "EU": 85},
+                "default": None,
+            },
+        },
+    )
+    write_yaml(extra_config / "kpis" / "98412.yaml", spec)
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value", "region_target"],
+        supplier=["ABC"],
+        kpi_id=98412,
+    )
+    result = compute(ctx, config_dir=extra_config)
+    g = find_row(result, cut="G", reason="LATE_SUPPLIER")
+    na = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
+    eu = find_row(result, cut="R", reason="LATE_SUPPLIER", region="EU")
+    assert g["region"] is None
+    assert g["region_target"] is None
+    assert value_of(na, "region_target") == 90.0
+    assert value_of(eu, "region_target") == 85.0
+
+
+def test_constant_map_requires_by(extra_config):
+    spec = minimal_kpi(
+        98413,
+        measures={"region_target": {"op": "constant", "value": {"NA": 90}}},
+    )
+    write_yaml(extra_config / "kpis" / "98413.yaml", spec)
+    try:
+        load_kpi(98413, extra_config)
+    except BindError as exc:
+        assert "by:" in str(exc)
+    else:
+        raise AssertionError("expected BindError")
 
 
 def test_rank_desc_across_reason_codes_on_cut_g(parquet_path, extra_config):
@@ -112,10 +157,10 @@ def test_rank_desc_across_reason_codes_on_cut_g(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     g_late = find_row(result, cut="G", reason="LATE_SUPPLIER")
     g_other = find_row(result, cut="G", reason="OTHER")
-    assert g_late["current_value"] == 45.0
-    assert g_other["current_value"] == 6.0
-    assert g_late["reason_code_rank"] == 1
-    assert g_other["reason_code_rank"] == 2
+    assert value_of(g_late, "current_value") == 45.0
+    assert value_of(g_other, "current_value") == 6.0
+    assert value_of(g_late, "reason_code_rank") == 1
+    assert value_of(g_other, "reason_code_rank") == 2
     r_rows = [r for r in result["rows"] if r["output_cut"] == "R"]
     assert all("reason_code_rank" not in r for r in r_rows)
 
@@ -139,5 +184,5 @@ def test_rank_of_base_measure_at_anchor(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     g_late = find_row(result, cut="G", reason="LATE_SUPPLIER")
     g_other = find_row(result, cut="G", reason="OTHER")
-    assert g_late["reason_code_rank"] == 1
-    assert g_other["reason_code_rank"] == 2
+    assert value_of(g_late, "reason_code_rank") == 1
+    assert value_of(g_other, "reason_code_rank") == 2

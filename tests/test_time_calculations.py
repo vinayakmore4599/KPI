@@ -18,7 +18,7 @@ from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.pipeline.time_planner import lookback_for, max_lookback_months
 from kpi_engine.dates import add_months, iso_month, month_range_inclusive, parse_month
 from kpi_engine.exceptions import TimePlanError
-from tests.conftest import find_row, make_context, write_yaml
+from tests.conftest import find_row, make_context, write_yaml, value_of
 
 
 def test_parse_month_formats():
@@ -50,19 +50,19 @@ def test_inclusive_windows_3_6_12(parquet_path, config_dir):
     result = compute(ctx, config_dir=config_dir)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     # Mar 2026: NA 30 + EU 15 = 45
-    assert g["current_value"] == 45.0
+    assert value_of(g, "current_value") == 45.0
     # Jan–Mar 2026: (1+2+3)=6 → NA 60 + EU 30 = 90
-    assert g["value_3m"] == 90.0
+    assert value_of(g, "value_3m") == 90.0
     # Oct 2025–Mar 2026: (10+11+12+1+2+3)=39 → NA 390 + EU 195 = 585
-    assert g["value_6m"] == 585.0
+    assert value_of(g, "value_6m") == 585.0
     # Apr 2025–Mar 2026: (4..12 + 1+2+3)=78 → NA 780 + EU 390 = 1170
-    assert g["value_12m"] == 1170.0
+    assert value_of(g, "value_12m") == 1170.0
 
     na = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert na["current_value"] == 30.0
-    assert na["value_3m"] == 60.0
-    assert na["value_6m"] == 390.0
-    assert na["value_12m"] == 780.0
+    assert value_of(na, "current_value") == 30.0
+    assert value_of(na, "value_3m") == 60.0
+    assert value_of(na, "value_6m") == 390.0
+    assert value_of(na, "value_12m") == 780.0
 
 
 def test_exclusive_window_skips_anchor_month(parquet_path, extra_config):
@@ -80,14 +80,14 @@ def test_exclusive_window_skips_anchor_month(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     # Exclusive 3m: Dec 2025 + Jan + Feb 2026 = (12+1+2)=15 → NA 150 + EU 75 = 225
-    assert g["value_3m_exclusive"] == 225.0
+    assert value_of(g, "value_3m_exclusive") == 225.0
     # Point offset 3 months → Dec 2025: NA 120 + EU 60 = 180
-    assert g["previous_3m"] == 180.0
+    assert value_of(g, "previous_3m") == 180.0
     # Point offset 1 month → Feb 2026: NA 20 + EU 10 = 30
-    assert g["previous_month"] == 30.0
+    assert value_of(g, "previous_month") == 30.0
 
     plan = validate(ctx, config_dir=extra_config)
-    assert plan["lookback_months"] == 3
+    assert value_of(plan, "lookback_months") == 3
     assert plan["span_start"] == "2025-12-01"
 
 
@@ -106,7 +106,7 @@ def test_offset_years_plus_months(parquet_path, extra_config):
     # 1 year + 3 months back from 2026-03 → 2024-12, outside the fixture → null
     assert g["previous_15m"] is None
     plan = validate(ctx, config_dir=extra_config)
-    assert plan["lookback_months"] == 15
+    assert value_of(plan, "lookback_months") == 15
     assert plan["span_start"] == "2024-12-01"
 
 
@@ -122,9 +122,9 @@ def test_yoy_and_mom_growth(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     # current 45, prior year (EU only, NA missing) 15 → (45-15)/15 = 2
-    assert g["yoy_month"] == 2.0
+    assert value_of(g, "yoy_month") == 2.0
     # current 45, Feb 30 → (45-30)/30 = 0.5
-    assert g["mom_pct"] == 0.5
+    assert value_of(g, "mom_pct") == 0.5
 
     na = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
     assert na["previous_year_value"] is None
@@ -175,7 +175,7 @@ def test_business_date_is_not_the_anchor(parquet_path, config_dir):
     result = compute(ctx, config_dir=config_dir)
     assert result["parameters"]["anchor"] == "2026-03-01"
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 45.0
+    assert value_of(g, "current_value") == 45.0
 
 
 def _time_kpi(kpi_id: int) -> dict:

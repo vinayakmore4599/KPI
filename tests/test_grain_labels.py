@@ -20,7 +20,7 @@ from kpi_engine.contracts import TimeSpec
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.dates import period_label, week_start
 from kpi_engine.exceptions import BindError, TimePlanError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _switch_kpi(kpi_id: int, **overrides):
@@ -204,8 +204,8 @@ def test_week_bucket_is_iso_monday_and_offset_weeks_shifts_one_week(
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 16.0
-    assert row["prior_week"] == 8.0
+    assert value_of(row, "current_value") == 16.0
+    assert value_of(row, "prior_week") == 8.0
     assert week_start(date(2026, 3, 25)) == date(2026, 3, 23)
 
 
@@ -415,4 +415,4 @@ def test_green_when_of_is_computed_even_when_not_requested(parquet_path, extra_c
     assert row["green"] in (True, False)
     assert "current_value" in row
     assert result["meta"]["of"] == "current_value"
-    assert result["meta"]["above"] == 10.0
+    assert value_of(result["meta"], "above") == 10.0

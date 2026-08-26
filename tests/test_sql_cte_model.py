@@ -16,7 +16,7 @@ import pandas as pd
 
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError
-from tests.conftest import find_row, make_context, write_yaml
+from tests.conftest import find_row, make_context, write_yaml, value_of
 
 _CTE_SQL = """
 WITH regions AS (
@@ -66,14 +66,14 @@ def test_cte_joins_facts_and_dims(parquet_path, extra_config, tmp_path):
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     # Mar: NA 30 * 1 + EU 15 * 2 = 60
-    assert g["current_value"] == 60.0
+    assert value_of(g, "current_value") == 60.0
     # Jan–Mar: NA 60 * 1 + EU 30 * 2 = 120
-    assert g["value_3m"] == 120.0
+    assert value_of(g, "value_3m") == 120.0
 
     na = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
     eu = find_row(result, cut="R", reason="LATE_SUPPLIER", region="EU")
-    assert na["current_value"] == 30.0
-    assert eu["current_value"] == 30.0
+    assert value_of(na, "current_value") == 30.0
+    assert value_of(eu, "current_value") == 30.0
     r_regions = {
         r["region"]
         for r in result["rows"]
@@ -97,7 +97,7 @@ def test_cte_path_params_follow_sql_order(parquet_path, extra_config, tmp_path):
     # then time-range start/end, then supplier IN.
     assert planned["param_count"] >= 5
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 60.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 60.0
 
 
 def test_cte_drops_ineligible_region(parquet_path, extra_config, tmp_path):
@@ -112,8 +112,8 @@ def test_cte_drops_ineligible_region(parquet_path, extra_config, tmp_path):
     )
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 30.0
-    assert g["value_3m"] == 60.0
+    assert value_of(g, "current_value") == 30.0
+    assert value_of(g, "value_3m") == 60.0
     r_regions = {
         r["region"]
         for r in result["rows"]
@@ -156,8 +156,8 @@ def test_cte_default_paths_when_context_omits_dims(parquet_path, extra_config, t
     )
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 60.0
-    assert g["value_3m"] == 120.0
+    assert value_of(g, "current_value") == 60.0
+    assert value_of(g, "value_3m") == 120.0
 
 
 def test_cte_context_path_overrides_model_default(parquet_path, extra_config, tmp_path):
@@ -181,7 +181,7 @@ def test_cte_context_path_overrides_model_default(parquet_path, extra_config, tm
     result = compute(ctx, config_dir=extra_config)
     # Context EU is ineligible; default file would have kept EU (current 60).
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 30.0
+    assert value_of(g, "current_value") == 30.0
 
 
 def test_cte_empty_context_path_uses_default(parquet_path, extra_config, tmp_path):
@@ -210,7 +210,7 @@ def test_cte_empty_context_path_uses_default(parquet_path, extra_config, tmp_pat
         },
     )
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 60.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 60.0
 
 
 def test_cte_sources_default_path(parquet_path, extra_config, tmp_path):
@@ -239,7 +239,7 @@ def test_cte_sources_default_path(parquet_path, extra_config, tmp_path):
         kpi_id=9020,
     )
     result = compute(ctx, config_dir=extra_config)
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 60.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 60.0
 
 
 def test_cte_unknown_path_token(parquet_path, extra_config, tmp_path):

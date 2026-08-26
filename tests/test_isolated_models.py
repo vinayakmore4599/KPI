@@ -21,7 +21,7 @@ from kpi_engine import compute, validate
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.pipeline.pipelines import partition_request
 from kpi_engine.exceptions import BindError
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, value_of
 
 
 def test_two_models_without_relations_load(extra_config):
@@ -43,7 +43,7 @@ def test_157_only_skips_156_lookback_and_ignore(parquet_path, extra_config, tmp_
         extra_filters={"reason_code": {"values": ["LATE_SUPPLIER"], "input_text": "simple"}},
     )
     planned = validate(ctx, config_dir=extra_config)
-    assert planned["lookback_months"] == 0
+    assert value_of(planned, "lookback_months") == 0
     assert "reason_code" in planned["sql"]
 
     result = compute(ctx, config_dir=extra_config)
@@ -55,8 +55,8 @@ def test_157_only_skips_156_lookback_and_ignore(parquet_path, extra_config, tmp_
     assert factors == {"A"}
     assert "B" not in factors
     late = next(r for r in result["rows"] if r["reason_code"] == "LATE_SUPPLIER")
-    assert late["reason_count"] == 10.0
-    assert late["percent_gt"] == 100.0
+    assert value_of(late, "reason_count") == 10.0
+    assert value_of(late, "percent_gt") == 100.0
     assert "reason_code" in result["sql"]
 
 

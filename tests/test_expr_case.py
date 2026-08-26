@@ -9,7 +9,7 @@ from kpi_engine import compute
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import parse_expression
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _fact(tmp_path, rows) -> str:
@@ -107,8 +107,8 @@ def test_zero_if_null_column_and_case_status(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["filled"] == 12.0
-    assert row["open_amt"] == 5.0
+    assert value_of(row, "filled") == 12.0
+    assert value_of(row, "open_amt") == 5.0
 
 
 def test_null_if_zero_and_if_else_column(tmp_path, extra_config):
@@ -152,8 +152,8 @@ def test_null_if_zero_and_if_else_column(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["nonzero"] == 4.0
-    assert row["picked"] == 13.0
+    assert value_of(row, "nonzero") == 4.0
+    assert value_of(row, "picked") == 13.0
 
 
 def test_measure_expr_case_and_zero_if_null(tmp_path, extra_config):
@@ -198,8 +198,8 @@ def test_measure_expr_case_and_zero_if_null(tmp_path, extra_config):
         region="NA",
     )
     assert row["previous_year_value"] is None
-    assert row["shown"] == 0.0
-    assert row["blended"] == 10.0
+    assert value_of(row, "shown") == 0.0
+    assert value_of(row, "blended") == 10.0
 
 
 def test_measure_fn_zero_if_null_and_if_else(tmp_path, extra_config):
@@ -226,8 +226,8 @@ def test_measure_fn_zero_if_null_and_if_else(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["shown"] == 8.0
-    assert row["picked"] == 10.0
+    assert value_of(row, "shown") == 8.0
+    assert value_of(row, "picked") == 10.0
 
 
 def test_expr_nullif_zero(tmp_path, extra_config):
@@ -253,4 +253,4 @@ def test_expr_nullif_zero(tmp_path, extra_config):
         reason="LATE_SUPPLIER",
         region="NA",
     )
-    assert row["current_value"] == 2.0
+    assert value_of(row, "current_value") == 2.0

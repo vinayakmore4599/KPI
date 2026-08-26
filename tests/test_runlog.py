@@ -13,12 +13,13 @@ When to use
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError
-from tests.conftest import make_context
+from tests.conftest import make_context, value_of
 
 
 def test_compute_writes_a_timestamped_log_with_sql_and_steps(parquet_path, config_dir, tmp_path):
@@ -188,7 +189,70 @@ def test_measure_calc_log_includes_columns_used_values_and_result(
         for row in result["rows"]
         if row["output_cut"] == "G" and row["reason_code"] == "LATE_SUPPLIER"
     )
-    assert f"result={g['current_value']!r}" in text or f"result={float(g['current_value'])!r}" in text
+    assert f"result={value_of(g, 'current_value')!r}" in text or f"result={g['current_value']!r}" in text
+
+
+def test_result_json_is_off_by_default(parquet_path, config_dir, tmp_path):
+    """KPI_ENGINE_RESULT_LOG defaults off; compute does not write a result file."""
+    dest = tmp_path / "results"
+    ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
+    compute(ctx, config_dir=config_dir, result_log_dir=dest)
+    assert list(dest.glob("kpi-result-*.json")) == []
+
+
+def test_result_json_via_kwarg(parquet_path, config_dir, tmp_path):
+    """compute(..., result_log=True) writes the wrapped payload."""
+    dest = tmp_path / "results"
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value", "previous_year_value"],
+        supplier=["ABC"],
+    )
+    result = compute(
+        ctx, config_dir=config_dir, log_dir=tmp_path / "logs", result_log=True, result_log_dir=dest
+    )
+    files = list(dest.glob("kpi-result-3004-*.json"))
+    assert len(files) == 1
+    payload = json.loads(files[0].read_text(encoding="utf-8"))
+    assert payload["kpi_id"] == result["kpi_id"]
+    g = next(
+        row
+        for row in payload["rows"]
+        if row["output_cut"] == "G" and row["reason_code"] == "LATE_SUPPLIER"
+    )
+    assert g["previous_year_value"] == {"value": 15.0, "period": "2025-03-01"}
+    logs = list((tmp_path / "logs").glob("kpi-compute-3004-*.log"))
+    assert logs
+    stamp_seq = files[0].name[len("kpi-result-3004-") : -len(".json")]
+    assert logs[0].name == f"kpi-compute-3004-{stamp_seq}.log"
+
+
+def test_result_json_via_env(parquet_path, config_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("KPI_ENGINE_RESULT_LOG", "1")
+    dest = tmp_path / "results"
+    ctx = make_context(
+        parquet_path,
+        measures=["previous_year_value"],
+        supplier=["ABC"],
+    )
+    compute(ctx, config_dir=config_dir, result_log_dir=dest)
+    files = list(dest.glob("kpi-result-3004-*.json"))
+    assert len(files) == 1
+    payload = json.loads(files[0].read_text(encoding="utf-8"))
+    g = next(
+        row
+        for row in payload["rows"]
+        if row["output_cut"] == "G" and row["reason_code"] == "LATE_SUPPLIER"
+    )
+    assert g["previous_year_value"]["period"] == "2025-03-01"
+
+
+def test_result_log_false_wins_over_env(parquet_path, config_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("KPI_ENGINE_RESULT_LOG", "1")
+    dest = tmp_path / "results"
+    ctx = make_context(parquet_path, measures=["current_value"], supplier=["ABC"])
+    compute(ctx, config_dir=config_dir, result_log=False, result_log_dir=dest)
+    assert list(dest.glob("kpi-result-*.json")) == []
 
 
 def test_render_bound_sql_skips_placeholders_inside_quotes():

@@ -12,7 +12,7 @@ When to use
 """
 
 from kpi_engine import compute, validate
-from tests.conftest import find_row, write_yaml
+from tests.conftest import find_row, write_yaml, value_of
 from tests.test_duckdb_filters import _cte_context
 from tests.test_remaining_guards import (
     _join_context,
@@ -49,7 +49,7 @@ def test_physical_join_selects_used_eligible(parquet_path, extra_config, tmp_pat
     assert '"sotif"."eligible"' not in sql
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 30.0
+    assert value_of(g, "current_value") == 30.0
 
 
 def test_physical_join_omits_unused_eligible(parquet_path, extra_config, tmp_path):

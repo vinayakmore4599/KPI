@@ -12,7 +12,7 @@ When to use
 """
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError
-from tests.conftest import make_context
+from tests.conftest import make_context, value_of
 from kpi_engine.main import main
 
 
@@ -34,9 +34,9 @@ def test_unrequested_measures_do_not_widen_scan(parquet_path, config_dir):
         make_context(parquet_path, measures=["trend_12m"], supplier=["ABC"]),
         config_dir=config_dir,
     )
-    assert three["lookback_months"] == 2
-    assert with_py["lookback_months"] == 12
-    assert trend["lookback_months"] == 11
+    assert value_of(three, "lookback_months") == 2
+    assert value_of(with_py, "lookback_months") == 12
+    assert value_of(trend, "lookback_months") == 11
 
 
 def test_missing_month_filter_is_whole_history(parquet_path, config_dir):

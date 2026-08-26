@@ -33,7 +33,7 @@ from kpi_engine import compute, validate
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.pipeline.time_planner import lookback_for, lookforward_for
 from kpi_engine.dates import month_range_inclusive
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, value_of
 
 ANCHOR = date(2026, 3, 1)
 MONTHS = month_range_inclusive(date(2025, 7, 1), ANCHOR)
@@ -473,8 +473,10 @@ def test_oee_l3_composite_oee(tmp_path, extra_config):
         row = _pick(result, line=line)
         assert row["oee"] == pytest.approx(want["oee"])
         assert row["oee_pct"] == pytest.approx(want["oee"] * 100.0)
-        assert row["oee"] == pytest.approx(
-            row["availability"] * row["performance"] * row["quality"]
+        assert value_of(row, "oee") == pytest.approx(
+            value_of(row, "availability")
+            * value_of(row, "performance")
+            * value_of(row, "quality")
         )
 
     l1 = _pick(result, line="L1")
@@ -482,7 +484,7 @@ def test_oee_l3_composite_oee(tmp_path, extra_config):
     # The three-factor product collapses to good minutes over planned minutes.
     assert l1["oee"] == pytest.approx(1245.0 * (2472.0 / 2490.0) / 1440.0)
 
-    ranked = sorted(result["rows"], key=lambda row: -row["oee_pct"])
+    ranked = sorted(result["rows"], key=lambda row: -value_of(row, "oee_pct"))
     assert [row["line"] for row in ranked] == ["L1", "L3", "L2"]
 
 
@@ -495,7 +497,7 @@ def test_oee_l4_rollup_is_ratio_of_sums_not_mean_of_ratios(tmp_path, extra_confi
     """The classic OEE rollup error. Plant and company OEE re-aggregate the inputs."""
     line_ctx = _setup(tmp_path, extra_config, 9704, L3_MEASURES, selected_dimensions=["line"])
     line_result = _run(line_ctx, extra_config)
-    per_line = {row["line"]: row["oee"] for row in line_result["rows"]}
+    per_line = {row["line"]: value_of(row, "oee") for row in line_result["rows"]}
 
     plant_ctx = _setup(tmp_path, extra_config, 9705, L3_MEASURES, selected_dimensions=["plant"])
     plant_result = _run(plant_ctx, extra_config)
@@ -515,7 +517,7 @@ def test_oee_l4_rollup_is_ratio_of_sums_not_mean_of_ratios(tmp_path, extra_confi
     # The whole point: averaging the line OEEs gives a different, wrong number.
     mean_of_ratios = sum(per_line.values()) / len(per_line)
     assert company["oee"] != pytest.approx(mean_of_ratios)
-    assert abs(company["oee"] - mean_of_ratios) > 1e-5
+    assert abs(value_of(company, "oee") - mean_of_ratios) > 1e-5
 
 
 # --------------------------------------------------------------------------
@@ -539,7 +541,7 @@ def test_oee_l5_month_over_month_points(tmp_path, extra_config):
             want["oee_pct"] - previous["oee_pct"]
         )
         # Downtime falls and output rises every month, so OEE improves.
-        assert row["oee_delta_points"] > 0
+        assert value_of(row, "oee_delta_points") > 0
 
 
 def test_oee_lead_of_composite_looks_forward(tmp_path, extra_config):
@@ -606,7 +608,7 @@ def test_oee_l6_rolling_six_month_oee(tmp_path, extra_config):
         mean_of_months = sum(m[(line,)]["oee_pct"] for m in monthly) / 6.0
         assert row["oee_6m_pct"] != pytest.approx(mean_of_months)
         # The window is still below the improving anchor month.
-        assert row["oee_6m_pct"] < row["oee_pct"]
+        assert value_of(row, "oee_6m_pct") < value_of(row, "oee_pct")
 
     prior_window = MONTHS[LAST - 6 : LAST]
     assert len(prior_window) == 6

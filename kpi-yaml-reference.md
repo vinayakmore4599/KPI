@@ -152,8 +152,8 @@ The practical consequences:
 | `grains` | list of grains | omitted = `{grain}` only | Allowlist for `parameters.time_grain`. `time.grain` must appear in the list. |
 | `filter_code` | context filter key | required unless `periods:` or `compose:` is set | Case- and space-insensitive (`Reporting Month` matches `reporting_month`). **Not** hardcoded to `reporting_month`. When present on the context this scalar **wins** outright (legacy single-bucket); declared `periods` parts are skipped. When `compose:` is set, this is the **synthetic** name after concat. |
 | `periods` | map of part → context filter code | omitted | Independent predicates: `year`, `quarter` (1–4), `month` (1–12), `week` (ISO 1–53), `day` (1–31). Values parse as integers (`3`, `"03"`). The **month** part also accepts English names and 3-letter abbreviations (`March`, `Mar`, case-insensitive). Lists are a union. A missing part is not applied. Mutually exclusive with `compose.template`. A part finer than `time.grain` is a bind error. |
-| `calendar` | `gregorian`, `fiscal` | `gregorian` | Fiscal affects `quarter` and `year` only (`year` / `quarter` parts use the fiscal calendar). `week` is ISO-only. |
-| `fiscal_start_month` | 1–12 | `4` | First month of the fiscal year |
+| `calendar` | `gregorian`, `fiscal` | `gregorian` | Omit the key for Gregorian (Q1 = Jan–Mar, year = 1 Jan). Fiscal affects `quarter` and `year` only (`year` / `quarter` parts use the fiscal calendar). `week` is ISO-only. |
+| `fiscal_start_month` | 1–12 | `4` (unused unless `calendar: fiscal`) | First month of the fiscal year. Setting this without `calendar: fiscal` is a bind error. |
 | `format` | `yyyy-mm-dd`, `yyyy-mm`, `yyyy/mm`, `yyyymmdd`, `yyyymm`, `mmyyyy`, or a strptime string | ISO `YYYY-MM` / `YYYY-MM-DD` | How the physical column and the context time filter are stored (`062026` → `format: mmyyyy`) |
 | `compose` | `{ template: "{year}{month:02}" }` | omitted | **Superseded by `periods:`.** Build `filter_code` from segregated context keys. Literals between `{placeholders}` are kept (`{year}/{month:02}` → `2026/04`). `{month:02}` zero-pads. The part keys are then removed so they are not leftover `IN` filters. If `filter_code` is already on the context, that scalar wins. Cannot be set together with `periods:`. |
 | `anchor` | `selection_end`, `last_observed` | `selection_end` | `selection_end` is `max(S)`. `last_observed` probes the extract and sets `anchor = min(selection end, last observed bucket)`. `validate()` reports `anchor: null` and `anchor_source: "data"` in this mode. Suppresses the `unobserved_anchor` note. |
@@ -285,7 +285,7 @@ Same shape on `base_measures.*` (each case is a base body) and `model` (each cas
 
 - `model` — param type `string` (model id). Context datasets still match **aliases**, not model id.
 - `measures.*.trailing.{months,weeks,days,quarters,years,periods}` — `int`
-- `measures.*.offset.{months,weeks,days,quarters,years}` — `int`
+- `measures.*.offset.{months,weeks,days,quarters,years,periods}` — `int`
 - `measures.*.value` only when `op`/`kind` is `constant` — `int` or `float`. Not hook `value:`.
 
 A slot is `when:` **or** `from_param:` **or** a concrete value, not two. Nested `when:` is an error. `from_param:` inside a picked case body is allowed.
@@ -413,6 +413,8 @@ rebate_pct:
 
 Keys are compared after `str()` + strip. Unknown → `default` if set, else null. `strict: true` cannot combine with `default:`; any unknown key at eval is CatalogError. Mutually exclusive with `expr:` / `over:` / `sql:` / `columns:`+`op` on the same base.
 
+The `column:` named in `lookup:` must be in the **cut grain** for that lookup to see mixed keys. Fold with `agg: first` or `agg: max` (not an average of mapped numbers). Mixed keys in one group fall through to `default` / null. A G cut that nulls `region` does not look up a worldwide average — use `op: constant` + `by:` + `default:` for region targets (see §5.3a).
+
 ### 4.2 `over:` — entity windows on pre-fold rows
 
 Calendar `op: lag` stays on the densified spine vs the **anchor**. Entity sequence / days-since / running totals use `over:` on the **detail frame before fold**. `over:` is illegal on a combo measure. `op: lag` with `partition_by` is BindError.
@@ -481,6 +483,20 @@ Every `measures_required[].measure_key` the UI can send must be a key here. Unkn
 
 Platform kinds are documented below. Add-on kinds (`ntile`, `lag`, `diff`, `top_n`, …) and hooks (`ewma`, `hit_rate`, `cagr`, `mad`, `projection`, `period_median` / alias `rolling_median`, …) are listed with examples in [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). A new name is `capabilities/` + `registries/` — not `pipeline/`.
 
+### JSON measure cells
+
+Time-using measures on the **returned page** are JSON objects, not bare numbers. Hosts must read each cell's `period` (or `period_start` / `period_end` / `baseline_period`). `parameters.anchor` / `parameters.time_selection` stay the **request** bucket and must not be used as a measure tooltip.
+
+| Shape | Ops | Example |
+|---|---|---|
+| `{value, period}` | `point`, `lag`, `lead`, `arithmetic`, `fn`, `expr`, `vs_target`, `threshold` | `"previous_year_value": {"value": 35.0, "period": "2025-07-01"}` |
+| `{value, period, baseline_period}` | `index`, `diff`, `pct_change` | `"volume_index": {"value": 300.0, "period": "2026-03-01", "baseline_period": "2025-03-01"}` |
+| `{value, period_start, period_end}` | `window` (and windowed hooks) | `"value_3m": {"value": 90.0, "period_start": "2026-01-01", "period_end": "2026-03-01"}` |
+| `[{period, value}, …]` | `trend`, `trend_arithmetic` | same order as `trend_axes` |
+| scalar / null | cut-phase (`rank`, `ntile`, …), `constant`, missing prior period | `"reason_rank": 1`, `"previous_year_value": null` |
+
+YoY / arithmetic / `fn` / `expr` use the **request** period, never the previous-year bucket. A null PY value stays `null` (no fake period). If wrap cannot attach a period, the number is still returned and `notes` includes `{code: period_wrap_skipped, measure, detail}`.
+
 ### 5.1 `point` — one period
 
 ```yaml
@@ -495,7 +511,7 @@ previous_year_value:
   offset: { years: 1 }     # 1 year BEFORE the anchor
 ```
 
-`offset` counts **backwards** from the anchor. Available units: `days`, `weeks`, `months`, `quarters`, `years`; they add together, so `{ years: 1, months: 2 }` is 14 months back. `offset.weeks` is a calendar 7-day shift (also valid on `lag` / `lead` / `index` / `diff` / `pct_change`). Month-end dates clamp (31 Mar − 1 month = 28/29 Feb).
+`offset` counts **backwards** from the anchor. Allowed keys: `days`, `weeks`, `months`, `quarters`, `years`, `periods`. Unknown keys (`year:`, `month:`) are bind errors — they do not silently zero. Calendar units add together, so `{ years: 1, months: 2 }` is 14 months back. `offset: { periods: 1 }` is one **picked grain** step (previous quarter at `grain: quarter`, previous year at `grain: year`). Mixing `periods:` with calendar units on one `offset:` is a bind error. `offset.weeks` is a calendar 7-day shift (also valid on `lag` / `lead` / `index` / `diff` / `pct_change`). Month-end dates clamp (31 Mar − 1 month = 28/29 Feb). A one-month offset at quarter grain is a calendar-month shift then truncate, not “previous quarter” — use `periods: 1` or `quarters: 1` for a grain step.
 
 Returns `null` when that period has no rows for this dimension combination.
 
@@ -562,7 +578,7 @@ value_next_3m:
 | `true` (default) | the last N periods **including** the anchor | Jan, Feb, Mar |
 | `false` | N periods **ending one period before** the anchor | Dec, Jan, Feb |
 
-`trailing` / `offset` keys `days`, `weeks`, `months`, `quarters`, `years` are **calendar** and keep that meaning after a grain pick (`trailing: { months: 3 }` on a week pick is three calendar months, not three weeks). `trailing: { periods: N }` and `trailing: { from: data_points }` count **picked grain** steps.
+`trailing` / `offset` keys `days`, `weeks`, `months`, `quarters`, `years` are **calendar** and keep that meaning after a grain pick (`trailing: { months: 12 }` is twelve calendar months, not twelve picked periods). `trailing: { periods: N }` and `trailing: { from: data_points }` count **picked grain** steps. `offset: { periods: N }` is the same grain-step idea on a point/lag (do not mix with calendar units on that `offset:`). Unknown trailing keys are bind errors.
 
 The window aggregates using the base measure's own `agg`: a `min` base gives the minimum over the window, a `sum` base gives the total, a `last` base gives the last snapshot in the window.
 
@@ -624,15 +640,30 @@ sotif_pct_trend_ly:            # last year's 12 months, not trend of previous_ye
 - Any null operand or divide-by-zero → null **slot**; the array length does not shrink.
 - `parameters.time_grain` rebuckets the spine (month / quarter / year). `trailing: { months: 12 }` stays 12 calendar months; use `trailing: { periods: N }` or `from: data_points` so length follows the pick.
 
-### 5.3a `constant` — a literal number
+### 5.3a `constant` — a literal number or a per-dimension map
 
 ```yaml
 target:
   op: constant
   value: 0.98
+
+region_target:
+  op: constant
+  by: region
+  value: { APAC: 90, EMEA: 85 }
+  default: null
 ```
 
-The same scalar on every cut combo. Use it as `left` / `right` / `inputs` / `expr` for ratios against a goal. No extract and no lookback. `value: null` is JSON `null`; omitting `value:` is still a bind error. `from_param:` cannot supply null (`int|float` only).
+A scalar `value:` is the same on every cut combo. A map under `value:` requires `by:` (a KPI dimension). Missing / null `by` on the row (G with `region` excluded from the grain) uses `default:` only — never a worldwide average of the map. Use it as `left` / `right` / `inputs` / `expr` for ratios against a goal. No extract and no lookback. `value: null` is JSON `null`; omitting `value:` is still a bind error. `from_param:` cannot supply null (`int|float` only).
+
+Equivalent lookup on a base (fold with `agg: first` or `max`; the `by` column must be in the cut grain):
+
+```yaml
+base_measures:
+  region_target:
+    lookup: { column: region, map: { APAC: 90, EMEA: 85 }, default: null }
+    agg: first
+```
 
 ### 5.3b `rank` — rank values on a cut
 
@@ -1388,9 +1419,9 @@ pytest -q
 Known boundaries, so you do not design around something that is not there:
 
 - Timestamps are bucketed as stored; there is no timezone conversion, and `time.timezone` is rejected at bind rather than silently ignored. Convert the column in a `kind: sql` model if you need it.
-- `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months. There is no fiscal-week grain (DAX has none either). When the host sends a **year part**, year grain / `ytd` / `full_year` / year-part spans are calendar January–December (`TimeSpec.year_basis=calendar`) without moving fiscal quarters.
+- `calendar: fiscal` changes `quarter` and `year` only. Fiscal *months* are ordinary calendar months. There is no fiscal-week grain (DAX has none either). When the host sends a **year part**, year grain / `ytd` / `full_year` / year-part spans are calendar January–December (`TimeSpec.year_basis=calendar`) without moving fiscal quarters. That override is intentional: a fiscal KPI still uses Jan–Dec years when the host sends `year`.
 - Regex, JSON, geospatial, ML, timezone conversion, result caching, hierarchy expansion, and cross-KPI measure references remain architecture boundaries: hooks, `kind: sql` models, or the host.
-- `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) do not change meaning when `parameters.time_grain` changes. `periods` and `from: data_points` follow the pick (§5.2).
+- `trailing` / `offset` calendar keys (`days`, `weeks`, `months`, `quarters`, `years`) do not change meaning when `parameters.time_grain` changes. `offset.periods` and `trailing.periods` / `from: data_points` follow the pick (§5.1, §5.2). Do not mix `periods:` with calendar units on one `offset:`.
 - `over:` detail is capped at 500,000 rows and 50,000 partitions; densify trends still use the 50,000 cell cap. Larger extracts fail fast — narrow filters, coarsen retrieve, or pre-aggregate in a SQL model.
 - `measures.*.cuts` restricts **trend**, **rank**, **percent_of_total**, and other cut-phase kinds (`ntile`, `top_n`, …).
 - `percent_of_total` defaults to **this cut's** rows (after having). Cross-cut share is `versus_cut:` naming another declared cut.

@@ -18,7 +18,7 @@ from kpi_engine import compute, validate
 from kpi_engine.contracts import BoundFilter, CutSpec
 from kpi_engine.pipeline.filters import apply_cut_filters, split_for_duckdb
 from kpi_engine.exceptions import FilterError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def test_filter_named_like_a_column_binds_without_any_mapping(parquet_path, extra_config):
@@ -129,8 +129,8 @@ def test_deferred_filters_apply_only_to_cuts_that_do_not_ignore_them(parquet_pat
     result = compute(ctx, config_dir=config_dir)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
     na = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
-    assert g["current_value"] == 45.0
-    assert na["current_value"] == 30.0
+    assert value_of(g, "current_value") == 45.0
+    assert value_of(na, "current_value") == 30.0
     assert {r["region"] for r in result["rows"] if r["output_cut"] == "R"} == {"NA"}
 
 
@@ -170,7 +170,7 @@ def test_empty_region_skips_and_emits_all_r_rows(parquet_path, config_dir):
     assert {"filter_code": "region", "reason": "blank"} in result["skipped_filters"]
     cuts = {row["output_cut"] for row in result["rows"]}
     assert cuts == {"G", "R"}
-    assert find_row(result, cut="G", reason="LATE_SUPPLIER")["current_value"] == 45.0
+    assert value_of(find_row(result, cut="G", reason="LATE_SUPPLIER"), "current_value") == 45.0
     r_regions = {
         row["region"]
         for row in result["rows"]

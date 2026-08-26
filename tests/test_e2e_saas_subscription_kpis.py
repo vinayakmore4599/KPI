@@ -33,7 +33,7 @@ import pytest
 
 from kpi_engine import compute, validate
 from kpi_engine.dates import month_range_inclusive
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, value_of
 
 ANCHOR = date(2026, 3, 1)
 MONTHS = month_range_inclusive(date(2025, 1, 1), ANCHOR)
@@ -678,8 +678,8 @@ def test_saas_l4_retention_kpis(tmp_path, extra_config):
         (new + expansion) / (contraction + churned)
     )
     # NRR below 100 means the book shrank on existing customers; new logos hid it.
-    assert row["nrr"] < 100.0
-    assert row["mrr"] > row["mrr_prior_month"]
+    assert value_of(row, "nrr") < 100.0
+    assert value_of(row, "mrr") > value_of(row, "mrr_prior_month")
     assert row["green"] is False
 
 
@@ -796,7 +796,7 @@ def test_saas_l6_series_hooks(tmp_path, extra_config):
     # so exactly half the months are hits and they form one unbroken run.
     assert row["months_above_bar"] == pytest.approx(50.0)
     assert row["longest_run_above_bar"] == pytest.approx(6.0)
-    assert row["mrr_12m_slope"] > 0
+    assert value_of(row, "mrr_12m_slope") > 0
 
 
 def test_saas_l6_series_hooks_per_plan(tmp_path, extra_config):
@@ -833,7 +833,9 @@ def test_saas_l7_targets_flags_and_green(tmp_path, extra_config):
         assert row["mrr_target"] == pytest.approx(MRR_TARGET)
         assert row["target_attainment"] == pytest.approx(want["mrr"] * 100.0 / MRR_TARGET)
         assert row["beats_target"] == pytest.approx(1.0 if want["mrr"] >= MRR_TARGET else 0.0)
-        assert row["green"] is (row["nrr"] is not None and row["nrr"] >= 100)
+        assert row["green"] is (
+            value_of(row, "nrr") is not None and value_of(row, "nrr") >= 100
+        )
 
     enterprise = _pick(result, plan="Enterprise")
     assert enterprise["target_attainment"] == pytest.approx(15320.0 * 100.0 / 18000.0)

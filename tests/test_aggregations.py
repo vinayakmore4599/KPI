@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 
 from kpi_engine import compute
-from tests.conftest import make_context, write_yaml
+from tests.conftest import make_context, write_yaml, value_of
 
 
 @pytest.fixture
@@ -48,12 +48,12 @@ def test_avg_is_weighted_not_mean_of_monthly(agg_parquet, extra_config):
     result = compute(ctx, config_dir=extra_config)
     assert len(result["rows"]) == 1
     row = result["rows"][0]
-    assert row["avg_point"] == 30.0
-    assert row["avg_3m"] == 37.5
-    assert row["min_point"] == 30.0
-    assert row["min_3m"] == 10.0
-    assert row["max_3m"] == 90.0
-    assert row["count_3m"] == 4.0
+    assert value_of(row, "avg_point") == 30.0
+    assert value_of(row, "avg_3m") == 37.5
+    assert value_of(row, "min_point") == 30.0
+    assert value_of(row, "min_3m") == 10.0
+    assert value_of(row, "max_3m") == 90.0
+    assert value_of(row, "count_3m") == 4.0
 
 
 def _fact(month: date, amount: float) -> dict:

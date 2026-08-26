@@ -23,7 +23,7 @@ from kpi_engine.contracts import OutputSpec, TimePlan
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.pipeline.calc_engine import densify, evaluate
 from kpi_engine.exceptions import BindError, CatalogError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 _BASES = {
     "sum_value": {"sql": "amount", "agg": "sum"},
@@ -100,29 +100,29 @@ def test_point_on_a_month_with_no_rows_is_null_for_every_agg(sparse_row):
 
 def test_point_on_a_month_with_rows_uses_the_declared_agg(sparse_row):
     """March holds a single 8.0 row."""
-    assert sparse_row["sum_value_now"] == 8.0
-    assert sparse_row["min_value_now"] == 8.0
-    assert sparse_row["max_value_now"] == 8.0
-    assert sparse_row["avg_value_now"] == 8.0
-    assert sparse_row["count_value_now"] == 1.0
+    assert value_of(sparse_row, "sum_value_now") == 8.0
+    assert value_of(sparse_row, "min_value_now") == 8.0
+    assert value_of(sparse_row, "max_value_now") == 8.0
+    assert value_of(sparse_row, "avg_value_now") == 8.0
+    assert value_of(sparse_row, "count_value_now") == 1.0
 
 
 def test_windows_skip_the_gap_rather_than_treating_it_as_zero(sparse_row):
     """A missing month must not drag min down to 0 or avg toward it."""
-    assert sparse_row["sum_value_3m"] == 48.0
-    assert sparse_row["min_value_3m"] == 8.0
-    assert sparse_row["max_value_3m"] == 30.0
-    assert sparse_row["count_value_3m"] == 3.0
+    assert value_of(sparse_row, "sum_value_3m") == 48.0
+    assert value_of(sparse_row, "min_value_3m") == 8.0
+    assert value_of(sparse_row, "max_value_3m") == 30.0
+    assert value_of(sparse_row, "count_value_3m") == 3.0
     assert sparse_row["avg_value_3m"] == pytest.approx(16.0)
 
 
 def test_trend_zero_fills_additive_aggs_and_nulls_the_rest(sparse_row):
     """A graph line stays continuous for sums and counts, and breaks for min/max/avg."""
-    assert sparse_row["sum_value_trend"] == [40.0, 0.0, 8.0]
-    assert sparse_row["count_value_trend"] == [2.0, 0.0, 1.0]
-    assert sparse_row["min_value_trend"] == [10.0, None, 8.0]
-    assert sparse_row["max_value_trend"] == [30.0, None, 8.0]
-    assert sparse_row["avg_value_trend"] == [20.0, None, 8.0]
+    assert value_of(sparse_row, "sum_value_trend") == [40.0, 0.0, 8.0]
+    assert value_of(sparse_row, "count_value_trend") == [2.0, 0.0, 1.0]
+    assert value_of(sparse_row, "min_value_trend") == [10.0, None, 8.0]
+    assert value_of(sparse_row, "max_value_trend") == [30.0, None, 8.0]
+    assert value_of(sparse_row, "avg_value_trend") == [20.0, None, 8.0]
 
 
 def test_trend_axis_is_shared_and_matches_value_length(gapped_parquet, extra_config):
@@ -177,7 +177,7 @@ def test_window_over_an_empty_span_is_zero_for_sums_and_null_otherwise(
         month="2026-01",
     )
     row = compute(ctx, config_dir=extra_config)["rows"][0]
-    assert row["prior_sum"] == 0.0
+    assert value_of(row, "prior_sum") == 0.0
     assert row["prior_min"] is None
 
 
@@ -216,11 +216,11 @@ def test_coarser_cuts_recompute_min_and_max_instead_of_adding_them(tmp_path, ext
     )
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert (g["min_now"], g["max_now"]) == (5.0, 7.0)
-    assert g["sum_now"] == 12.0
+    assert (value_of(g, "min_now"), value_of(g, "max_now")) == (5.0, 7.0)
+    assert value_of(g, "sum_now") == 12.0
     na = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
     eu = find_row(result, cut="R", reason="LATE_SUPPLIER", region="EU")
-    assert (na["min_now"], eu["min_now"]) == (5.0, 7.0)
+    assert (value_of(na, "min_now"), value_of(eu, "min_now")) == (5.0, 7.0)
 
 
 @pytest.mark.parametrize(
@@ -416,11 +416,11 @@ def test_nullable_fact_column_yields_null_averages_not_zero(tmp_path, extra_conf
         "bonus",
     ]
     row = compute(ctx, config_dir=extra_config)["rows"][0]
-    assert row["amount_prev"] == 10.0
+    assert value_of(row, "amount_prev") == 10.0
     assert row["bonus_prev"] is None
     assert row["bonus_prior_1m"] is None
-    assert row["bonus_now"] == 4.0
-    assert row["bonus_trend"] == [None, 4.0]
+    assert value_of(row, "bonus_now") == 4.0
+    assert value_of(row, "bonus_trend") == [None, 4.0]
 
 
 def test_trend_of_a_non_additive_agg_recomputes_each_period(tmp_path, extra_config):
@@ -472,8 +472,8 @@ def test_trend_of_a_non_additive_agg_recomputes_each_period(tmp_path, extra_conf
         month="2026-03",
     )
     row = compute(ctx, config_dir=extra_config)["rows"][0]
-    assert row["suppliers_trend"] == [2.0, None, 1.0]
-    assert row["suppliers_3m"] == 2.0
+    assert value_of(row, "suppliers_trend") == [2.0, None, 1.0]
+    assert value_of(row, "suppliers_3m") == 2.0
 
 
 def test_numeric_and_null_dimensions_serialize_as_plain_json(tmp_path, extra_config):
@@ -550,7 +550,7 @@ def test_non_additive_measure_on_an_empty_period_is_null(parquet_path, extra_con
         month="2025-01",
     )
     row = compute(ctx, config_dir=extra_config)["rows"][0]
-    assert row["suppliers_now"] == 1.0
+    assert value_of(row, "suppliers_now") == 1.0
     assert row["suppliers_prev_year"] is None
 
 

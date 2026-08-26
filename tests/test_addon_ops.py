@@ -11,7 +11,7 @@ from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.pipeline.loader import list_capabilities, reload_packaged, write_generated_docs
 from kpi_engine.pipeline.op_registry import get_op
 from kpi_engine.exceptions import BindError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _addon_rows(kind: str) -> list[dict]:
@@ -258,19 +258,19 @@ def test_cut_addons_compute(parquet_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     late = find_row(result, cut="G", reason="LATE_SUPPLIER")
     other = find_row(result, cut="G", reason="OTHER")
-    assert late["current_value"] == 45.0
-    assert other["current_value"] == 6.0
-    assert late["q"] == 2
-    assert other["q"] == 4
-    assert late["dr"] == 1
-    assert other["dr"] == 2
+    assert value_of(late, "current_value") == 45.0
+    assert value_of(other, "current_value") == 6.0
+    assert value_of(late, "q") == 2
+    assert value_of(other, "q") == 4
+    assert value_of(late, "dr") == 1
+    assert value_of(other, "dr") == 2
     assert {late["rn"], other["rn"]} == {1, 2}
-    assert abs(late["pareto"] - (45.0 / 51.0) * 100) < 1e-9
-    assert abs(other["pareto"] - 100.0) < 1e-9
-    assert late["running"] == 45.0
-    assert other["running"] == 51.0
-    assert abs(late["contrib"] - 100.0) < 1e-9
-    assert other["contrib"] == 0.0
+    assert abs(value_of(late, "pareto") - (45.0 / 51.0) * 100) < 1e-9
+    assert abs(value_of(other, "pareto") - 100.0) < 1e-9
+    assert value_of(late, "running") == 45.0
+    assert value_of(other, "running") == 51.0
+    assert abs(value_of(late, "contrib") - 100.0) < 1e-9
+    assert value_of(other, "contrib") == 0.0
 
 
 def test_recommended_cut_ops_compute(parquet_path, extra_config):
@@ -301,19 +301,19 @@ def test_recommended_cut_ops_compute(parquet_path, extra_config):
     )
     late = find_row(result, cut="G", reason="LATE_SUPPLIER")
     other = find_row(result, cut="G", reason="OTHER")
-    assert late["pct_rank"] == 0.0
-    assert other["pct_rank"] == 100.0
-    assert late["vs_best"] == 0.0
-    assert other["vs_best"] == -39.0
-    assert late["vs_mean"] == 19.5
-    assert other["vs_mean"] == -19.5
+    assert value_of(late, "pct_rank") == 0.0
+    assert value_of(other, "pct_rank") == 100.0
+    assert value_of(late, "vs_best") == 0.0
+    assert value_of(other, "vs_best") == -39.0
+    assert value_of(late, "vs_mean") == 19.5
+    assert value_of(other, "vs_mean") == -19.5
     stdev = 760.5 ** 0.5
-    assert abs(late["z"] - (19.5 / stdev)) < 1e-9
-    assert abs(other["z"] - (-19.5 / stdev)) < 1e-9
-    assert late["run_avg"] == 45.0
-    assert other["run_avg"] == 25.5
-    assert late["top"] == 1.0
-    assert other["top"] == 0.0
+    assert abs(value_of(late, "z") - (19.5 / stdev)) < 1e-9
+    assert abs(value_of(other, "z") - (-19.5 / stdev)) < 1e-9
+    assert value_of(late, "run_avg") == 45.0
+    assert value_of(other, "run_avg") == 25.5
+    assert value_of(late, "top") == 1.0
+    assert value_of(other, "top") == 0.0
 
 
 def test_lag_lead_index_vs_target_threshold(parquet_path, extra_config):
@@ -347,12 +347,12 @@ def test_lag_lead_index_vs_target_threshold(parquet_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     late = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert late["value_3m"] == 90.0
-    assert late["value_3m_ly"] == 60.0
-    assert abs(late["volume_index"] - 300.0) < 1e-9
-    assert late["gap"] == 5.0
-    assert abs(late["gap_pct"] - 12.5) < 1e-9
-    assert late["hit"] == 0.0
+    assert value_of(late, "value_3m") == 90.0
+    assert value_of(late, "value_3m_ly") == 60.0
+    assert abs(value_of(late, "volume_index") - 300.0) < 1e-9
+    assert value_of(late, "gap") == 5.0
+    assert abs(value_of(late, "gap_pct") - 12.5) < 1e-9
+    assert value_of(late, "hit") == 0.0
     spec["measures"]["yoy_gap"] = {"op": "diff", "of": "current_value", "offset": {"years": 1}}
     spec["measures"]["yoy_pct"] = {
         "op": "pct_change",
@@ -370,8 +370,8 @@ def test_lag_lead_index_vs_target_threshold(parquet_path, extra_config):
         config_dir=extra_config,
     )
     late_shift = find_row(shifted, cut="G", reason="LATE_SUPPLIER")
-    assert late_shift["yoy_gap"] == 30.0
-    assert abs(late_shift["yoy_pct"] - 2.0) < 1e-9
+    assert value_of(late_shift, "yoy_gap") == 30.0
+    assert abs(value_of(late_shift, "yoy_pct") - 2.0) < 1e-9
 
     spec["measures"]["next_month"] = {
         "op": "lead",
@@ -389,7 +389,7 @@ def test_lag_lead_index_vs_target_threshold(parquet_path, extra_config):
         ),
         config_dir=extra_config,
     )
-    assert find_row(ahead, cut="G", reason="LATE_SUPPLIER")["next_month"] == 45.0
+    assert value_of(find_row(ahead, cut="G", reason="LATE_SUPPLIER"), "next_month") == 45.0
 
 
 def test_measure_fns_abs_clamp_attainment(parquet_path, extra_config):
@@ -424,9 +424,9 @@ def test_measure_fns_abs_clamp_attainment(parquet_path, extra_config):
         config_dir=extra_config,
     )
     late = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert late["magnitude"] == 5.0
-    assert late["bounded"] == 40.0
-    assert late["vs_goal"] == 90.0
+    assert value_of(late, "magnitude") == 5.0
+    assert value_of(late, "bounded") == 40.0
+    assert value_of(late, "vs_goal") == 90.0
 
 
 def test_hooks_series_formulas(parquet_path, extra_config):
@@ -575,25 +575,25 @@ def test_hooks_series_formulas(parquet_path, extra_config):
         config_dir=extra_config,
     )
     late = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert late["current_value"] == 45.0
-    assert late["seasonal"] == 3.0
-    assert late["smoothed"] == 33.75
-    assert late["best"] == 45.0
-    assert late["typical"] == 30.0
-    assert late["mean"] == 30.0
-    assert late["total"] == 90.0
-    assert abs(late["on_bar"] - (2.0 / 3.0) * 100) < 1e-9
-    assert late["held"] == 2.0
-    assert late["vol"] == 15.0
-    assert late["variance"] == 225.0
-    assert late["rel_vol"] == 50.0
-    assert late["spread"] == 30.0
-    assert late["seen"] == 3.0
-    assert abs(late["off_bar"] - (1.0 / 3.0) * 100) < 1e-9
-    assert late["off_run"] == 0.0
-    assert late["best_run"] == 2.0
-    assert abs(late["annualized"] - (3.0 ** 6 - 1.0)) < 1e-9
-    assert late["tilt"] == 15.0
+    assert value_of(late, "current_value") == 45.0
+    assert value_of(late, "seasonal") == 3.0
+    assert value_of(late, "smoothed") == 33.75
+    assert value_of(late, "best") == 45.0
+    assert value_of(late, "typical") == 30.0
+    assert value_of(late, "mean") == 30.0
+    assert value_of(late, "total") == 90.0
+    assert abs(value_of(late, "on_bar") - (2.0 / 3.0) * 100) < 1e-9
+    assert value_of(late, "held") == 2.0
+    assert value_of(late, "vol") == 15.0
+    assert value_of(late, "variance") == 225.0
+    assert value_of(late, "rel_vol") == 50.0
+    assert value_of(late, "spread") == 30.0
+    assert value_of(late, "seen") == 3.0
+    assert abs(value_of(late, "off_bar") - (1.0 / 3.0) * 100) < 1e-9
+    assert value_of(late, "off_run") == 0.0
+    assert value_of(late, "best_run") == 2.0
+    assert abs(value_of(late, "annualized") - (3.0 ** 6 - 1.0)) < 1e-9
+    assert value_of(late, "tilt") == 15.0
 
 
 @pytest.mark.parametrize(

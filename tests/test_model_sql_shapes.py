@@ -24,7 +24,7 @@ from kpi_engine.pipeline.adapter import adapt
 from kpi_engine.pipeline.binder import bind_datasets, load_kpi, load_model
 from kpi_engine.pipeline.model_sql import compile_extract, extract
 from kpi_engine.exceptions import BindError, KPIEngineError
-from tests.conftest import make_context, minimal_kpi, write_yaml
+from tests.conftest import make_context, minimal_kpi, write_yaml, value_of
 
 _AGG_MEASURES = {
     "sum_value": {"sql": "amount", "agg": "sum"},
@@ -184,7 +184,7 @@ def test_filter_values_and_paths_are_bound_as_parameters(parquet_path, config_di
     assert "XYZ" not in sql
     assert str(parquet_path) not in sql
     # path + span start + span end + two supplier values (region is deferred to the R cut)
-    assert planned["param_count"] == 5
+    assert value_of(planned, "param_count") == 5
     assert '"supplier_name" IN (?, ?)' in sql
 
 
@@ -369,7 +369,7 @@ def test_filters_that_match_nothing_return_an_empty_extract(parquet_path, config
     ctx = make_context(parquet_path, measures=["current_value"], supplier=["DOES_NOT_EXIST"])
     result = compute(ctx, config_dir=config_dir)
     assert result["rows"] == []
-    assert result["pagination"]["total_count"] == 0
+    assert value_of(result["pagination"], "total_count") == 0
 
 
 def test_anchor_month_in_filter_is_caught_by_the_compile_guard():

@@ -13,7 +13,7 @@ When to use
 
 from kpi_engine import compute
 from kpi_engine.exceptions import KPIEngineError
-from tests.conftest import find_row, make_context, write_yaml
+from tests.conftest import find_row, make_context, write_yaml, value_of
 
 
 def test_arithmetic_fns(parquet_path, extra_config):
@@ -37,17 +37,17 @@ def test_arithmetic_fns(parquet_path, extra_config):
     )
     result = compute(ctx, config_dir=extra_config)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 45.0
-    assert g["previous_year_value"] == 15.0
-    assert g["sum_cur_py"] == 60.0
-    assert g["diff_cur_py"] == 30.0
-    assert g["prod_cur_py"] == 675.0
-    assert g["ratio_cur_py"] == 3.0
-    assert g["percent_cur_py"] == 300.0
+    assert value_of(g, "current_value") == 45.0
+    assert value_of(g, "previous_year_value") == 15.0
+    assert value_of(g, "sum_cur_py") == 60.0
+    assert value_of(g, "diff_cur_py") == 30.0
+    assert value_of(g, "prod_cur_py") == 675.0
+    assert value_of(g, "ratio_cur_py") == 3.0
+    assert value_of(g, "percent_cur_py") == 300.0
     # 45 / 90
-    assert g["share_of_3m"] == 0.5
+    assert value_of(g, "share_of_3m") == 0.5
     # yoy 2.0 * share 0.5
-    assert g["yoy_times_share"] == 1.0
+    assert value_of(g, "yoy_times_share") == 1.0
 
     na = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
     assert na["previous_year_value"] is None
@@ -133,12 +133,12 @@ def test_all_3004_measures_together(parquet_path, config_dir):
     )
     result = compute(ctx, config_dir=config_dir)
     g = find_row(result, cut="G", reason="LATE_SUPPLIER")
-    assert g["current_value"] == 45.0
-    assert g["previous_year_value"] == 15.0
-    assert g["value_3m"] == 90.0
-    assert g["value_6m"] == 585.0
-    assert g["value_12m"] == 1170.0
-    assert g["yoy_month"] == 2.0
+    assert value_of(g, "current_value") == 45.0
+    assert value_of(g, "previous_year_value") == 15.0
+    assert value_of(g, "value_3m") == 90.0
+    assert value_of(g, "value_6m") == 585.0
+    assert value_of(g, "value_12m") == 1170.0
+    assert value_of(g, "yoy_month") == 2.0
     assert len(g["trend_12m"]) == 12
     assert result["trend_axes"]["trend_12m"][0] == "2025-04-01"
     r_rows = [r for r in result["rows"] if r["output_cut"] == "R"]

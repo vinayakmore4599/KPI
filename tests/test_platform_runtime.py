@@ -20,7 +20,7 @@ import pytest
 from kpi_engine import compute, validate
 from kpi_engine.exceptions import BindError, KPIEngineError
 from kpi_engine.host_runtime import register_duckdb_getter
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 from kpi_engine.main import main
 
 
@@ -160,7 +160,7 @@ def test_sql_alias_scan_follows_table_type(parquet_path, extra_config):
         cut="G",
         reason="LATE_SUPPLIER",
     )
-    assert g["current_value"] == 45.0
+    assert value_of(g, "current_value") == 45.0
 
     ctx["datasets"]["Sotif"]["table_type"] = "DELTA"
     ctx["datasets"]["Sotif"]["path"] = "abfss://command@account.dfs.core.windows.net/sotif"

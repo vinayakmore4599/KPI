@@ -95,13 +95,15 @@ blended:
 
 ### `constant`
 
-A literal number on every row.  
+A literal number, or a per-dimension map with default.  
 `role: platform` · `enabled: on`
 
 ```yaml
-target:
+region_target:
   op: constant
-  value: 95
+  by: region
+  value: { APAC: 90, EMEA: 85 }
+  default: null
 ```
 
 ### `dimension`

@@ -182,15 +182,26 @@ def shift_selection(
     out: list[date] = []
     seen: set[date] = set()
     for bucket in periods:
-        shifted = truncate_period(apply_offset(bucket, offset), time)
+        shifted = apply_measure_offset(bucket, offset, time)
         if shifted not in seen:
             out.append(shifted)
             seen.add(shifted)
     return tuple(sorted(out))
 
 
+def apply_measure_offset(bucket: date, offset: Offset | None, time: TimeSpec) -> date:
+    """Shift one bucket by grain ``periods`` or by calendar offset, then truncate."""
+    from kpi_engine.dates import add_periods
+
+    if offset is None:
+        return truncate_period(bucket, time)
+    if offset.periods:
+        return add_periods(truncate_period(bucket, time), offset.periods, time)
+    return truncate_period(apply_offset(bucket, offset), time)
+
+
 def negate_offset(offset: Offset | None) -> Offset | None:
-    """Flip the sign of every calendar field."""
+    """Flip the sign of every calendar field and grain-period count."""
     if offset is None:
         return None
     from dataclasses import replace
@@ -202,6 +213,7 @@ def negate_offset(offset: Offset | None) -> Offset | None:
         years=-offset.years,
         quarters=-offset.quarters,
         weeks=-offset.weeks,
+        periods=-offset.periods,
     )
 
 

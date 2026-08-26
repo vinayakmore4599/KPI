@@ -14,7 +14,7 @@ When to use
 from kpi_engine import compute, validate
 from kpi_engine.pipeline.binder import load_kpi
 from kpi_engine.exceptions import BindError, FilterError
-from tests.conftest import find_row, make_context, write_yaml
+from tests.conftest import find_row, make_context, write_yaml, value_of
 
 
 def test_pagination_slices_after_calc(parquet_path, config_dir):
@@ -27,9 +27,9 @@ def test_pagination_slices_after_calc(parquet_path, config_dir):
         page_size=2,
     )
     result = compute(ctx, config_dir=config_dir)
-    assert result["pagination"]["page"] == 1
-    assert result["pagination"]["page_size"] == 2
-    assert result["pagination"]["total_count"] == 5
+    assert value_of(result["pagination"], "page") == 1
+    assert value_of(result["pagination"], "page_size") == 2
+    assert value_of(result["pagination"], "total_count") == 5
     assert result["pagination"]["has_more"] is True
     assert len(result["rows"]) == 2
 
@@ -138,7 +138,7 @@ def test_sql_model_matches_physical(parquet_path, extra_config):
     )
     sql_result = compute(sql_ctx, config_dir=extra_config)
     physical = compute(physical_ctx, config_dir=extra_config)
-    assert find_row(sql_result, cut="G", reason="LATE_SUPPLIER")["value_3m"] == 90.0
+    assert value_of(find_row(sql_result, cut="G", reason="LATE_SUPPLIER"), "value_3m") == 90.0
     assert (
         find_row(sql_result, cut="G", reason="LATE_SUPPLIER")["current_value"]
         == find_row(physical, cut="G", reason="LATE_SUPPLIER")["current_value"]

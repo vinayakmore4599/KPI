@@ -39,19 +39,35 @@ def _unwrap_for_approx(expected: Any) -> Any:
     """Let pytest.approx compare the number inside a period-labelled cell."""
     if isinstance(expected, dict) and "value" in expected:
         return expected["value"]
-    if (
-        isinstance(expected, list)
-        and expected
-        and isinstance(expected[0], dict)
-        and "value" in expected[0]
-    ):
-        return [item.get("value") for item in expected]
+    if isinstance(expected, (list, tuple)):
+        return type(expected)(_unwrap_for_approx(item) for item in expected)
     return expected
 
 
-def approx(expected, *args, **kwargs):
-    """pytest.approx that unwraps {value, period} measure cells."""
-    return _orig_approx(_unwrap_for_approx(expected), *args, **kwargs)
+class _UnwrappingApprox:
+    """pytest.approx that unwraps ``{value, period}`` on either side."""
+
+    def __init__(self, expected, **kwargs):
+        self._inner = _orig_approx(_unwrap_for_approx(expected), **kwargs)
+
+    def __eq__(self, actual):
+        return self._inner == _unwrap_for_approx(actual)
+
+    def __ne__(self, actual):
+        return not self.__eq__(actual)
+
+    def __repr__(self):
+        return repr(self._inner)
+
+
+def unwrap_cell(cell: Any) -> Any:
+    """Scalar or trend value list from a period-labelled cell; otherwise the cell."""
+    return _unwrap_for_approx(cell)
+
+
+def approx(expected, **kwargs):
+    """pytest.approx that unwraps {value, period} measure cells on either side."""
+    return _UnwrappingApprox(expected, **kwargs)
 
 
 pytest.approx = approx
@@ -214,8 +230,8 @@ def find_row(
 def value_of(row: dict, key: str) -> Any:
     """Unwrap a time-labelled measure cell to the scalar or trend value list.
 
-    Point/window cells are ``{value, period...}``. Trends are
-    ``[{period, value}, ...]``. Cut-phase and composite measures stay scalars.
+    Point/window/composite cells are ``{value, period...}``. Trends are
+    ``[{period, value}, ...]``. Cut-phase ops stay scalars.
     """
     cell = row.get(key)
     if isinstance(cell, dict) and "value" in cell:

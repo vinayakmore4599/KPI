@@ -1,8 +1,8 @@
 """Dimension roles on JSON rows and per-measure period labels.
 
 What this file provides
-    Grain values vs rollup null vs omitted catalog dims. Point/window/trend
-    cells carry their period next to the value. Cut-phase and YoY stay scalar.
+    Grain values vs rollup null vs omitted catalog dims. Time-using measure
+    cells carry their period next to the value. Cut-phase ops stay scalar.
 
 Where it is used
     pytest tests/test_output_shape.py.
@@ -11,8 +11,10 @@ When to use
     Add a case when the response row shape or period wrapping changes.
 """
 
+import json
+
 from kpi_engine import compute
-from tests.conftest import find_row, make_context, value_of
+from tests.conftest import find_row, make_context, minimal_kpi, value_of, write_yaml
 
 
 def test_g_and_r_share_region_key_and_omit_supplier(parquet_path, config_dir):
@@ -47,12 +49,31 @@ def test_point_and_lag_carry_the_effective_period(parquet_path, config_dir):
     assert g["previous_year_value"] == {"value": 15.0, "period": "2025-03-01"}
 
 
+def test_json_dumps_roundtrip_keeps_period_cells(parquet_path, config_dir):
+    """json.dumps(compute()) must keep per-measure period objects, not bare numbers."""
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value", "previous_year_value", "yoy_month"],
+        supplier=["ABC"],
+    )
+    result = compute(ctx, config_dir=config_dir)
+    payload = json.loads(json.dumps(result, allow_nan=False))
+    g = find_row(payload, cut="G", reason="LATE_SUPPLIER")
+    assert g["previous_year_value"] == {"value": 15.0, "period": "2025-03-01"}
+    assert g["current_value"] == {"value": 45.0, "period": "2026-03-01"}
+    assert g["yoy_month"]["period"] == "2026-03-01"
+    assert value_of(g["yoy_month"], "value") == 2.0
+    assert "baseline_period" not in g["yoy_month"]
+    skip = [n for n in payload.get("notes") or [] if n.get("code") == "period_wrap_skipped"]
+    assert skip == []
+
+
 def test_window_carries_inclusive_bounds(parquet_path, config_dir):
     ctx = make_context(parquet_path, measures=["value_3m"], supplier=["ABC"])
     g = find_row(compute(ctx, config_dir=config_dir), cut="G", reason="LATE_SUPPLIER")
     assert g["value_3m"]["period_start"] == "2026-01-01"
     assert g["value_3m"]["period_end"] == "2026-03-01"
-    assert g["value_3m"]["value"] == 90.0
+    assert value_of(g["value_3m"], "value") == 90.0
 
 
 def test_trend_pairs_period_with_each_value(parquet_path, config_dir):
@@ -66,10 +87,11 @@ def test_trend_pairs_period_with_each_value(parquet_path, config_dir):
     assert [item["period"] for item in points] == axis
     assert len(points) == len(axis)
     assert points[-1]["period"] == "2026-03-01"
-    assert points[-1]["value"] == 45.0
+    assert value_of(points[-1], "value") == 45.0
 
 
-def test_percent_and_yoy_stay_scalars(parquet_path, config_dir):
+def test_yoy_uses_request_period_not_prior_year(parquet_path, config_dir):
+    """YoY is labelled with the request bucket; never the previous-year month."""
     ctx = make_context(
         parquet_path,
         measures=["current_value", "yoy_month"],
@@ -77,7 +99,41 @@ def test_percent_and_yoy_stay_scalars(parquet_path, config_dir):
     )
     g = find_row(compute(ctx, config_dir=config_dir), cut="G", reason="LATE_SUPPLIER")
     assert isinstance(g["current_value"], dict)
-    assert isinstance(g["yoy_month"], (float, type(None)))
+    assert g["yoy_month"] == {"value": 2.0, "period": "2026-03-01"}
+
+
+def test_index_and_diff_carry_baseline_period(parquet_path, extra_config):
+    spec = minimal_kpi(9860)
+    spec["measures"]["volume_index"] = {
+        "op": "index",
+        "of": "current_value",
+        "offset": {"years": 1},
+    }
+    spec["measures"]["yoy_gap"] = {
+        "op": "diff",
+        "of": "current_value",
+        "offset": {"years": 1},
+    }
+    spec["measures"]["vs_goal"] = {
+        "op": "vs_target",
+        "of": "current_value",
+        "value": 40,
+        "as": "gap",
+    }
+    write_yaml(extra_config / "kpis" / "9860.yaml", spec)
+    ctx = make_context(
+        parquet_path,
+        measures=["volume_index", "yoy_gap", "vs_goal"],
+        supplier=["ABC"],
+        kpi_id=9860,
+    )
+    g = find_row(compute(ctx, config_dir=extra_config), cut="G", reason="LATE_SUPPLIER")
+    assert g["volume_index"]["period"] == "2026-03-01"
+    assert g["volume_index"]["baseline_period"] == "2025-03-01"
+    assert g["yoy_gap"]["period"] == "2026-03-01"
+    assert g["yoy_gap"]["baseline_period"] == "2025-03-01"
+    assert g["vs_goal"] == {"value": 5.0, "period": "2026-03-01"}
+    assert "baseline_period" not in g["vs_goal"]
 
 
 def test_value_of_unwraps_wrapped_cells(parquet_path, config_dir):

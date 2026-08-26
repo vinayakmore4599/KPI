@@ -26,7 +26,7 @@ import pytest
 from kpi_engine import compute, validate
 from kpi_engine.dates import add_months, month_range_inclusive
 from kpi_engine.exceptions import BindError
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, unwrap_cell, write_yaml, value_of
 
 ANCHOR = date(2026, 3, 1)
 PRIOR = date(2025, 3, 1)
@@ -85,6 +85,9 @@ def _growth(current: float | None, previous: float | None) -> float | None:
 
 def _approx(actual, expected) -> None:
     """Compare a computed measure to the oracle, including nulls."""
+    from tests.conftest import unwrap_cell
+
+    actual = unwrap_cell(actual)
     if expected is None:
         assert actual is None or (isinstance(actual, float) and pd.isna(actual))
         return
@@ -233,7 +236,7 @@ def _sum_cut(result: dict, cut: str, key: str, **dims: str | None) -> float:
             continue
         if any(row.get(name) != value for name, value in dims.items()):
             continue
-        value = row.get(key)
+        value = unwrap_cell(row.get(key))
         if value is not None:
             total += float(value)
     return total
@@ -284,13 +287,13 @@ def test_e2e_kitchen_sink_default_grain(parquet_path, extra_config):
     _approx(g_late["yoy_month"], _growth(g_late_now, g_late_py))
     _approx(g_late["blended"], (g_late_now + g_late_py) / 2)
     _approx(g_late["share_of_3m"], g_late_now / g_late_3m * 100)
-    assert g_late["target"] == 40
+    assert value_of(g_late, "target") == 40
     _approx(g_late["gap"], g_late_now - 40)
-    assert g_late["hit"] == 1.0
+    assert value_of(g_late, "hit") == 1.0
     _approx(g_late["vs_goal"], g_late_now / 40 * 100)
     _approx(g_late["volume_index"], g_late_now * 100 / g_late_py)
-    assert g_late["reason_rank"] == 1
-    assert g_other["reason_rank"] == 2
+    assert value_of(g_late, "reason_rank") == 1
+    assert value_of(g_other, "reason_rank") == 2
     _approx(g_late["percent_gt"], g_late_now / (g_late_now + g_other_now) * 100)
     _approx(g_other["percent_gt"], g_other_now / (g_late_now + g_other_now) * 100)
     assert len(g_late["trend_12m"]) == 12
@@ -306,8 +309,8 @@ def test_e2e_kitchen_sink_default_grain(parquet_path, extra_config):
     assert g_late["current_value"] == pytest.approx(
         _sum_cut(result, "R", "current_value", reason_code="LATE_SUPPLIER")
     )
-    assert g_late["current_value"] == 45.0
-    assert na_late["current_value"] == 30.0
+    assert value_of(g_late, "current_value") == 45.0
+    assert value_of(na_late, "current_value") == 30.0
 
 
 def test_e2e_kitchen_sink_supplier_and_empty_grain(parquet_path, extra_config):
@@ -334,7 +337,7 @@ def test_e2e_kitchen_sink_supplier_and_empty_grain(parquet_path, extra_config):
     _approx(g_sup["previous_year_value"], 21.0)
     _approx(g_sup["yoy_month"], _growth(51.0, 21.0))
     _approx(g_sup["volume_index"], 51.0 * 100 / 21.0)
-    assert g_sup["reason_rank"] == 1
+    assert value_of(g_sup, "reason_rank") == 1
     _approx(g_sup["percent_gt"], 100.0)
     assert g_sup["green"] is True
     assert g_sup["current_value"] == pytest.approx(
@@ -380,16 +383,16 @@ def test_e2e_rank_and_share_universe_follows_selected_dimensions(tmp_path, extra
     g_other = find_row(by_reason, cut="G", reason="OTHER")
     _approx(g_late["current_value"], late_now)
     _approx(g_other["current_value"], other_now)
-    assert g_late["reason_rank"] == 1
-    assert g_other["reason_rank"] == 2
+    assert value_of(g_late, "reason_rank") == 1
+    assert value_of(g_other, "reason_rank") == 2
     _approx(g_late["percent_gt"], late_now / (late_now + other_now) * 100)
 
     abc = _pick(by_supplier, cut="G", supplier="ABC")
     xyz = _pick(by_supplier, cut="G", supplier="XYZ")
     _approx(abc["current_value"], abc_now)
     _approx(xyz["current_value"], xyz_now)
-    assert abc["reason_rank"] == 1
-    assert xyz["reason_rank"] == 2
+    assert value_of(abc, "reason_rank") == 1
+    assert value_of(xyz, "reason_rank") == 2
     _approx(abc["percent_gt"], abc_now / (abc_now + xyz_now) * 100)
     _approx(xyz["percent_gt"], xyz_now / (abc_now + xyz_now) * 100)
     assert abc["current_value"] != pytest.approx(g_late["current_value"])
@@ -466,14 +469,14 @@ def test_e2e_median_at_supplier_grain_is_not_median_of_regions(tmp_path, extra_c
     abc = _pick(result, cut="G", supplier="ABC")
     xyz = _pick(result, cut="G", supplier="XYZ")
     r_abc = [
-        row["median_now"]
+        value_of(row, "median_now")
         for row in result["rows"]
         if row["output_cut"] == "R" and row.get("supplier") == "ABC"
     ]
-    assert abc["median_now"] == 25.0
-    assert xyz["median_now"] == 1.5
+    assert value_of(abc, "median_now") == 25.0
+    assert value_of(xyz, "median_now") == 1.5
     assert sorted(r_abc) == [20.0, 100.0]
-    assert abc["median_now"] != pytest.approx(sum(r_abc) / len(r_abc))
+    assert value_of(abc, "median_now") != pytest.approx(sum(r_abc) / len(r_abc))
 
 
 def _med_row(supplier: str, region: str, amount: float) -> dict:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from kpi_engine import compute, validate
-from tests.conftest import find_row, make_context, minimal_kpi, write_yaml
+from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
 
 def _addon_kpi(kpi_id: int) -> dict:
@@ -104,21 +104,21 @@ def test_e2e_validate_then_compute_addon_catalog(parquet_path, extra_config):
     late = find_row(result, cut="G", reason="LATE_SUPPLIER")
     other = find_row(result, cut="G", reason="OTHER")
 
-    assert late["current_value"] == 45.0
-    assert late["value_3m"] == 90.0
-    assert late["value_3m_ly"] == 60.0
-    assert abs(late["volume_index"] - 300.0) < 1e-9
-    assert late["gap"] == 5.0
-    assert late["hit"] == 1.0
-    assert late["vs_goal"] == 112.5
-    assert late["q"] == 2
-    assert other["q"] == 4
-    assert abs(late["contrib"] - 100.0) < 1e-9
-    assert other["contrib"] == 0.0
-    assert late["smoothed"] == 33.75
-    assert abs(late["on_bar"] - (2.0 / 3.0) * 100) < 1e-9
-    assert late["held"] == 2.0
-    assert late["seasonal"] == 3.0
+    assert value_of(late, "current_value") == 45.0
+    assert value_of(late, "value_3m") == 90.0
+    assert value_of(late, "value_3m_ly") == 60.0
+    assert abs(value_of(late, "volume_index") - 300.0) < 1e-9
+    assert value_of(late, "gap") == 5.0
+    assert value_of(late, "hit") == 1.0
+    assert value_of(late, "vs_goal") == 112.5
+    assert value_of(late, "q") == 2
+    assert value_of(other, "q") == 4
+    assert abs(value_of(late, "contrib") - 100.0) < 1e-9
+    assert value_of(other, "contrib") == 0.0
+    assert value_of(late, "smoothed") == 33.75
+    assert abs(value_of(late, "on_bar") - (2.0 / 3.0) * 100) < 1e-9
+    assert value_of(late, "held") == 2.0
+    assert value_of(late, "seasonal") == 3.0
     for key in measures:
         assert key in late
 
@@ -139,4 +139,4 @@ def test_e2e_validate_then_compute_addon_catalog(parquet_path, extra_config):
         ),
         config_dir=extra_config,
     )
-    assert find_row(ahead, cut="G", reason="LATE_SUPPLIER")["next_month"] == 45.0
+    assert value_of(find_row(ahead, cut="G", reason="LATE_SUPPLIER"), "next_month") == 45.0

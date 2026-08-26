@@ -1,0 +1,106 @@
+# KPI definition for kpi_id 3004 (Sotif).
+#
+# What this file provides
+#   The onboarding contract: time, dimensions, base_measures, cuts, measures.
+#   Context.measures_required[].measure_key must match keys under `measures`.
+#
+# Where it is used
+#   binder.load_kpi(3004). The engine does not hard-code Sotif math.
+#
+# Capabilities
+#   dimensions     — catalog allowlist (reason_code, region, supplier)
+#   default_dimensions — GROUP BY when the request omits selected_dimensions
+#   base_measures  — internal amount fact as sotif_value (Pandas sum)
+#   cuts           — extras-only group_by; G excludes region, R adds it
+#   measures       — current, previous year, 3/6/12m windows, yoy, 12m trend
+#
+# When to use
+#   Copy this file to config/kpis/<kpi_group>/<new_id>.yaml to onboard a KPI. Do not put
+#   ADLS paths or Python here.
+#
+kpi_id: 3004
+version: 1
+model: sotif
+
+# Selected month arrives as this filter. It is the anchor, never a single-month IN.
+time:
+  column: event_month
+  grain: month
+  filter_code: reporting_month
+  calendar: gregorian
+
+# How rows are split. Not numbers. YAML owns the allowlist; the request picks names.
+dimensions:
+  - { name: reason_code, from: reason_code }
+  - { name: region, from: region }
+  - { name: supplier, from: supplier_name }
+
+default_dimensions: [reason_code]
+
+# Internal fact from the table. UI does not request this name.
+base_measures:
+  sotif_value:
+    sql: amount
+    agg: sum
+
+# group_by lists extras only. Effective grain = request_grain − exclude + extras.
+cuts:
+  - name: G
+    group_by: []
+    exclude_from_grain: [region]
+    ignore_filters: [region]
+    also_emit: [R]
+  - name: R
+    group_by: [region]
+    exclude_from_grain: []
+    ignore_filters: []
+
+default_cut: G
+row_set: span_union
+
+# Calculated columns the context can request via measure_key.
+# of: which base_measure to use. op: point | window | trend | arithmetic | dimension.
+measures:
+  reason_code:
+    kind: dimension
+
+  current_value:
+    of: sotif_value
+    op: point
+    offset: { months: 0 }
+
+  previous_year_value:
+    of: sotif_value
+    op: point
+    offset: { years: 1 }
+
+  value_3m:
+    of: sotif_value
+    op: window
+    trailing: { months: 3 }
+    inclusive: true
+
+  value_6m:
+    of: sotif_value
+    op: window
+    trailing: { months: 6 }
+    inclusive: true
+
+  value_12m:
+    of: sotif_value
+    op: window
+    trailing: { months: 12 }
+    inclusive: true
+
+  yoy_month:
+    op: arithmetic
+    fn: growth_pct
+    left: current_value
+    right: previous_year_value
+
+  trend_12m:
+    of: sotif_value
+    op: trend
+    trailing: { months: 12 }
+    inclusive: true
+    cuts: [G]

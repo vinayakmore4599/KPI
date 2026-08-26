@@ -1,0 +1,24 @@
+# Physical DuckDB model for Sotif.
+#
+# What this file provides
+#   kind: physical — one source alias `sotif`. Joins empty; context supplies path.
+#
+# Where it is used
+#   KPI YAML `model: sotif` → binder.load_model → model_sql.extract.
+#
+# Capabilities
+#   required_aliases must exist on context.datasets (alias or key), unless the
+#   source has default_path / default_paths in this file. Context path wins.
+#   table_type PARQUET uses read_parquet; DELTA uses delta_scan.
+#
+# When to use
+#   Add joins here when two tables form the extract. Use kind: sql instead when
+#   the source is a CTE too complex for YAML joins.
+#
+model_id: sotif
+kind: physical
+required_aliases: [sotif]
+sources:
+  sotif:
+    alias: sotif
+joins: []

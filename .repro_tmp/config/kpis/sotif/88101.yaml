@@ -1,0 +1,81 @@
+kpi_id: 88101
+version: 1
+model: sotif
+time:
+  column: event_month
+  grain: month
+  filter_code: reporting_month
+  calendar: gregorian
+dimensions:
+- name: reason_code
+  from: reason_code
+- name: region
+  from: region
+- name: supplier
+  from: supplier_name
+default_dimensions:
+- reason_code
+base_measures:
+  sotif_value:
+    sql: amount
+    agg: sum
+cuts:
+- name: G
+  group_by: []
+  exclude_from_grain:
+  - region
+  ignore_filters:
+  - region
+  also_emit:
+  - R
+- name: R
+  group_by:
+  - region
+  exclude_from_grain: []
+  ignore_filters: []
+default_cut: G
+row_set: span_union
+measures:
+  reason_code:
+    kind: dimension
+  current_value:
+    of: sotif_value
+    op: point
+    offset:
+      months: 0
+  previous_year_value:
+    of: sotif_value
+    offset:
+      years: 1
+    kind: point
+  value_3m:
+    of: sotif_value
+    op: window
+    trailing:
+      months: 3
+    inclusive: true
+  value_6m:
+    of: sotif_value
+    op: window
+    trailing:
+      months: 6
+    inclusive: true
+  value_12m:
+    of: sotif_value
+    op: window
+    trailing:
+      months: 12
+    inclusive: true
+  yoy_month:
+    op: arithmetic
+    fn: growth_pct
+    left: current_value
+    right: previous_year_value
+  trend_12m:
+    of: sotif_value
+    op: trend
+    trailing:
+      months: 12
+    inclusive: true
+    cuts:
+    - G

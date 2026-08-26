@@ -7,7 +7,7 @@ import pytest
 from kpi_engine import compute
 from kpi_engine.exceptions import BindError
 from kpi_engine.pipeline.adapter import adapt
-from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.binder import bind_request, load_kpi
 from kpi_engine.pipeline.time_planner import max_lookback_months
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
@@ -119,7 +119,7 @@ def test_column_dedupe_shared_by_point_and_compare(extra_config):
             },
         },
     )
-    kpi = load_kpi(99204, extra_config)
+    kpi = bind_request(load_kpi(99204, extra_config))
     synthetics = [b.name for b in kpi.base_measures if b.name.startswith("__") and b.name.endswith("__base")]
     assert len(synthetics) == 1
     shared = synthetics[0]
@@ -212,7 +212,7 @@ def test_filtered_compare_computes_yoy(parquet_path, extra_config):
             }
         },
     )
-    kpi = load_kpi(99208, extra_config)
+    kpi = bind_request(load_kpi(99208, extra_config))
     spec = {m.key: m for m in kpi.measures}["late_yoy"]
     assert spec.kind == "pct_change"
     ctx = make_context(
@@ -240,7 +240,7 @@ def test_filtered_compare_lookback(extra_config):
             }
         },
     )
-    kpi = load_kpi(99209, extra_config)
+    kpi = bind_request(load_kpi(99209, extra_config))
     assert max_lookback_months(kpi, ("late_yoy",)) == 12
 
 

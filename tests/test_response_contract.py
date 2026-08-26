@@ -49,6 +49,7 @@ def test_response_envelope_has_every_documented_key(parquet_path, config_dir):
         "dropped_groups",
         "grain_warnings",
         "notes",
+        "quality_flags",
     }
     assert value_of(result, "kpi_id") == 3004
     assert result["request_id"] == "REQ-page-001"

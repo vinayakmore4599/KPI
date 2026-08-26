@@ -67,7 +67,13 @@ def _assert_shift_source(spec: OutputSpec, kpi: KpiSpec) -> None:
         "ntile",
         "row_number",
         "top_n",
+        "bottom_n",
         "percent_of_total",
+        "rank_pct_change",
+        "concentration",
+        "abc_class",
+        "pareto_flag",
+        "normalize",
     }:
         hint = " Rank a lagged measure (rank of lag), do not lag a rank."
     if leaf_spec.kind == "trend":
@@ -507,3 +513,384 @@ class Compare(OpPlugin):
                 },
             }
         )
+
+
+class Annualize(OpPlugin):
+    """Scale of to a year: of * (periods_per_year / n)."""
+
+    name = "annualize"
+    requires_time = True
+    shiftable = True
+    extra_keys = frozenset({"periods_per_year", "n"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        ppy = common.raw.get("periods_per_year")
+        n = common.raw.get("n")
+        return OutputSpec(
+            **{**spec.__dict__, "params": {**spec.params, "periods_per_year": ppy, "n": n}}
+        )
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        support.require_measure_or_base_of(spec, kpi)
+        if kpi.time is None:
+            raise BindError(f"measures.{spec.key} op=annualize needs a time: block.")
+
+    def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
+        return (spec.of,) if spec.of else ()
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        if spec.of and spec.of in by_key:
+            return lookback_for(
+                by_key[spec.of], by_key, time, anchor=anchor, seen=seen | {spec.key}
+            )
+        return 0
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        actual = _eval_named(ctx, ctx.spec.of or "")
+        n = ctx.spec.params.get("n") or ctx.spec.trailing_months or 1
+        ppy = ctx.spec.params.get("periods_per_year")
+        if ppy is None:
+            grain = ctx.kpi.time.grain if ctx.kpi.time else "month"
+            ppy = {"day": 365, "week": 52, "month": 12, "quarter": 4, "year": 1}.get(grain, 12)
+        if actual is None or not n:
+            value = None
+        else:
+            value = float(actual) * (float(ppy) / float(n))
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="annualize",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"actual": actual, "n": n, "periods_per_year": ppy},
+        )
+        return value
+
+
+class VsPriorWindow(OpPlugin):
+    """Current trailing window vs the same window shifted by offset."""
+
+    name = "vs_prior_window"
+    requires_time = True
+    shiftable = True
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        _require_offset(spec)
+        support.require_base_of(spec, kpi)
+        if kpi.time is None:
+            raise BindError(f"measures.{spec.key} op=vs_prior_window needs a time: block.")
+        if spec.trailing_months is None and not spec.trailing_from and not spec.window_range:
+            raise BindError(
+                f"measures.{spec.key} op=vs_prior_window requires trailing: or range:."
+            )
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        return support.window_lookback_periods(spec, time, anchor) + support.offset_lookback(
+            spec.offset, time, anchor
+        )
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        if ctx.plan is None or ctx.kpi.time is None:
+            raise CatalogError(f"{ctx.spec.key} op=vs_prior_window needs a time plan.")
+        sel = support.effective_selection(ctx)
+        if not sel:
+            return None
+        start, end = support.window_bounds(sel[-1], ctx.spec, ctx.kpi)
+        current = support.window_value(ctx.series, ctx.kpi, ctx.spec, start, end)
+        prior_sel = _shifted_selection(ctx, backward=True)
+        if not prior_sel:
+            value = None
+        else:
+            p_start, p_end = support.window_bounds(prior_sel[-1], ctx.spec, ctx.kpi)
+            prior = support.window_value(ctx.series, ctx.kpi, ctx.spec, p_start, p_end)
+            if current is None or prior in (None, 0):
+                value = None
+            else:
+                value = float(current - prior) / float(prior)
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="vs_prior_window",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"current": current},
+        )
+        return value
+
+
+class DeltaContribution(OpPlugin):
+    """Current minus lagged of (period delta). Use op: contribution for share of delta."""
+
+    name = "delta_contribution"
+    requires_time = True
+    shiftable = True
+    extra_keys = frozenset({"vs"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        vs = str(common.raw["vs"]).strip() if common.raw.get("vs") else None
+        return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "vs": vs}})
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        support.require_measure_or_base_of(spec, kpi)
+        if spec.params.get("vs"):
+            known = {b.name for b in kpi.base_measures} | {m.key for m in kpi.measures}
+            if spec.params["vs"] not in known:
+                raise BindError(
+                    f"measures.{spec.key} vs={spec.params['vs']!r} is not a measure or base."
+                )
+        elif not _offset_nonzero(spec.offset):
+            raise BindError(
+                f"measures.{spec.key} op=delta_contribution requires offset: or vs:."
+            )
+
+    def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
+        return tuple(n for n in (spec.of, spec.params.get("vs")) if n)
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        child = 0
+        if spec.of and spec.of in by_key:
+            child = lookback_for(
+                by_key[spec.of], by_key, time, anchor=anchor, seen=seen | {spec.key}
+            )
+        return child + support.offset_lookback(spec.offset, time, anchor)
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        current = _eval_named(ctx, ctx.spec.of or "")
+        vs = ctx.spec.params.get("vs")
+        if vs:
+            baseline = _eval_named(ctx, vs)
+        else:
+            target_sel = _shifted_selection(ctx, backward=True)
+            baseline = (
+                _eval_named(ctx, ctx.spec.of or "", selection=target_sel)
+                if target_sel
+                else None
+            )
+        if current is None or baseline is None:
+            value = None
+        else:
+            value = float(current) - float(baseline)
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="delta_contribution",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"current": current, "baseline": baseline},
+        )
+        return value
+
+
+class BaselineIndex(OpPlugin):
+    """of / vs × 100 (100 = baseline). vs defaults to lagged of when offset is set."""
+
+    name = "baseline_index"
+    shiftable = True
+    extra_keys = frozenset({"vs"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        vs = str(common.raw["vs"]).strip() if common.raw.get("vs") else None
+        return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "vs": vs}})
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        support.require_measure_or_base_of(spec, kpi)
+        if spec.params.get("vs"):
+            known = {b.name for b in kpi.base_measures} | {m.key for m in kpi.measures}
+            if spec.params["vs"] not in known:
+                raise BindError(
+                    f"measures.{spec.key} vs={spec.params['vs']!r} is not a measure or base."
+                )
+        elif not _offset_nonzero(spec.offset):
+            raise BindError(
+                f"measures.{spec.key} op=baseline_index requires vs: or a non-zero offset."
+            )
+
+    def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
+        return tuple(n for n in (spec.of, spec.params.get("vs")) if n)
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        child = 0
+        if spec.of and spec.of in by_key:
+            child = lookback_for(
+                by_key[spec.of], by_key, time, anchor=anchor, seen=seen | {spec.key}
+            )
+        return child + support.offset_lookback(spec.offset, time, anchor)
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        actual = _eval_named(ctx, ctx.spec.of or "")
+        vs = ctx.spec.params.get("vs")
+        if vs:
+            baseline = _eval_named(ctx, vs)
+        else:
+            target_sel = _shifted_selection(ctx, backward=True)
+            baseline = (
+                _eval_named(ctx, ctx.spec.of or "", selection=target_sel)
+                if target_sel
+                else None
+            )
+        if actual is None or baseline in (None, 0):
+            value = None
+        else:
+            value = float(actual) / float(baseline) * 100.0
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="baseline_index",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"actual": actual, "baseline": baseline},
+        )
+        return value
+
+
+class CompoundGrowth(OpPlugin):
+    """(end/start)^(1/n) − 1 over a fixed N periods. Prefer hook:cagr for trailing series."""
+
+    name = "compound_growth"
+    requires_time = True
+    extra_keys = frozenset({"n"})
+    shiftable = True
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        raw = dict(common.raw)
+        n = raw.get("n")
+        if n is None and spec.trailing_months:
+            n = spec.trailing_months
+        if n is None:
+            raise BindError(
+                f"measures.{key} op=compound_growth requires n: (fixed period count)."
+            )
+        try:
+            n_int = int(n)
+        except (TypeError, ValueError) as exc:
+            raise BindError(
+                f"measures.{key} op=compound_growth n: must be a positive integer."
+            ) from exc
+        if n_int < 1:
+            raise BindError(
+                f"measures.{key} op=compound_growth n: must be a positive integer."
+            )
+        return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "n": n_int}})
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        support.require_measure_or_base_of(spec, kpi)
+        if kpi.time is None:
+            raise BindError(f"measures.{spec.key} op=compound_growth needs a time: block.")
+
+    def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
+        return (spec.of,) if spec.of else ()
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        n = int(spec.params.get("n") or 1)
+        child = 0
+        if spec.of and spec.of in by_key:
+            child = lookback_for(
+                by_key[spec.of], by_key, time, anchor=anchor, seen=seen | {spec.key}
+            )
+        return child + max(n, 0)
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        n = int(ctx.spec.params.get("n") or 1)
+        last = _eval_named(ctx, ctx.spec.of or "")
+        from kpi_engine.contracts import Offset
+        from kpi_engine.pipeline.period_select import negate_offset, shift_selection
+
+        periods = support.effective_selection(ctx)
+        if not periods or ctx.kpi.time is None:
+            return None
+        start_sel = shift_selection(
+            periods, negate_offset(Offset(periods=n)), ctx.kpi.time
+        )
+        first = (
+            _eval_named(ctx, ctx.spec.of or "", selection=start_sel)
+            if start_sel
+            else None
+        )
+        if first in (None, 0) or last is None or n <= 0:
+            value = None
+        else:
+            value = float(last / first) ** (1.0 / float(n)) - 1.0
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="compound_growth",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"first": first, "last": last, "n": n},
+        )
+        return value
+
+    def periods(self, spec, kpi, plan):
+        return support.current_period_meta(kpi, plan)
+
+
+class SeasonalAdjust(OpPlugin):
+    """Deseasonalize: current × overall mean / same-month mean (seasonal_index logic)."""
+
+    name = "seasonal_adjust"
+    requires_time = True
+    extra_keys = frozenset()
+    shiftable = True
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        support.require_base_of(spec, kpi)
+        if kpi.time is None:
+            raise BindError(f"measures.{spec.key} op=seasonal_adjust needs a time: block.")
+        if not spec.trailing_months:
+            raise BindError(
+                f"measures.{spec.key} op=seasonal_adjust requires trailing: "
+                "(same window as hook:seasonal_index)."
+            )
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        n = spec.trailing_months or 0
+        return max(n - 1, 0) if spec.inclusive else n
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        from kpi_engine.capabilities.hooks.impl import _at, _observed_pairs
+
+        if ctx.kpi.time is None or ctx.plan is None or not ctx.spec.of:
+            return None
+        from dataclasses import replace as dc_replace
+
+        plan = ctx.plan
+        try:
+            plan = dc_replace(plan, anchor=support.effective_anchor(ctx))
+        except CatalogError:
+            pass
+        anchor = support.truncate_period_safe(plan.anchor, ctx.kpi)
+        current = _at(ctx.series, ctx.kpi.time.column, ctx.spec.of, anchor)
+        pairs = _observed_pairs(ctx.series, ctx.kpi, plan, ctx.spec)
+        if current is None or not pairs:
+            return None
+        month_vals = [value for month, value in pairs if month.month == anchor.month]
+        overall = [value for _, value in pairs]
+        if not month_vals or not overall:
+            return None
+        month_mean = sum(month_vals) / len(month_vals)
+        overall_mean = sum(overall) / len(overall)
+        if month_mean == 0:
+            value = None
+        else:
+            value = float(current) * float(overall_mean) / float(month_mean)
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="seasonal_adjust",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+        )
+        return value
+
+    def periods(self, spec, kpi, plan):
+        return support.current_period_meta(kpi, plan)

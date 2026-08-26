@@ -109,13 +109,17 @@ Identifiers: `^[A-Za-z_][A-Za-z0-9_]*$`. Formula reserved words: `case when then
 | Ratio of two **already aggregated** measures | `op: expr` or `op: fn` (`divide`, `percent`, …) |
 | This group as % of all groups on this cut | `op: percent_of_total` (**not** `fn: percent`) |
 | Share of **another cut's** total | `percent_of_total` + `versus_cut:` |
+| Reuse a coarser-cut scalar on finer rows | `from_cut:` (shared dims; not with `versus_cut`) |
 | Rank groups | `op: rank` + `order: desc\|asc`. Rank a lagged measure; never `lag { of: rank }` |
 | Last period of a composite (ratio/OEE/window/hook) | `op: compare` / `lag` / `diff` / `pct_change` of that measure. Not of `trend`/`rank`/row helper |
 | Trend prior year | `offset:` **on the trend measure**, not a separate `lag { of: trend }` |
 | Per-row product then SUM | helper `expr:` base, then another base with `agg: sum` |
 | Mask rows / ignore one context filter on **one** measure | `where:` / `ignore_filters:` on the measure; `of:` must be a **base**. Or `filtered_*` + `column:` / `of:` |
 | Hit-rate / EWMA / CAGR / MAD / forecast | `op: hook` + catalog name + `trailing:` |
-| Keep rows vs drop groups | `op: predicate` (1/0) vs top-level `having:` |
+| Keep rows vs drop groups vs null one measure | `op: predicate` (1/0) vs top-level `having:` vs measure `having:` |
+| Band / forecast interval | `op: band` or `hook: forecast_confidence` → `{key}_low` / `{key}_high` |
+| List of values in a group | `agg: list_agg` + `op: point` only (not window/fn) |
+| Emit one cut / allowlist cuts | reserved `parameters.only_cut` / `emit_cuts` (declare them) |
 | Fixed target / goal | `op: constant` + `value:` (scalar or map + `by:` + `default:`) |
 | Echo a dimension as a requestable column | `kind: dimension` (key must match a `dimensions:` name) |
 | Entity lag / running sum on order rows | `over:` on a pre-fold base (not calendar `op: lag`) |
@@ -161,7 +165,7 @@ measures:
     mode: yoy
 ```
 
-`column:` xor `of:` (a **base** with `agg:`). `where:` required; `WHERE_OPS` only (no `like`). `agg:` only with `column:`. Snapshot: `filtered_point` only. Keys starting `__` are reserved.
+`column:` xor `of:` (a **base** with `agg:`). `where:` required; same mask ops as base `where:` (including `like` / `or` / `not`). `agg:` only with `column:`. Snapshot: `filtered_point` only. Keys starting `__` are reserved.
 
 ---
 
@@ -278,7 +282,7 @@ Gold: [kpi_config/models/sotif/sotif.yaml](kpi_config/models/sotif/sotif.yaml).
 
 If a name is not listed here or in CAPABILITIES.md, **stop and ask** — do not emit fake YAML.
 
-**`agg:`** `sum` `avg` `count` `count_distinct` `min` `max` `median` `percentile` (+ `percentile:`) `first` `last` `stddev` `variance` `mode`.
+**`agg:`** `sum` `avg` `count` `count_distinct` `min` `max` `median` `percentile` (+ `percentile:`) `first` `last` `stddev` `variance` `mode` `geomean` `harmonic_mean` `any` `all` `weighted_avg` (+ `weight_column:`).
 
 **Measure `op:` / `kind:`** `point` `window` `trend` `trend_arithmetic` `arithmetic` `fn` `expr` `constant` `dimension` `predicate` `hook` `rank` `percent_of_total` `ntile` `dense_rank` `row_number` `cumulative_share` `running_total` `contribution` `lag` `lead` `index` `vs_target` `threshold` `percent_rank` `gap_to_leader` `gap_to_avg` `zscore` `running_avg` `top_n` `diff` `pct_change` `compare` `filtered_point` `filtered_window` `filtered_trend` `filtered_compare`.
 
@@ -294,7 +298,7 @@ Prefer `op: fn` + `inputs:` when operand order must not swap. `arithmetic` = `le
 
 **Window `range:`:** `trailing` `leading` `cumulative` `ytd` `mtd` `qtd` `wtd` `full_month` `full_quarter` `full_year`. Named PTD cannot also set `trailing:`.
 
-**`where:` ops:** `in` `eq` `ne` `gt` `gte` `lt` `lte` `between` (`values: [lo,hi]`). Not `like`/`is_null`. `ne` excludes nulls.
+**`where:` ops:** same as `pandas_mask`: `in` `eq` `ne` `gt` `gte` `lt` `lte` `between` `not_between` `like` `ilike` `not_like` `is_null` `is_not_null` `regexp` `regexp_insensitive`. Compound: `or`/`and` (non-empty lists, max depth 3), `not`, `also_where`. `ne` excludes nulls. Pattern length ≤ 256.
 
 Host names fold (case/space/underscore; measure keys also compact-fold). Do not create colliding keys.
 
@@ -349,15 +353,15 @@ Copy structure from [3004.yaml](kpi_config/kpis/sotif/3004.yaml); replace ids, c
 
 **Time.** Need `column` + `grain` plus one of `filter_code` / `periods:` / `compose:` (not `periods` and `compose` together). Scalar `filter_code` on the context = exactly one value and **wins**. `periods:` parts conjoin; missing part = not applied; lists = union. Month part accepts `3`, `"03"`, `March`, `Mar`. Never `WHERE month IN (one month)` for lookback — the engine scans a date range. Finer pick than `source_grain` fails. `time.timezone` rejected. Fiscal = quarter/year only. Snapshot: no window/trend/nonzero offset/period hooks; `filtered_point` is allowed, `compare` / other `filtered_*` are not.
 
-**Cuts.** `group_by` = **extras only**. Effective grain = request dims − `exclude_from_grain` + extras. Dim-named `ignore_filters` must pair with `exclude_from_grain`. `measures.*.cuts` only limits trend/rank/`percent_of_total` (cut-phase ops). Trend default = `default_cut` (50k cells/cut).
+**Cuts.** `group_by` = **extras only**. Effective grain = request dims − `exclude_from_grain` + extras. Dim-named `ignore_filters` must pair with `exclude_from_grain`. `measures.*.cuts` only limits trend/rank/`percent_of_total` (cut-phase ops). Trend default = `default_cut` (50k cells/cut). Precedence: `only_cut` > `emit_cuts` ∩ walk > `locked_cut` > `default_cut` > `also_emit`. `from_cut` = scalar reuse on shared dims; `versus_cut` = share-like totals only.
 
-**Filters.** Year/month belong in `time:`, not `filters:`. Undeclared context IN is extract unless a cut ignores the code. `apply: extract` (cheap) / `calc` / `result`. Unmapped **valued** filter = error. Empty/`[]`/all-null = skip. No `optional: false`.
+**Filters.** Year/month belong in `time:`, not `filters:`. Undeclared context IN is extract unless a cut ignores the code. `apply: extract` (cheap) / `calc` / `result`. Unmapped **valued** filter = error. Empty/`[]`/all-null = skip unless `required: true` (then BindError). `default:` injects only when the key is **absent**. Cannot set `required` + `default` on the same filter. No `optional: false`. Cut `inherit_filters` / `reset_filters`: code in both inherit and ignore is BindError; reset unions into this cut's ignore.
 
-**Helpers.** `expr`/`lookup`/`over` without `agg:` are row helpers: `measures.of` only at `identity_grain`. Calendar `op: lag` cannot set `partition_by`. `over.partition_by` ⊆ cut grain.
+**Helpers.** `expr`/`lookup`/`over` without `agg:` are row helpers: `measures.of` only at `identity_grain`. Calendar `op: lag` cannot set `partition_by`. `over.partition_by` ⊆ cut grain. `lookup.keys` for composite maps; `valid_from`/`valid_to` + default as-of = request anchor.
 
 **Multi-model.** `base_measures.*.model:` + `model_relations: { left, right, on, how }`. Join after aggregate.
 
-**Parameters.** Sibling of `filters`, not `execution.*`. Reserved: `time_grain`, `output_cut`. No `parameters:` block → reject a non-empty `context.parameters`. No `execution.time_grain`.
+**Parameters.** Sibling of `filters`, not `execution.*`. Reserved: `time_grain`, `output_cut`, `only_cut`, `emit_cuts`. No `parameters:` block → reject a non-empty `context.parameters`. No `execution.time_grain`. Host `execution.multi_view: true` returns `{ multi_view, views: [{ view_id, ok, result\|error }] }` for the **same** kpi_id.
 
 **Constants by region:**
 

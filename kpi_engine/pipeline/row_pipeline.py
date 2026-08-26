@@ -14,6 +14,7 @@ from kpi_engine.contracts import (
     KpiSpec,
     LookupSpec,
     OverSpec,
+    extra_retrieve_columns,
 )
 from kpi_engine.exceptions import BindError, CatalogError
 from kpi_engine.identifiers import (
@@ -91,10 +92,11 @@ def physical_input_columns(
                 continue
             seen.add(raw)
             out.append(raw)
-        if item.where is not None and item.where.column not in seen:
-            if item.where.column not in by_name:
-                seen.add(item.where.column)
-                out.append(item.where.column)
+        for col in extra_retrieve_columns(item):
+            if col in seen or col in by_name:
+                continue
+            seen.add(col)
+            out.append(col)
 
     walk(measure, set())
     return tuple(out)
@@ -126,14 +128,27 @@ def stabilize_detail(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
     return work
 
 
-def apply_lookup(frame: pd.DataFrame, spec: LookupSpec, *, name: str) -> pd.Series:
-    """Map one column through a static dict. Unknown → default else null."""
-    actual = spec.column if spec.column in frame.columns else match_name(spec.column, frame.columns)
-    if actual is None:
-        raise CatalogError(
-            f"base_measures.{name} lookup.column {spec.column!r} is not on the extract."
+def apply_lookup(
+    frame: pd.DataFrame,
+    spec: LookupSpec,
+    *,
+    name: str,
+    kpi: KpiSpec | None = None,
+    as_of_default: Any = None,
+) -> pd.Series:
+    """Map one or more columns through a static dict. Unknown → default else null."""
+    key_cols = list(spec.keys) if spec.keys else [spec.column]
+    actuals = [_require_col(frame, col, name, "lookup") for col in key_cols]
+    if len(actuals) == 1:
+        keys = frame[actuals[0]].map(_lookup_key)
+    else:
+        keys = pd.Series(
+            [
+                _composite_lookup_key(tuple(frame.loc[idx, c] for c in actuals))
+                for idx in frame.index
+            ],
+            index=frame.index,
         )
-    keys = frame[actual].map(_lookup_key)
     mapped = keys.map(spec.mapping)
     unknown = keys.notna() & mapped.isna()
     if spec.strict and bool(unknown.any()):
@@ -143,7 +158,52 @@ def apply_lookup(frame: pd.DataFrame, spec: LookupSpec, *, name: str) -> pd.Seri
         )
     if spec.default is not None:
         mapped = mapped.where(~unknown, spec.default)
+    if spec.valid_from or spec.valid_to:
+        mapped = _apply_lookup_as_of(
+            frame, spec, mapped, name=name, kpi=kpi, as_of_default=as_of_default
+        )
     return mapped
+
+
+def _composite_lookup_key(values: tuple[Any, ...]) -> str | None:
+    pieces: list[str] = []
+    for value in values:
+        key = _lookup_key(value)
+        if key is None:
+            return None
+        pieces.append(key)
+    return "|".join(pieces)
+
+
+def _apply_lookup_as_of(
+    frame: pd.DataFrame,
+    spec: LookupSpec,
+    mapped: pd.Series,
+    *,
+    name: str,
+    kpi: KpiSpec | None,
+    as_of_default: Any,
+) -> pd.Series:
+    """Keep mapped values only when as-of sits in [valid_from, valid_to]."""
+    if spec.as_of and spec.as_of != "anchor":
+        col = _require_col(frame, spec.as_of, name, "lookup.as_of")
+        as_of = pd.to_datetime(frame[col], errors="coerce")
+    elif as_of_default is not None:
+        as_of = pd.to_datetime(pd.Series(as_of_default, index=frame.index), errors="coerce")
+    elif kpi is not None and kpi.time is not None and kpi.time.column in frame.columns:
+        as_of = pd.to_datetime(frame[kpi.time.column], errors="coerce")
+    else:
+        as_of = pd.Series(pd.NaT, index=frame.index)
+    in_range = pd.Series(True, index=frame.index)
+    if spec.valid_from:
+        col = _require_col(frame, spec.valid_from, name, "lookup.valid_from")
+        valid_from = pd.to_datetime(frame[col], errors="coerce")
+        in_range &= as_of.isna() | valid_from.isna() | (as_of >= valid_from)
+    if spec.valid_to:
+        col = _require_col(frame, spec.valid_to, name, "lookup.valid_to")
+        valid_to = pd.to_datetime(frame[col], errors="coerce")
+        in_range &= as_of.isna() | valid_to.isna() | (as_of <= valid_to)
+    return mapped.where(in_range)
 
 
 def apply_over(frame: pd.DataFrame, measure: BaseMeasure) -> pd.Series:
@@ -226,6 +286,13 @@ def _raw_dep_names(measure: BaseMeasure) -> tuple[str, ...]:
     names: list[str] = []
     if measure.lookup is not None:
         names.append(measure.lookup.column)
+        names.extend(measure.lookup.keys)
+        if measure.lookup.valid_from:
+            names.append(measure.lookup.valid_from)
+        if measure.lookup.valid_to:
+            names.append(measure.lookup.valid_to)
+        if measure.lookup.as_of and measure.lookup.as_of != "anchor":
+            names.append(measure.lookup.as_of)
     if measure.over is not None:
         names.extend(measure.over.partition_by)
         names.extend(measure.over.order_by)

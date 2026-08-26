@@ -36,7 +36,18 @@ def main(
     connection: Any | None = None,
     log_dir: str | None = None,
 ) -> dict[str, Any]:
-    """UDF entry the metadata layer calls. Forwards the context to compute."""
+    """UDF entry the metadata layer calls. Forwards the context to compute.
+
+    Default response is one KPI result object. Opt in to several views of the
+    **same** ``execution.kpi_id`` with ``execution.multi_view: true`` and
+    ``execution.view_details: [{view_id, measures_required, ...}, ...]``.
+    The envelope is ``{ multi_view: true, views: [{ view_id, ok, result|error }] }``.
+    Per-view errors are returned unless ``execution.fail_fast: true``.
+    Different ``kpi_id`` per view is not supported (v1). Shared extract cache
+    key when measures differ but the scan is the same:
+    ``(kpi_id, model, filters_hash, span)`` — optional host-side reuse; the
+    engine still runs one extract per view in v1.
+    """
     return compute(context, config_dir=config_dir, connection=connection, log_dir=log_dir)
 
 

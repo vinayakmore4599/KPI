@@ -8,6 +8,8 @@ Reserved names:
 
 - ``time_grain`` — same overlay as the old ``execution.time_grain`` (v1)
 - ``output_cut`` — walk that cut as the root of ``also_emit`` (YAML default does not lock)
+- ``only_cut`` — emit that cut only (no ``also_emit`` walk)
+- ``emit_cuts`` — allowlist; intersected with the walked cuts
 
 User names inject into measure expr / fn kwargs. Collision with a YAML
 ``measures:`` **key** is a bind error (keys are static; ``when:`` only
@@ -32,9 +34,17 @@ from kpi_engine.runlog import log_step, traced
 
 RESERVED_TIME_GRAIN = "time_grain"
 RESERVED_OUTPUT_CUT = "output_cut"
+RESERVED_ONLY_CUT = "only_cut"
+RESERVED_EMIT_CUTS = "emit_cuts"
 RESERVED_SELECTED_DIMENSIONS = "selected_dimensions"
 RESERVED_PARAMETER_NAMES = frozenset(
-    {RESERVED_TIME_GRAIN, RESERVED_OUTPUT_CUT, RESERVED_SELECTED_DIMENSIONS}
+    {
+        RESERVED_TIME_GRAIN,
+        RESERVED_OUTPUT_CUT,
+        RESERVED_ONLY_CUT,
+        RESERVED_EMIT_CUTS,
+        RESERVED_SELECTED_DIMENSIONS,
+    }
 )
 RESERVED_CASE_LABELS = frozenset({"param", "cases", "else"})
 
@@ -98,6 +108,30 @@ def bind_incoming(
                 f"(have {sorted(cut_names)})."
             )
 
+    only_cut = None
+    if RESERVED_ONLY_CUT in incoming:
+        only_cut = str(values[RESERVED_ONLY_CUT])
+        if only_cut not in cut_names:
+            raise BindError(
+                f"parameters.only_cut {only_cut!r} is not a declared cut "
+                f"(have {sorted(cut_names)})."
+            )
+
+    emit_cuts: tuple[str, ...] = ()
+    if RESERVED_EMIT_CUTS in incoming:
+        raw_emit = values[RESERVED_EMIT_CUTS]
+        if not isinstance(raw_emit, list):
+            raise BindError(
+                f"parameters.emit_cuts must be a list of cut names (got {raw_emit!r})."
+            )
+        emit_cuts = tuple(str(name) for name in raw_emit)
+        unknown_emit = [name for name in emit_cuts if name not in cut_names]
+        if unknown_emit:
+            raise BindError(
+                f"parameters.emit_cuts {unknown_emit} are not declared cuts "
+                f"(have {sorted(cut_names)})."
+            )
+
     if RESERVED_TIME_GRAIN in declared:
         grain = values[RESERVED_TIME_GRAIN]
         if not isinstance(grain, str):
@@ -114,7 +148,13 @@ def bind_incoming(
         )
 
     log_step("bind_parameters", request_parameters=values)
-    return BoundParameters(values=values, schema=schema, locked_cut=locked_cut)
+    return BoundParameters(
+        values=values,
+        schema=schema,
+        locked_cut=locked_cut,
+        only_cut=only_cut,
+        emit_cuts=emit_cuts,
+    )
 
 
 def apply_bound_to_spec(kpi: KpiSpec, bound: BoundParameters) -> KpiSpec:
@@ -123,6 +163,8 @@ def apply_bound_to_spec(kpi: KpiSpec, bound: BoundParameters) -> KpiSpec:
         kpi,
         bound_parameters=dict(bound.values),
         locked_cut=bound.locked_cut,
+        only_cut=bound.only_cut,
+        emit_cuts=bound.emit_cuts,
         model_templated=bound.model_templated,
     )
     if RESERVED_TIME_GRAIN in bound.values:

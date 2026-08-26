@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from kpi_engine import compute, validate
-from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.binder import bind_request, load_kpi
 from kpi_engine.exceptions import BindError
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
@@ -94,7 +94,7 @@ def test_when_case_body_can_be_compare(parquet_path, extra_config):
         },
     )
     write_yaml(extra_config / "kpis" / "9930.yaml", spec)
-    kpi = load_kpi(9930, extra_config)
+    kpi = bind_request(load_kpi(9930, extra_config))
     spec_g = {m.key: m for m in kpi.measures}["picked"]
     assert spec_g.kind == "pct_change"
     ctx = make_context(

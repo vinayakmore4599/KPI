@@ -138,6 +138,8 @@ def _parse_one_case(
         model_templated=templated,
         bound_parameters=dict(live.values),
         locked_cut=live.locked_cut,
+        only_cut=live.only_cut,
+        emit_cuts=live.emit_cuts,
     )
     models: dict[str, ModelSpec] = {}
     for mid in _kpi_model_ids(kpi):

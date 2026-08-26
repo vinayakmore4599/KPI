@@ -67,6 +67,7 @@ Do **not** put ADLS paths in YAML. Paths stay on the context.
 
 ```bash
 cp kpi_config/kpis/sotif/3004.yaml kpi_config/kpis/<kpi_group>/<kpi_id>.yaml
+# Pattern KPIs (masks, cross-cut, core ops) live in kpi_config/patterns/
 ```
 
 Set `kpi_id` and `model` to match.

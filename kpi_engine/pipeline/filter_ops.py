@@ -33,8 +33,11 @@ FILTER_OP_HELP = (
     "lt (<), lte (<=, le), gt (>), gte (>=, ge), "
     "like (LIKE), ilike (ILIKE), not_like (NOT LIKE, notlike), "
     "between (BETWEEN), not_between (NOT BETWEEN), "
-    "is_null (IS NULL, isnull), is_not_null (IS NOT NULL, notnull)"
+    "is_null (IS NULL, isnull), is_not_null (IS NOT NULL, notnull), "
+    "regexp, regexp_insensitive"
 )
+REGEXP_MAX_LEN = 256
+REGEXP_OPS = frozenset({"regexp", "regexp_insensitive"})
 
 # Canonical op → expected value count. None means 0+ (IN).
 FILTER_ARITY: dict[str, int | None] = {
@@ -52,6 +55,8 @@ FILTER_ARITY: dict[str, int | None] = {
     "not_between": 2,
     "is_null": 0,
     "is_not_null": 0,
+    "regexp": 1,
+    "regexp_insensitive": 1,
 }
 
 _OP_ALIASES = {
@@ -88,6 +93,11 @@ _OP_ALIASES = {
     "is_not_null": "is_not_null",
     "is not null": "is_not_null",
     "notnull": "is_not_null",
+    "regexp": "regexp",
+    "regex": "regexp",
+    "regexp_insensitive": "regexp_insensitive",
+    "iregexp": "regexp_insensitive",
+    "regex_insensitive": "regexp_insensitive",
 }
 
 
@@ -113,6 +123,20 @@ def assert_filter_arity(op: str, values: tuple[Any, ...], *, code: str) -> None:
         raise BindError(
             f"Filter {code!r} op {op!r} expects {expected} value(s), got {got}."
         )
+
+
+def assert_regexp_pattern(pattern: Any, *, code: str) -> str:
+    """Bind-time regexp length and compile check (Pandas ``re``, max 256)."""
+    text = str(pattern)
+    if len(text) > REGEXP_MAX_LEN:
+        raise BindError(
+            f"{code} regexp pattern exceeds {REGEXP_MAX_LEN} characters."
+        )
+    try:
+        re.compile(text)
+    except re.error as exc:
+        raise BindError(f"{code} invalid regexp: {exc}.") from exc
+    return text
 
 
 def sql_predicate(col_sql: str, op: str, values: tuple[Any, ...]) -> tuple[str, list[Any]]:
@@ -148,6 +172,10 @@ def sql_predicate(col_sql: str, op: str, values: tuple[Any, ...]) -> tuple[str, 
         return f"{col_sql} IS NULL", []
     if op == "is_not_null":
         return f"{col_sql} IS NOT NULL", []
+    if op == "regexp":
+        return f"regexp_matches({col_sql}, ?)", [values[0]]
+    if op == "regexp_insensitive":
+        return f"regexp_matches({col_sql}, ?, 'i')", [values[0]]
     raise BindError(f"Unknown filter op {op!r}. Use one of: {FILTER_OP_HELP}.")
 
 
@@ -183,6 +211,10 @@ def pandas_mask(series: pd.Series, op: str, values: tuple[Any, ...]) -> pd.Serie
         return series.isna()
     if op == "is_not_null":
         return series.notna()
+    if op == "regexp":
+        return _regexp_mask(series, values[0], case=True)
+    if op == "regexp_insensitive":
+        return _regexp_mask(series, values[0], case=False)
     raise BindError(f"Unknown filter op {op!r}. Use one of: {FILTER_OP_HELP}.")
 
 
@@ -209,3 +241,10 @@ def _like_mask(series: pd.Series, pattern: Any, *, case: bool, invert: bool) -> 
     if invert:
         return series.notna() & ~matched
     return matched
+
+
+def _regexp_mask(series: pd.Series, pattern: Any, *, case: bool) -> pd.Series:
+    """Match regexp / regexp_insensitive; non-string columns astype string; nulls never pass."""
+    flags = 0 if case else re.IGNORECASE
+    text = series.astype("string")
+    return text.str.contains(str(pattern), regex=True, flags=flags, na=False)

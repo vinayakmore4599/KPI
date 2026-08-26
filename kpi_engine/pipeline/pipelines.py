@@ -26,7 +26,7 @@ from kpi_engine.contracts import (
     OutputSpec,
 )
 from kpi_engine.pipeline.binder import measure_dependencies, resolve_requested_graph
-from kpi_engine.pipeline.cuts import cut_group_dims, emitted_cuts_from
+from kpi_engine.pipeline.cuts import cut_group_dims, plan_emitted_cuts
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import match_name, norm_name
 
@@ -105,19 +105,8 @@ def partition_request(kpi: KpiSpec, requested: tuple[str, ...]) -> list[Pipeline
 
 
 def cuts_for_keys(kpi: KpiSpec, keys: tuple[str, ...]) -> tuple[CutSpec, ...]:
-    """Cuts named by these measures (or default_cut), plus also_emit.
-
-    An explicit context ``output_cut`` is the sole walk root.
-    """
-    if kpi.locked_cut is not None:
-        return emitted_cuts_from(kpi, (kpi.locked_cut,))
-    by_key = {m.key: m for m in kpi.measures}
-    roots: list[str] = []
-    for key in keys:
-        spec = by_key.get(key)
-        named = spec.cuts if spec is not None and spec.cuts is not None else (kpi.default_cut,)
-        roots.extend(str(name) for name in named)
-    return emitted_cuts_from(kpi, tuple(dict.fromkeys(roots)))
+    """Cuts for these measures after only_cut / emit_cuts / locked_cut / also_emit."""
+    return plan_emitted_cuts(kpi, keys)
 
 
 def available_extract_columns(
@@ -171,7 +160,7 @@ def assert_named_cuts_compatible(
     kpi: KpiSpec, keys: tuple[str, ...], compatible: tuple[CutSpec, ...]
 ) -> None:
     """Fail if a measure named a cut that this extract cannot group by."""
-    if kpi.locked_cut is not None:
+    if kpi.locked_cut is not None or kpi.only_cut is not None:
         return
     allowed = {c.name for c in compatible}
     by_key = {m.key: m for m in kpi.measures}

@@ -785,3 +785,132 @@ def test_end_as_column_in_row_expr(tmp_path, extra_config):
     result = compute(ctx, config_dir=extra_config)
     row = next(r for r in result["rows"] if r["output_cut"] == "G")
     assert row["current_value"] == pytest.approx(3.0)
+
+
+def test_lookup_multi_key(tmp_path, extra_config):
+    frame = pd.DataFrame(
+        {
+            "event_month": [date(2026, 3, 1), date(2026, 3, 1)],
+            "reason_code": ["LATE_SUPPLIER", "LATE_SUPPLIER"],
+            "region": ["NA", "EU"],
+            "supplier_name": ["ABC", "ABC"],
+            "amount": [10.0, 20.0],
+        }
+    )
+    path = tmp_path / "multikey.parquet"
+    frame.to_parquet(path, index=False)
+    _write(
+        extra_config,
+        8831,
+        base_measures={
+            "fee": {
+                "lookup": {
+                    "keys": ["region", "supplier_name"],
+                    "map": {"NA|ABC": 5, "EU|ABC": 7},
+                    "default": 0,
+                },
+                "agg": "sum",
+            }
+        },
+        measures={"current_value": {"of": "fee", "op": "point"}},
+    )
+    ctx = make_context(path, measures=["current_value"], kpi_id=8831)
+    ctx["datasets"]["Sotif"]["columns"] = list(frame.columns)
+    result = compute(ctx, config_dir=extra_config)
+    row = next(r for r in result["rows"] if r["output_cut"] == "G")
+    assert row["current_value"] == pytest.approx(12.0)
+
+
+def test_lookup_effective_dated(tmp_path, extra_config):
+    frame = pd.DataFrame(
+        {
+            "event_month": [date(2026, 3, 1), date(2026, 3, 1)],
+            "reason_code": ["LATE_SUPPLIER", "LATE_SUPPLIER"],
+            "region": ["NA", "NA"],
+            "supplier_name": ["ABC", "ABC"],
+            "amount": [10.0, 20.0],
+            "pay": ["COD", "COD"],
+            "valid_from": [date(2026, 1, 1), date(2026, 4, 1)],
+            "valid_to": [date(2026, 3, 31), date(2026, 12, 31)],
+        }
+    )
+    path = tmp_path / "dated.parquet"
+    frame.to_parquet(path, index=False)
+    _write(
+        extra_config,
+        8832,
+        base_measures={
+            "fee": {
+                "lookup": {
+                    "column": "pay",
+                    "map": {"COD": 3},
+                    "default": 0,
+                    "valid_from": "valid_from",
+                    "valid_to": "valid_to",
+                },
+                "agg": "sum",
+            }
+        },
+        measures={"current_value": {"of": "fee", "op": "point"}},
+    )
+    ctx = make_context(path, measures=["current_value"], kpi_id=8832)
+    ctx["datasets"]["Sotif"]["columns"] = list(frame.columns)
+    result = compute(ctx, config_dir=extra_config)
+    row = next(r for r in result["rows"] if r["output_cut"] == "G")
+    # Anchor 2026-03 is in the first row's range only.
+    assert row["current_value"] == pytest.approx(3.0)
+
+
+def test_row_expr_in_list(tmp_path, extra_config):
+    frame = pd.DataFrame(
+        {
+            "event_month": [date(2026, 3, 1), date(2026, 3, 1)],
+            "reason_code": ["LATE_SUPPLIER", "OTHER"],
+            "region": ["NA", "NA"],
+            "supplier_name": ["ABC", "ABC"],
+            "amount": [10.0, 20.0],
+        }
+    )
+    path = tmp_path / "inlist.parquet"
+    frame.to_parquet(path, index=False)
+    _write(
+        extra_config,
+        8833,
+        base_measures={
+            "picked": {
+                "expr": "amount * (reason_code in ('LATE_SUPPLIER', 'X'))",
+                "agg": "sum",
+            }
+        },
+        measures={"current_value": {"of": "picked", "op": "point"}},
+    )
+    ctx = make_context(path, measures=["current_value"], kpi_id=8833)
+    ctx["datasets"]["Sotif"]["columns"] = list(frame.columns)
+    result = compute(ctx, config_dir=extra_config)
+    row = next(r for r in result["rows"] if r["output_cut"] == "G")
+    assert row["current_value"] == pytest.approx(10.0)
+
+
+def test_trend_partition_by_binds_and_computes(parquet_path, extra_config):
+    _write(
+        extra_config,
+        8834,
+        measures={
+            "current_value": {"of": "sotif_value", "op": "point"},
+            "trend_3m": {
+                "op": "trend",
+                "of": "sotif_value",
+                "trailing": {"months": 3},
+                "partition_by": ["reason_code"],
+                "cuts": ["G"],
+            },
+        },
+    )
+    kpi = load_kpi(8834, extra_config)
+    trend = {m.key: m for m in kpi.measures}["trend_3m"]
+    assert trend.rank_group_by == ("reason_code",)
+    ctx = make_context(
+        parquet_path, measures=["trend_3m"], supplier=["ABC"], kpi_id=8834
+    )
+    result = compute(ctx, config_dir=extra_config)
+    assert any(row.get("trend_3m") for row in result["rows"])

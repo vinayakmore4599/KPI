@@ -7,7 +7,7 @@ import pytest
 from kpi_engine import compute
 from kpi_engine.exceptions import BindError
 from kpi_engine.pipeline.adapter import adapt
-from kpi_engine.pipeline.binder import load_kpi
+from kpi_engine.pipeline.binder import bind_request, load_kpi
 from kpi_engine.pipeline.time_planner import max_lookback_months, plan_time
 from tests.conftest import find_row, make_context, minimal_kpi, write_yaml, value_of
 
@@ -64,7 +64,7 @@ def test_compare_desugars_to_pct_change_with_years_offset(extra_config):
         99102,
         measures={"yoy": {"op": "compare", "of": "sotif_value", "mode": "yoy"}},
     )
-    kpi = load_kpi(99102, extra_config)
+    kpi = bind_request(load_kpi(99102, extra_config))
     spec = {m.key: m for m in kpi.measures}["yoy"]
     assert spec.kind == "pct_change"
     assert spec.of == "sotif_value"
@@ -92,7 +92,7 @@ def test_compare_preset_offsets(extra_config, mode, grain, unit, value):
         },
         measures={"chg": {"op": "compare", "of": "sotif_value", "mode": mode}},
     )
-    kpi = load_kpi(99110, extra_config)
+    kpi = bind_request(load_kpi(99110, extra_config))
     spec = {m.key: m for m in kpi.measures}["chg"]
     assert spec.kind == "pct_change"
     assert getattr(spec.offset, unit) == value
@@ -111,7 +111,7 @@ def test_compare_diff_versus_desugars(extra_config):
             }
         },
     )
-    kpi = load_kpi(99111, extra_config)
+    kpi = bind_request(load_kpi(99111, extra_config))
     spec = {m.key: m for m in kpi.measures}["gap"]
     assert spec.kind == "diff"
     assert spec.offset.years == 1
@@ -130,7 +130,7 @@ def test_compare_pct_change_mode_versus(extra_config):
             }
         },
     )
-    kpi = load_kpi(99112, extra_config)
+    kpi = bind_request(load_kpi(99112, extra_config))
     spec = {m.key: m for m in kpi.measures}["chg"]
     assert spec.kind == "pct_change"
     assert spec.offset.months == 3
@@ -169,7 +169,7 @@ def test_compare_yoy_lookback_is_twelve_months(parquet_path, extra_config):
         99114,
         measures={"yoy": {"op": "compare", "of": "sotif_value", "mode": "yoy"}},
     )
-    kpi = load_kpi(99114, extra_config)
+    kpi = bind_request(load_kpi(99114, extra_config))
     assert max_lookback_months(kpi, ("yoy",)) == 12
     ctx = make_context(
         parquet_path, measures=["yoy"], supplier=["ABC"], kpi_id=99114, month="2026-03"
@@ -191,7 +191,7 @@ def test_compare_where_on_base_clones(extra_config):
             }
         },
     )
-    kpi = load_kpi(99115, extra_config)
+    kpi = bind_request(load_kpi(99115, extra_config))
     spec = {m.key: m for m in kpi.measures}["late_yoy"]
     assert spec.kind == "pct_change"
     assert spec.of == "__late_yoy__of"
@@ -206,7 +206,7 @@ def test_unknown_mode_lists_presets(extra_config):
         measures={"yoy": {"op": "compare", "of": "sotif_value", "mode": "yoyx"}},
     )
     with pytest.raises(BindError, match="mode") as exc:
-        load_kpi(99120, extra_config)
+        bind_request(load_kpi(99120, extra_config))
     text = str(exc.value)
     assert "yoy, mom, wow, qoq, pop, diff, pct_change" in text
 
@@ -218,7 +218,7 @@ def test_qoq_at_month_grain_is_bind_error(extra_config):
         measures={"chg": {"op": "compare", "of": "sotif_value", "mode": "qoq"}},
     )
     with pytest.raises(BindError, match="qoq") as exc:
-        load_kpi(99121, extra_config)
+        bind_request(load_kpi(99121, extra_config))
     text = str(exc.value)
     assert "quarter" in text
     assert "pop" in text
@@ -237,7 +237,7 @@ def test_mom_at_quarter_grain_is_bind_error(extra_config):
         measures={"chg": {"op": "compare", "of": "sotif_value", "mode": "mom"}},
     )
     with pytest.raises(BindError, match="mom") as exc:
-        load_kpi(99122, extra_config)
+        bind_request(load_kpi(99122, extra_config))
     assert "month" in str(exc.value)
 
 
@@ -248,7 +248,7 @@ def test_wow_at_month_grain_is_bind_error(extra_config):
         measures={"chg": {"op": "compare", "of": "sotif_value", "mode": "wow"}},
     )
     with pytest.raises(BindError, match="wow") as exc:
-        load_kpi(99123, extra_config)
+        bind_request(load_kpi(99123, extra_config))
     assert "week" in str(exc.value)
 
 
@@ -266,7 +266,7 @@ def test_preset_plus_versus_is_bind_error(extra_config):
         },
     )
     with pytest.raises(BindError, match="versus") as exc:
-        load_kpi(99124, extra_config)
+        bind_request(load_kpi(99124, extra_config))
     text = str(exc.value)
     assert "pct_change" in text or "diff" in text
 
@@ -286,7 +286,7 @@ def test_compare_of_trend_is_bind_error(extra_config):
         },
     )
     with pytest.raises(BindError, match="cannot shift"):
-        load_kpi(99125, extra_config)
+        bind_request(load_kpi(99125, extra_config))
 
 
 def test_compare_on_snapshot_needs_time(extra_config):
@@ -297,7 +297,7 @@ def test_compare_on_snapshot_needs_time(extra_config):
         measures={"yoy": {"op": "compare", "of": "sotif_value", "mode": "yoy"}},
     )
     with pytest.raises(BindError, match="time"):
-        load_kpi(99126, extra_config)
+        bind_request(load_kpi(99126, extra_config))
 
 
 def test_compare_column_is_rejected(extra_config):

@@ -146,7 +146,12 @@ class OpPlugin:
             "cuts",
             "range",
             "where",
+            "also_where",
             "ignore_filters",
+            "versus_cut",
+            "from_cut",
+            "having",
+            "required",
         }
         unknown = [name for name in common.raw if name not in allowed]
         if unknown:

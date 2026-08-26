@@ -1,0 +1,67 @@
+# Gold pattern: measure mask AST + weighted average (Phase 1).
+#
+# Copy into kpis/ to compute, or load via tests/test_gold_patterns.py.
+# Model: sotif (physical). Masks run in Pandas on detail; DuckDB SELECTs
+# mask/weight columns only (no AST WHERE).
+#
+kpi_id: 90001
+version: 1
+model: sotif
+
+time:
+  column: event_month
+  grain: month
+  filter_code: reporting_month
+  calendar: gregorian
+
+dimensions:
+  - { name: reason_code, from: reason_code }
+  - { name: region, from: region }
+  - { name: supplier, from: supplier_name }
+
+default_dimensions: [reason_code]
+
+base_measures:
+  sotif_value:
+    sql: amount
+    agg: sum
+  weighted:
+    sql: amount
+    agg: weighted_avg
+    weight_column: amount
+  late_only:
+    sql: amount
+    agg: sum
+    where:
+      or:
+        - { column: reason_code, op: like, value: "LATE%" }
+        - { column: reason_code, op: regexp, value: "^OTHER$" }
+
+cuts:
+  - name: G
+    group_by: []
+    exclude_from_grain: [region]
+    ignore_filters: [region]
+    also_emit: [R]
+  - name: R
+    group_by: [region]
+    ignore_filters: []
+
+default_cut: G
+row_set: span_union
+
+measures:
+  reason_code:
+    kind: dimension
+  current_value:
+    of: sotif_value
+    op: point
+    offset: { months: 0 }
+  weighted_value:
+    of: weighted
+    op: point
+    offset: { months: 0 }
+  masked_value:
+    of: late_only
+    op: point
+    offset: { months: 0 }

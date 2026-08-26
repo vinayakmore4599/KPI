@@ -1,0 +1,56 @@
+# Gold pattern: Phase 2–3 core ops (window align, expanding, band dual-key).
+#
+kpi_id: 90003
+version: 1
+model: sotif
+
+time:
+  column: event_month
+  grain: month
+  filter_code: reporting_month
+  calendar: gregorian
+
+dimensions:
+  - { name: reason_code, from: reason_code }
+  - { name: region, from: region }
+  - { name: supplier, from: supplier_name }
+
+default_dimensions: [reason_code]
+
+base_measures:
+  sotif_value:
+    sql: amount
+    agg: sum
+
+cuts:
+  - name: G
+    group_by: []
+    exclude_from_grain: [region]
+    ignore_filters: [region]
+    also_emit: [R]
+  - name: R
+    group_by: [region]
+    ignore_filters: []
+
+default_cut: G
+row_set: span_union
+
+measures:
+  reason_code:
+    kind: dimension
+  current_value:
+    of: sotif_value
+    op: point
+  expanding:
+    of: sotif_value
+    op: expanding_window
+  value_band:
+    op: band
+    of: current_value
+    method: factor
+    low: 0.8
+    high: 1.2
+  growth_3:
+    op: compound_growth
+    of: sotif_value
+    n: 3

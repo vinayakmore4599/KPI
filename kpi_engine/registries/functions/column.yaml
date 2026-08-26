@@ -338,3 +338,218 @@ epoch_day:
       op: epoch_day
   module: kpi_engine.capabilities.functions.column.impl
   attr: epoch_day_columns
+
+weighted_product:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 2
+  description: Row-wise product of columns.
+  example: |
+    wp:
+      columns: [qty, price]
+      op: weighted_product
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: weighted_product_columns
+
+safe_divide:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Numerator / denominator; zero denominator is null.
+  example: |
+    rate:
+      columns: [shipped, ordered]
+      op: safe_divide
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: safe_divide_columns
+
+clip:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Clamp value into [lo, hi].
+  example: |
+    capped:
+      columns: [amount, lo, hi]
+      op: clip
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: clip_columns
+
+parse_date:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Parse a column as a timestamp.
+  example: |
+    dt:
+      columns: [date_text]
+      op: parse_date
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: parse_date_columns
+
+parse_number:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Parse a column as a float.
+  example: |
+    n:
+      columns: [amount_text]
+      op: parse_number
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: parse_number_columns
+
+trim:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Strip whitespace.
+  example: |
+    clean:
+      columns: [region]
+      op: trim
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: trim_columns
+
+upper:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Uppercase.
+  example: |
+    up:
+      columns: [region]
+      op: upper
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: upper_columns
+
+lower:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Lowercase.
+  example: |
+    lo:
+      columns: [region]
+      op: lower
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: lower_columns
+
+substring:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 2
+  description: Slice text from start for length (0-based).
+  example: |
+    code:
+      expr: "substring(reason_code, 0, 4)"
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: substring_columns
+
+left:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Left n characters.
+  example: |
+    prefix:
+      expr: "left(reason_code, 4)"
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: left_columns
+
+right:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Right n characters.
+  example: |
+    suffix:
+      expr: "right(reason_code, 2)"
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: right_columns
+
+replace:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 3
+  description: Replace old with new in a string column.
+  example: |
+    swapped:
+      expr: "replace(region, 'NA', 'US')"
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: replace_columns
+
+concat:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 2
+  description: Concatenate string columns.
+  example: |
+    label:
+      expr: "concat(region, reason_code)"
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: concat_columns
+
+hash_bucket:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Stable 0..n-1 bucket from the value.
+  example: |
+    bucket:
+      expr: "hash_bucket(supplier_name, 10)"
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: hash_bucket_columns
+
+json_extract:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Pandas JSON path extract on a string column.
+  example: |
+    field:
+      expr: "json_extract(payload, '$.a')"
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: json_extract_columns
+
+coalesce_date:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 2
+  description: First non-null parseable date.
+  example: |
+    when:
+      columns: [ship_date, order_date]
+      op: coalesce_date
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: coalesce_date_columns
+
+is_between_dates:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 3
+  description: 1 if value is in [start, end].
+  example: |
+    in_range:
+      columns: [event_month, start_date, end_date]
+      op: is_between_dates
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: is_between_dates_columns
+
+flag_in_set:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 2
+  description: 1 if value equals any following argument.
+  example: |
+    is_na:
+      expr: "flag_in_set(region, 'NA', 'EU')"
+  module: kpi_engine.capabilities.functions.column.impl
+  attr: flag_in_set_columns

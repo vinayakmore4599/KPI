@@ -271,3 +271,162 @@ def epoch_day_columns(value: pd.Series) -> pd.Series:
     origin = pd.Timestamp("1970-01-01")
     days = (stamp.dt.normalize() - origin).dt.days.astype("float64")
     return days.mask(stamp.isna())
+
+
+def weighted_product_columns(*columns: pd.Series) -> pd.Series:
+    """Row-wise product (alias used as weighted_product)."""
+    return multiply_columns(*columns)
+
+
+def safe_divide_columns(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    """Row-wise divide; zero/null denominator is null."""
+    return divide_columns(numerator, denominator)
+
+
+def clip_columns(value: pd.Series, lo: pd.Series, hi: pd.Series) -> pd.Series:
+    """Clamp value into [lo, hi]."""
+    numeric = pd.to_numeric(value, errors="coerce")
+    low = pd.to_numeric(lo, errors="coerce")
+    high = pd.to_numeric(hi, errors="coerce")
+    return numeric.clip(lower=low, upper=high)
+
+
+def parse_date_columns(value: pd.Series) -> pd.Series:
+    """Parse strings/numbers into timestamps; invalid → null."""
+    return pd.to_datetime(value, errors="coerce")
+
+
+def parse_number_columns(value: pd.Series) -> pd.Series:
+    """Parse strings into floats; invalid → null."""
+    return pd.to_numeric(value, errors="coerce")
+
+
+def _as_str(column: pd.Series) -> pd.Series:
+    return column.astype("string")
+
+
+def trim_columns(value: pd.Series) -> pd.Series:
+    return _as_str(value).str.strip()
+
+
+def upper_columns(value: pd.Series) -> pd.Series:
+    return _as_str(value).str.upper()
+
+
+def lower_columns(value: pd.Series) -> pd.Series:
+    return _as_str(value).str.lower()
+
+
+def substring_columns(value: pd.Series, start: pd.Series, length: pd.Series | None = None) -> pd.Series:
+    text = _as_str(value)
+    begin = pd.to_numeric(start, errors="coerce").fillna(0).astype(int)
+    if length is None:
+        return pd.Series(
+            [t[s:] if pd.notna(t) else pd.NA for t, s in zip(text, begin)],
+            index=value.index,
+        )
+    n = pd.to_numeric(length, errors="coerce").fillna(0).astype(int)
+    return pd.Series(
+        [t[s : s + k] if pd.notna(t) else pd.NA for t, s, k in zip(text, begin, n)],
+        index=value.index,
+    )
+
+
+def left_columns(value: pd.Series, n: pd.Series) -> pd.Series:
+    text = _as_str(value)
+    count = pd.to_numeric(n, errors="coerce").fillna(0).astype(int)
+    return pd.Series(
+        [t[:k] if pd.notna(t) else pd.NA for t, k in zip(text, count)],
+        index=value.index,
+    )
+
+
+def right_columns(value: pd.Series, n: pd.Series) -> pd.Series:
+    text = _as_str(value)
+    count = pd.to_numeric(n, errors="coerce").fillna(0).astype(int)
+    return pd.Series(
+        [t[-k:] if pd.notna(t) and k else (t if pd.notna(t) else pd.NA) for t, k in zip(text, count)],
+        index=value.index,
+    )
+
+
+def replace_columns(value: pd.Series, old: pd.Series, new: pd.Series) -> pd.Series:
+    text = _as_str(value)
+    return pd.Series(
+        [
+            t.replace(str(a), str(b)) if pd.notna(t) else pd.NA
+            for t, a, b in zip(text, old, new)
+        ],
+        index=value.index,
+    )
+
+
+def concat_columns(*columns: pd.Series) -> pd.Series:
+    parts = [_as_str(c).fillna("") for c in columns]
+    out = parts[0]
+    for part in parts[1:]:
+        out = out + part
+    return out
+
+
+def hash_bucket_columns(value: pd.Series, buckets: pd.Series | None = None) -> pd.Series:
+    """Stable bucket 0..n-1 from the string form of value."""
+    n = 10
+    if buckets is not None:
+        sample = pd.to_numeric(buckets, errors="coerce").dropna()
+        if not sample.empty:
+            n = max(int(sample.iloc[0]), 1)
+    hashed = pd.util.hash_pandas_object(_as_str(value), index=False)
+    return (hashed % n).astype("float64").mask(value.isna())
+
+
+def json_extract_columns(value: pd.Series, path: pd.Series) -> pd.Series:
+    """Pandas-only JSON path. path is like $.a.b; missing → null."""
+    import json
+
+    def one(raw: Any, spec: Any) -> Any:
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            return pd.NA
+        try:
+            data = json.loads(str(raw)) if isinstance(raw, str) else raw
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return pd.NA
+        text = "" if spec is None or (isinstance(spec, float) and pd.isna(spec)) else str(spec)
+        keys = [p for p in text.replace("$", "").split(".") if p]
+        cur = data
+        for key in keys:
+            if isinstance(cur, dict) and key in cur:
+                cur = cur[key]
+            else:
+                return pd.NA
+        if isinstance(cur, (dict, list)):
+            return json.dumps(cur)
+        return cur
+
+    return pd.Series([one(v, p) for v, p in zip(value, path)], index=value.index)
+
+
+def coalesce_date_columns(*columns: pd.Series) -> pd.Series:
+    """First non-null parseable date on each row."""
+    parsed = [pd.to_datetime(c, errors="coerce") for c in columns]
+    out = parsed[0]
+    for part in parsed[1:]:
+        out = out.fillna(part)
+    return out
+
+
+def is_between_dates_columns(value: pd.Series, start: pd.Series, end: pd.Series) -> pd.Series:
+    stamp = pd.to_datetime(value, errors="coerce")
+    lo = pd.to_datetime(start, errors="coerce")
+    hi = pd.to_datetime(end, errors="coerce")
+    flag = stamp.notna() & lo.notna() & hi.notna() & (stamp >= lo) & (stamp <= hi)
+    return flag.astype("float64")
+
+
+def flag_in_set_columns(value: pd.Series, *members: pd.Series) -> pd.Series:
+    """1 when value equals any sibling/constant member on the row."""
+    text = _as_str(value)
+    flags = pd.Series(False, index=value.index)
+    for member in members:
+        flags = flags | text.eq(_as_str(member))
+    return flags.astype("float64").mask(value.isna())

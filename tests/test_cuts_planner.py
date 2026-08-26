@@ -43,6 +43,37 @@ def test_locked_cut_walks_also_emit():
     )
     assert [c.name for c in emitted_cuts(_kpi(cuts, "G", locked_cut="G"))] == ["G", "R"]
     assert [c.name for c in emitted_cuts(_kpi(cuts, "G", locked_cut="R"))] == ["R"]
+
+
+def test_only_cut_suppresses_also_emit():
+    cuts = (
+        CutSpec(
+            name="G",
+            group_by=(),
+            ignore_filters=(),
+            also_emit=("R",),
+            exclude_from_grain=("region",),
+        ),
+        CutSpec(name="R", group_by=("region",), ignore_filters=(), also_emit=()),
+    )
+    assert [c.name for c in emitted_cuts(_kpi(cuts, "G", only_cut="G"))] == ["G"]
+    both = _kpi(cuts, "G", only_cut="G", emit_cuts=("R",))
+    assert [c.name for c in emitted_cuts(both)] == ["G"]
+
+
+def test_emit_cuts_intersects_walk():
+    cuts = (
+        CutSpec(
+            name="G",
+            group_by=(),
+            ignore_filters=(),
+            also_emit=("R",),
+            exclude_from_grain=("region",),
+        ),
+        CutSpec(name="R", group_by=("region",), ignore_filters=(), also_emit=()),
+    )
+    kpi = _kpi(cuts, "G", locked_cut="G", emit_cuts=("R",))
+    assert [c.name for c in emitted_cuts(kpi)] == ["R"]
     locked = (
         CutSpec(
             name="G",

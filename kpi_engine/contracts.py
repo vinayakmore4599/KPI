@@ -39,6 +39,11 @@ AggName = Literal[
     "stddev",
     "variance",
     "mode",
+    "geomean",
+    "harmonic_mean",
+    "any",
+    "all",
+    "weighted_avg",
 ]
 GrainName = Literal["day", "week", "month", "quarter", "year"]
 YearBasis = Literal["inherit", "calendar", "fiscal"]
@@ -76,8 +81,40 @@ NON_ADDITIVE_AGGS = frozenset(
         "stddev",
         "variance",
         "mode",
+        "geomean",
+        "harmonic_mean",
+        "any",
+        "all",
+        "list_agg",
+        "string_agg",
     }
 )
+ALLOWED_AGGS = frozenset(
+    {
+        "sum",
+        "avg",
+        "count",
+        "min",
+        "max",
+        "count_distinct",
+        "median",
+        "percentile",
+        "first",
+        "last",
+        "stddev",
+        "variance",
+        "mode",
+        "geomean",
+        "harmonic_mean",
+        "any",
+        "all",
+        "weighted_avg",
+        "list_agg",
+        "string_agg",
+    }
+)
+MASK_MAX_DEPTH = 3
+MaskKind = Literal["leaf", "or", "and", "not"]
 AnchorMode = Literal["selection_end", "last_observed"]
 OVER_FNS = frozenset(
     {
@@ -140,6 +177,8 @@ class FilterApplySpec:
     optional: bool = False
     apply: FilterStage = "extract"
     compose_template: str | None = None
+    required: bool = False
+    default: tuple[Any, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -162,6 +201,8 @@ class Pagination:
     page: int | None
     page_size: int | None
     limit: int | None
+    trend_page: int | None = None
+    trend_page_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +225,8 @@ class BoundParameters:
     values: Mapping[str, Any] = field(default_factory=dict)
     schema: tuple[ParameterSpec, ...] = ()
     locked_cut: str | None = None
+    only_cut: str | None = None
+    emit_cuts: tuple[str, ...] = ()
     model_templated: bool = False
 
 
@@ -231,11 +274,66 @@ class TimeSpec:
 
 @dataclass(frozen=True)
 class MeasureWhere:
-    """Structured row mask on a retrieved column (Pandas, not SQL)."""
+    """Row mask AST. Leaf is ``{column, op, value}``; ``or`` / ``and`` / ``not`` nest."""
 
-    column: str
-    op: str
-    values: tuple[Any, ...]
+    column: str = ""
+    op: str = ""
+    values: tuple[Any, ...] = ()
+    kind: MaskKind = "leaf"
+    children: tuple["MeasureWhere", ...] = ()
+
+
+def walk_where_columns(spec: MeasureWhere | None) -> tuple[str, ...]:
+    """Unique column names referenced by a mask AST (leaf or compound)."""
+    if spec is None:
+        return ()
+    if spec.kind == "leaf":
+        return (spec.column,) if spec.column else ()
+    seen: list[str] = []
+    keys: set[str] = set()
+    for child in spec.children:
+        for col in walk_where_columns(child):
+            if col not in keys:
+                keys.add(col)
+                seen.append(col)
+    return tuple(seen)
+
+
+def where_fingerprint(spec: MeasureWhere | None) -> tuple[Any, ...] | None:
+    """Canonical mask AST for synthetic-base dedupe."""
+    if spec is None:
+        return None
+    if spec.kind == "leaf":
+        return ("leaf", spec.column, spec.op, spec.values)
+    return (spec.kind, tuple(where_fingerprint(child) for child in spec.children))
+
+
+def extra_retrieve_columns(measure: "BaseMeasure") -> tuple[str, ...]:
+    """Mask and weight columns the extract must SELECT (not SQL WHERE)."""
+    cols: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str | None) -> None:
+        if not name or name in seen:
+            return
+        seen.add(name)
+        cols.append(name)
+
+    for col in walk_where_columns(measure.where):
+        add(col)
+    for extra in measure.also_where:
+        for col in walk_where_columns(extra):
+            add(col)
+    add(measure.weight_column)
+    if measure.lookup is not None:
+        add(measure.lookup.column)
+        for col in measure.lookup.keys:
+            add(col)
+        add(measure.lookup.valid_from)
+        add(measure.lookup.valid_to)
+        if measure.lookup.as_of and measure.lookup.as_of != "anchor":
+            add(measure.lookup.as_of)
+    return tuple(cols)
 
 
 @dataclass(frozen=True)
@@ -258,6 +356,10 @@ class LookupSpec:
     mapping: Mapping[str, Any]
     default: Any = None
     strict: bool = False
+    keys: tuple[str, ...] = ()
+    valid_from: str | None = None
+    valid_to: str | None = None
+    as_of: str | None = None
 
 
 @dataclass(frozen=True)
@@ -312,6 +414,7 @@ class BaseMeasure:
     agg_ok: bool = False
     also_where: tuple[MeasureWhere, ...] = ()
     skip_filter_codes: tuple[str, ...] = ()
+    weight_column: str | None = None
 
 
 @dataclass(frozen=True)
@@ -324,6 +427,10 @@ class CutSpec:
     also_emit: tuple[str, ...]
     exclude_from_grain: tuple[str, ...] = ()
     pack_also_emit: bool = True
+    inherit_filters: tuple[str, ...] = ()
+    reset_filters: tuple[str, ...] = ()
+    rollup_from: str | None = None
+    rollup_dims: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -370,9 +477,13 @@ class OutputSpec:
     rank_group_by: tuple[str, ...] = ()
     params: Mapping[str, Any] = field(default_factory=dict)
     versus_cut: str | None = None
+    from_cut: str | None = None
     cut_derived: bool = False
     where: MeasureWhere | None = None
+    also_where: tuple[MeasureWhere, ...] = ()
     ignore_filters: tuple[str, ...] = ()
+    having: HavingSpec | None = None
+    required: bool = False
 
 
 @dataclass(frozen=True)
@@ -399,11 +510,17 @@ class KpiSpec:
     parameter_schema: tuple[ParameterSpec, ...] = ()
     bound_parameters: Mapping[str, Any] = field(default_factory=dict)
     locked_cut: str | None = None
+    only_cut: str | None = None
+    emit_cuts: tuple[str, ...] = ()
+    omit_null_rows: bool = False
+    default_measures_by_cut: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     model_templated: bool = False
     default_dimensions: tuple[str, ...] = ()
     request_grain: tuple[str, ...] = ()
     identity_grain: tuple[str, ...] = ()
     having: HavingSpec | None = None
+    sort: tuple[tuple[str, str], ...] = ()
+    max_rows: int | None = None
 
 
 @dataclass(frozen=True)

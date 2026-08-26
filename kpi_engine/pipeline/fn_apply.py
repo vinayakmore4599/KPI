@@ -18,9 +18,9 @@ from typing import Any, NamedTuple
 
 import pandas as pd
 
-from kpi_engine.contracts import BaseMeasure, KpiSpec, MeasureWhere
+from kpi_engine.contracts import BaseMeasure, KpiSpec, MeasureWhere, extra_retrieve_columns, walk_where_columns
 from kpi_engine.exceptions import CatalogError
-from kpi_engine.pipeline.filter_ops import pandas_mask
+from kpi_engine.pipeline.filter_ops import FILTER_ARITY, FILTER_OP_HELP, pandas_mask
 from kpi_engine.identifiers import (
     Binary,
     BoolOp,
@@ -50,10 +50,11 @@ _MEASURE_CALC_FILTERS: contextvars.ContextVar[tuple] = contextvars.ContextVar(
     "measure_calc_filters", default=()
 )
 
-WHERE_OPS = {"in", "eq", "ne", "gt", "gte", "lt", "lte", "between"}
-WHERE_OPS_HELP = "in, eq, ne, gt, gte, lt, lte, or between"
-NUMERIC_WHERE_OPS = frozenset({"gt", "gte", "lt", "lte", "between"})
+WHERE_OPS = frozenset(FILTER_ARITY)
+WHERE_OPS_HELP = FILTER_OP_HELP
+NUMERIC_WHERE_OPS = frozenset({"gt", "gte", "lt", "lte", "between", "not_between"})
 COUNT_AGGS = frozenset({"count", "count_distinct"})
+RAW_AGGS = COUNT_AGGS | frozenset({"list_agg", "string_agg"})
 
 ColumnFn = Callable[..., "pd.Series"]
 MeasureFn = Callable[..., Any]
@@ -497,7 +498,10 @@ def _call_series(node: Call, frame: pd.DataFrame) -> pd.Series:
         raise CatalogError(
             f"Unknown column function {node.name!r}. Registered: {sorted(COLUMN_FNS)}."
         )
-    args = [eval_expr_series(arg, frame) for arg in node.args]
+    args = [
+        eval_expr_series(arg, frame, raw=key in STRING_COLUMN_OPS)
+        for arg in node.args
+    ]
     problem = column_op_error(key, len(args))
     if problem:
         raise CatalogError(f"Column op {problem}")
@@ -698,10 +702,7 @@ def fold_extract_columns(
                 wanted.append(spec.source)
     for measure in kpi.base_measures:
         wanted.extend(input_columns(measure, {m.name: m for m in kpi.base_measures}))
-        if measure.where is not None:
-            wanted.append(measure.where.column)
-        for extra in measure.also_where:
-            wanted.append(extra.column)
+        wanted.extend(extra_retrieve_columns(measure))
         if measure.lookup is not None:
             wanted.append(measure.lookup.column)
         if measure.over is not None:
@@ -763,7 +764,9 @@ def apply_dimension_maps(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
 
 
 @traced
-def apply_pandas_facts(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
+def apply_pandas_facts(
+    frame: pd.DataFrame, kpi: KpiSpec, *, as_of_default: Any = None
+) -> pd.DataFrame:
     """Compute every base measure from retrieved physical columns (topo order)."""
     from kpi_engine.pipeline.row_pipeline import apply_lookup, apply_over, topo_bases
 
@@ -784,7 +787,13 @@ def apply_pandas_facts(frame: pd.DataFrame, kpi: KpiSpec) -> pd.DataFrame:
                     f"{measure.name!r}. Set replace: true if that is intended."
                 )
             if measure.lookup is not None:
-                series = apply_lookup(work, measure.lookup, name=measure.name)
+                series = apply_lookup(
+                    work,
+                    measure.lookup,
+                    name=measure.name,
+                    kpi=kpi,
+                    as_of_default=as_of_default,
+                )
             elif measure.over is not None:
                 series = apply_over(work, measure)
             else:
@@ -810,7 +819,7 @@ def _base_measure_series(
             f"base_measures.{measure.name} needs columns {missing} on the extract."
         )
     cols = tuple(actual or col for col, actual in zip(cols, resolved))
-    keep_raw = measure.agg in COUNT_AGGS
+    keep_raw = measure.agg in RAW_AGGS
     if measure.row_op is not None and measure.row_op not in PASSTHROUGH_OPS:
         series = apply_row_op(work, cols, measure.row_op, measure.column_params)
     elif measure.expr:
@@ -853,7 +862,26 @@ def _base_measure_series(
 
 
 def apply_where_mask(frame: pd.DataFrame, spec: MeasureWhere) -> pd.Series:
-    """Boolean mask for where.column op values. Bind list is the allowed set."""
+    """Boolean mask for a leaf or compound ``where:`` AST. SQL-style nulls."""
+    if spec.kind == "or":
+        mask = pd.Series(False, index=frame.index)
+        for child in spec.children:
+            mask = mask | apply_where_mask(frame, child)
+        return mask
+    if spec.kind == "and":
+        mask = pd.Series(True, index=frame.index)
+        for child in spec.children:
+            mask = mask & apply_where_mask(frame, child)
+        return mask
+    if spec.kind == "not":
+        inner = apply_where_mask(frame, spec.children[0])
+        defined = pd.Series(True, index=frame.index)
+        for col in walk_where_columns(spec):
+            actual = _frame_column(frame, col)
+            if actual is None:
+                raise CatalogError(f"where.column {col!r} is not on the extract.")
+            defined = defined & frame[actual].notna()
+        return (~inner) & defined
     actual = _frame_column(frame, spec.column)
     if actual is None:
         raise CatalogError(f"where.column {spec.column!r} is not on the extract.")
@@ -864,6 +892,25 @@ def apply_where_mask(frame: pd.DataFrame, spec: MeasureWhere) -> pd.Series:
     if op in NUMERIC_WHERE_OPS:
         col = pd.to_numeric(col, errors="coerce")
     return pandas_mask(col, op, spec.values)
+
+
+STRING_COLUMN_OPS = frozenset(
+    {
+        "trim",
+        "upper",
+        "lower",
+        "substring",
+        "left",
+        "right",
+        "replace",
+        "concat",
+        "hash_bucket",
+        "json_extract",
+        "flag_in_set",
+        "parse_date",
+        "parse_number",
+    }
+)
 
 
 def apply_row_op(
@@ -889,7 +936,10 @@ def apply_row_op(
     problem = column_op_error(name, len(columns), params)
     if problem:
         raise CatalogError(f"Column op {problem}")
-    args = [_column_series(frame, c) for c in columns]
+    if name in STRING_COLUMN_OPS:
+        args = [frame[c] if c in frame.columns else _column_series(frame, c) for c in columns]
+    else:
+        args = [_column_series(frame, c) for c in columns]
     result = fn(**dict(zip(params, args))) if params else fn(*args)
     if not isinstance(result, pd.Series):
         raise CatalogError(
@@ -1040,16 +1090,37 @@ def collapse_pandas_detail(
             continue
         if measure.agg in NON_ADDITIVE:
             continue
-        if measure.agg not in foldable:
+        if measure.agg not in foldable and measure.agg != "weighted_avg":
             raise CatalogError(
                 f"base_measures.{measure.name} agg={measure.agg!r} cannot fold a Pandas "
-                "column. Use sum, avg, count, min, max, first, or last."
+                "column. Use sum, avg, count, min, max, first, last, or weighted_avg."
             )
         if measure.agg == "avg":
             work[f"{measure.name}__sum"] = pd.to_numeric(work[measure.name], errors="coerce")
             work[f"{measure.name}__count"] = work[measure.name].notna().astype("int64")
             aggs[f"{measure.name}__sum"] = _sum_or_null
             aggs[f"{measure.name}__count"] = "sum"
+            continue
+        if measure.agg == "weighted_avg":
+            wcol = measure.weight_column
+            actual = _frame_column(work, wcol) if wcol else None
+            if actual is None:
+                raise CatalogError(
+                    f"base_measures.{measure.name} weight_column {wcol!r} "
+                    "is not on the extract."
+                )
+            vals = pd.to_numeric(work[measure.name], errors="coerce")
+            wts = pd.to_numeric(work[actual], errors="coerce")
+            orig = work[actual]
+            if orig.notna().any() and int(wts.notna().sum()) == 0:
+                raise CatalogError(
+                    f"base_measures.{measure.name} weight_column {wcol!r} is not numeric."
+                )
+            valid = wts.notna() & (wts != 0) & vals.notna()
+            work[f"{measure.name}__wsum"] = (vals * wts).where(valid)
+            work[f"{measure.name}__wcount"] = wts.where(valid)
+            aggs[f"{measure.name}__wsum"] = _sum_or_null
+            aggs[f"{measure.name}__wcount"] = _sum_or_null
             continue
         if measure.agg == "sum":
             aggs[measure.name] = _sum_or_null

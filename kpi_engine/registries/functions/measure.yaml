@@ -408,3 +408,139 @@ epoch_day:
   module: kpi_engine.capabilities.functions.measure.impl
   attr: epoch_day
 
+geomean_scalars:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 1
+  description: Geometric mean of positive measure scalars.
+  example: |
+    g:
+      op: fn
+      fn: geomean_scalars
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: geomean_scalars
+
+weighted_avg_scalars:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 2
+  description: Weighted average of (value, weight) pairs.
+  example: |
+    w:
+      op: fn
+      fn: weighted_avg_scalars
+      inputs: [a, wa, b, wb]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: weighted_avg_scalars
+
+harmonic_mean:
+  role: addon
+  enabled: true
+  aliases: [harmonic_mean_scalars]
+  min_args: 1
+  description: Harmonic mean of positive scalars.
+  example: |
+    h:
+      op: fn
+      fn: harmonic_mean
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: harmonic_mean_scalars
+
+min_max_spread:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 1
+  description: max - min of the inputs.
+  example: |
+    spread:
+      op: fn
+      fn: min_max_spread
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: min_max_spread
+
+ratio_safe:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Numerator / denominator; zero denominator is null.
+  example: |
+    r:
+      op: fn
+      fn: ratio_safe
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: ratio_safe
+
+bps_change:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Percent change in basis points.
+  example: |
+    bps:
+      op: fn
+      fn: bps_change
+      inputs: [current_value, previous]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: bps_change
+
+log_change:
+  role: addon
+  enabled: true
+  aliases: []
+  description: ln(current / previous).
+  example: |
+    lc:
+      op: fn
+      fn: log_change
+      inputs: [current_value, previous]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: log_change
+
+if_between:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1 if value is in [lo, hi].
+  example: |
+    in_band:
+      op: fn
+      fn: if_between
+      inputs: [current_value, lo, hi]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: if_between
+
+all_null:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 1
+  description: 1 if every input is null.
+  example: |
+    missing:
+      op: fn
+      fn: all_null
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: all_null
+
+any_null:
+  role: addon
+  enabled: true
+  aliases: []
+  min_args: 1
+  description: 1 if any input is null.
+  example: |
+    some_missing:
+      op: fn
+      fn: any_null
+      inputs: [a, b]
+  module: kpi_engine.capabilities.functions.measure.impl
+  attr: any_null
+

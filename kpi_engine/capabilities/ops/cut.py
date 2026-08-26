@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from kpi_engine.capabilities.ops import support
-from kpi_engine.contracts import KpiSpec, OutputSpec
+from kpi_engine.contracts import KpiSpec, Offset, OutputSpec
 from kpi_engine.pipeline.op_protocol import CommonMeasureFields, EvalCtx, OpPlugin
 from kpi_engine.exceptions import BindError, CatalogError
 from kpi_engine.identifiers import norm_name
@@ -16,7 +16,7 @@ class Rank(OpPlugin):
     name = "rank"
     phase = "cut"
     cut_restricted = True
-    extra_keys = frozenset({"order", "partition_by", "group_by", "order_by"})
+    extra_keys = frozenset({"order", "partition_by", "group_by", "order_by", "versus_cut"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -197,7 +197,7 @@ class _CutBase(OpPlugin):
 
     phase = "cut"
     cut_restricted = True
-    extra_keys = frozenset({"order", "partition_by", "group_by", "order_by"})
+    extra_keys = frozenset({"order", "partition_by", "group_by", "order_by", "versus_cut"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -281,7 +281,7 @@ class RunningTotal(_CutBase):
 
 class Contribution(_CutBase):
     name = "contribution"
-    extra_keys = _CutBase.extra_keys | frozenset({"vs"})
+    extra_keys = _CutBase.extra_keys | frozenset({"vs", "versus_cut"})
 
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
@@ -522,7 +522,7 @@ def _write_running_total(cut_rows, spec: OutputSpec, src: str, indexes: list[int
         )
 
 
-def _write_contribution(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
+def _write_contribution(cut_rows, spec: OutputSpec, src: str, indexes: list[int], *, totals=None) -> None:
     deltas: list[float | None] = []
     for i in indexes:
         pair = cut_rows[i].get(src)
@@ -535,6 +535,12 @@ def _write_contribution(cut_rows, spec: OutputSpec, src: str, indexes: list[int]
         else:
             deltas.append(float(current) - float(baseline))
     total = sum(v for v in deltas if v is not None)
+    if spec.versus_cut and totals is not None:
+        vs = totals.get((spec.versus_cut, f"__contrib_{spec.of}_{spec.params.get('vs')}"))
+        if vs is None:
+            vs = totals.get((spec.versus_cut, spec.of or spec.key))
+        if vs is not None:
+            total = vs
     for i, delta in zip(indexes, deltas):
         if delta is None or total == 0:
             share = None
@@ -691,4 +697,256 @@ def _write_top_n(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) 
             result=flag,
             of=spec.of,
             inputs={spec.of or src: source, "n": n},
+        )
+
+
+class BottomN(TopN):
+    name = "bottom_n"
+    extra_keys = _CutBase.extra_keys | frozenset({"n", "versus_cut"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        return spec
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_bottom_n)
+
+
+def _write_bottom_n(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
+    values = [cut_rows[i].get(src) for i in indexes]
+    ranks = support.sql_rank(values, descending=False)
+    n = int(spec.params["n"])
+    for i, rank, source in zip(indexes, ranks, values):
+        if rank is None:
+            flag = None
+        else:
+            flag = 1.0 if rank <= n else 0.0
+        cut_rows[i][spec.key] = flag
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="bottom_n",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=flag,
+            of=spec.of,
+            inputs={spec.of or src: source, "n": n},
+        )
+
+
+class RankPctChange(_CutBase):
+    name = "rank_pct_change"
+    extra_keys = _CutBase.extra_keys | frozenset({"offset"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        if spec.offset is None:
+            spec = OutputSpec(**{**spec.__dict__, "offset": Offset(years=1)})
+        return spec
+
+    def source_for_cut(self, ctx: EvalCtx) -> Any:
+        current = _cut_source(ctx)
+        from kpi_engine.pipeline.period_select import negate_offset, shift_selection
+
+        if ctx.plan is None or ctx.kpi.time is None:
+            return None
+        offset = ctx.spec.offset
+        if offset is None:
+            from kpi_engine.contracts import Offset
+
+            offset = Offset(years=1)
+        periods = support.effective_selection(ctx)
+        if not periods:
+            return None
+        shifted = shift_selection(periods, negate_offset(offset), ctx.kpi.time)
+        if not shifted:
+            return None
+        baseline = ctx.evaluate(
+            ctx.catalog.get(ctx.spec.of or "")
+            or OutputSpec(key=ctx.spec.of or ctx.spec.key, kind="point", of=ctx.spec.of),
+            selection=shifted,
+        )
+        if current is None or baseline in (None, 0):
+            return None
+        return float(current - baseline) / float(baseline)
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        child = super().lookback(spec, by_key, time, anchor, seen, lookback_for)
+        return child + support.offset_lookback(spec.offset, time, anchor)
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_rank)
+
+
+class Concentration(_CutBase):
+    """Herfindahl-Hirschman index of of shares on the cut (0-1)."""
+
+    name = "concentration"
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_concentration)
+
+
+def _write_concentration(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
+    values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
+    total = sum(v for v in values if v is not None)
+    if not total:
+        hhi = None
+    else:
+        hhi = float(sum((v / total) ** 2 for v in values if v is not None))
+    for i, source in zip(indexes, values):
+        cut_rows[i][spec.key] = hhi
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="concentration",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=hhi,
+            of=spec.of,
+            inputs={spec.of or src: source, "hhi": hhi},
+        )
+
+
+class AbcClass(_CutBase):
+    """String A/B/C class from cumulative share (80/95 default)."""
+
+    name = "abc_class"
+    extra_keys = _CutBase.extra_keys | frozenset({"a_share", "b_share"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        a_share = float(common.raw.get("a_share") or 80)
+        b_share = float(common.raw.get("b_share") or 95)
+        return OutputSpec(
+            **{**spec.__dict__, "params": {**spec.params, "a_share": a_share, "b_share": b_share}}
+        )
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_abc_class)
+
+
+def _write_abc_class(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
+    values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
+    total = sum(v for v in values if v is not None)
+    descending = (spec.rank_order or "desc") == "desc"
+    a_share = float(spec.params.get("a_share") or 80)
+    b_share = float(spec.params.get("b_share") or 95)
+    running = 0.0
+    labels: dict[int, str | None] = {}
+    for pos in _ordered_indexes(
+        values, indexes, descending=descending, cut_rows=cut_rows, spec=spec
+    ):
+        i = indexes[pos]
+        source = values[pos]
+        if source is None or not total:
+            labels[i] = None
+            continue
+        running += source
+        cum = float(running) * 100.0 / float(total)
+        if cum <= a_share or running == source:
+            labels[i] = "A"
+        elif cum <= b_share:
+            labels[i] = "B"
+        else:
+            labels[i] = "C"
+    for i, source in zip(indexes, values):
+        cut_rows[i][spec.key] = labels.get(i)
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="abc_class",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=labels.get(i),
+            of=spec.of,
+            inputs={spec.of or src: source},
+        )
+
+
+class ParetoFlag(_CutBase):
+    name = "pareto_flag"
+    extra_keys = _CutBase.extra_keys | frozenset({"share"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        share = float(common.raw.get("share") or 80)
+        return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "share": share}})
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_pareto_flag)
+
+
+def _write_pareto_flag(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
+    values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
+    total = sum(v for v in values if v is not None)
+    descending = (spec.rank_order or "desc") == "desc"
+    threshold = float(spec.params.get("share") or 80)
+    running = 0.0
+    flags: dict[int, float | None] = {}
+    for pos in _ordered_indexes(
+        values, indexes, descending=descending, cut_rows=cut_rows, spec=spec
+    ):
+        i = indexes[pos]
+        source = values[pos]
+        if source is None or not total:
+            flags[i] = None
+            continue
+        running += source
+        cum = float(running) * 100.0 / float(total)
+        flags[i] = 1.0 if cum <= threshold or running == source else 0.0
+    for i, source in zip(indexes, values):
+        cut_rows[i][spec.key] = flags.get(i)
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="pareto_flag",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=flags.get(i),
+            of=spec.of,
+            inputs={spec.of or src: source},
+        )
+
+
+class Normalize(_CutBase):
+    name = "normalize"
+    extra_keys = _CutBase.extra_keys | frozenset({"method"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        method = str(common.raw.get("method") or "max").strip().lower()
+        if method not in {"max", "sum"}:
+            raise BindError(f"measures.{key} op=normalize method must be max or sum.")
+        return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "method": method}})
+
+    def apply_to_cut(self, cut_rows, spec, cut_dims, *, totals=None) -> None:
+        _apply_partitioned(cut_rows, spec, cut_dims, write=_write_normalize)
+
+
+def _write_normalize(cut_rows, spec: OutputSpec, src: str, indexes: list[int], **_) -> None:
+    values = [support.numeric_or_none(cut_rows[i].get(src)) for i in indexes]
+    method = spec.params.get("method") or "max"
+    present = [v for v in values if v is not None]
+    if not present:
+        scale = None
+    elif method == "sum":
+        scale = float(sum(present))
+    else:
+        scale = float(max(abs(v) for v in present))
+    for i, source in zip(indexes, values):
+        if source is None or not scale:
+            out = None
+        else:
+            out = float(source) / scale
+        cut_rows[i][spec.key] = out
+        cut_rows[i].pop(src, None)
+        log_measure_calc(
+            cut=cut_rows[i].get("output_cut") or "",
+            key=spec.key,
+            op="normalize",
+            combo={dim: cut_rows[i].get(dim) for dim in spec.rank_group_by},
+            result=out,
+            of=spec.of,
+            inputs={spec.of or src: source, "scale": scale},
         )

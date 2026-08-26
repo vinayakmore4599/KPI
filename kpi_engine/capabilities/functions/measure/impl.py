@@ -151,6 +151,88 @@ def if_else_scalars(cond: Any, then: Any, other: Any) -> float | None:
     return None if _is_null(chosen) else float(chosen)
 
 
+def geomean_scalars(*values: Any) -> float | None:
+    """Geometric mean of positive scalars. Any non-positive or null → null."""
+    if not values or any(_is_null(v) for v in values):
+        return None
+    nums = [float(v) for v in values]
+    if any(n <= 0 for n in nums):
+        return None
+    prod = 1.0
+    for n in nums:
+        prod *= n
+    return float(prod ** (1.0 / len(nums)))
+
+
+def weighted_avg_scalars(*values: Any) -> float | None:
+    """values are v1, w1, v2, w2, … Null/zero weight skipped; none left → null."""
+    if len(values) < 2 or len(values) % 2:
+        return None
+    num = 0.0
+    den = 0.0
+    for i in range(0, len(values), 2):
+        val, weight = values[i], values[i + 1]
+        if _is_null(val) or _is_null(weight) or float(weight) == 0:
+            continue
+        num += float(val) * float(weight)
+        den += float(weight)
+    return None if den == 0 else float(num / den)
+
+
+def harmonic_mean_scalars(*values: Any) -> float | None:
+    """Harmonic mean. Any null or non-positive → null."""
+    if not values or any(_is_null(v) for v in values):
+        return None
+    nums = [float(v) for v in values]
+    if any(n <= 0 for n in nums):
+        return None
+    return float(len(nums) / sum(1.0 / n for n in nums))
+
+
+def min_max_spread(*values: Any) -> float | None:
+    present = [float(v) for v in values if not _is_null(v)]
+    if not present:
+        return None
+    return float(max(present) - min(present))
+
+
+def ratio_safe(numerator: Any, denominator: Any) -> float | None:
+    return divide_scalars(numerator, denominator)
+
+
+def bps_change(current: Any, previous: Any) -> float | None:
+    """(current - previous) / previous × 10000."""
+    if _is_null(current) or previous in (None, 0) or _is_null(previous):
+        return None
+    return float((float(current) - float(previous)) / float(previous) * 10000.0)
+
+
+def log_change(current: Any, previous: Any) -> float | None:
+    """ln(current / previous). Non-positive → null."""
+    if _is_null(current) or _is_null(previous):
+        return None
+    if float(current) <= 0 or float(previous) <= 0:
+        return None
+    import math
+
+    return float(math.log(float(current) / float(previous)))
+
+
+def if_between(value: Any, lo: Any, hi: Any) -> float | None:
+    """1 if value is in [lo, hi], else 0. Any null → null."""
+    if _is_null(value) or _is_null(lo) or _is_null(hi):
+        return None
+    return 1.0 if float(lo) <= float(value) <= float(hi) else 0.0
+
+
+def all_null(*values: Any) -> float:
+    return 1.0 if all(_is_null(v) for v in values) else 0.0
+
+
+def any_null(*values: Any) -> float:
+    return 1.0 if any(_is_null(v) for v in values) else 0.0
+
+
 def sign_label(
     value: Any,
     positive: Any = "Positive",

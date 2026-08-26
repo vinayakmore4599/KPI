@@ -465,6 +465,268 @@ closed_yoy:
   mode: yoy
 ```
 
+### `expanding_window`
+
+Aggregate from span start (or year start) through the anchor.  
+`role: addon` · `enabled: on`
+
+```yaml
+ytd_expanding:
+  op: expanding_window
+  of: sotif_value
+```
+
+### `shifted_trend`
+
+Trend series shifted by offset.  
+`role: addon` · `enabled: on`
+
+```yaml
+trend_ly:
+  op: shifted_trend
+  of: sotif_value
+  trailing: { months: 12 }
+  offset: { years: 1 }
+  cuts: [G]
+```
+
+### `rate`
+
+of / vs, or of / n.  
+`role: addon` · `enabled: on`
+
+```yaml
+per_period:
+  op: rate
+  of: sotif_value
+  n: 3
+```
+
+### `cumulative_point`
+
+Period-to-date (cumulative) aggregate of a base at the anchor.  
+`role: addon` · `enabled: on`
+
+```yaml
+ytd:
+  op: cumulative_point
+  of: sotif_value
+```
+
+### `n_period_avg`
+
+Mean of per-period values over trailing N.  
+`role: addon` · `enabled: on`
+
+```yaml
+avg_3m:
+  op: n_period_avg
+  of: sotif_value
+  trailing: { months: 3 }
+```
+
+### `weighted_window`
+
+Trailing window weighted by another base measure.  
+`role: addon` · `enabled: on`
+
+```yaml
+wavg_3m:
+  op: weighted_window
+  of: sotif_value
+  weight: sotif_value
+  trailing: { months: 3 }
+```
+
+### `snapshot_compare`
+
+Compare two current scalars (pct or diff) without an offset.  
+`role: addon` · `enabled: on`
+
+```yaml
+vs_target:
+  op: snapshot_compare
+  of: current_value
+  vs: value_3m
+  mode: pct
+```
+
+### `bottom_n`
+
+1 if the group is in the bottom n of of on the cut.  
+`role: addon` · `enabled: on`
+
+```yaml
+worst:
+  op: bottom_n
+  of: current_value
+  n: 1
+  cuts: [G]
+```
+
+### `rank_pct_change`
+
+Rank groups by period percent change of of.  
+`role: addon` · `enabled: on`
+
+```yaml
+movers:
+  op: rank_pct_change
+  of: current_value
+  offset: { years: 1 }
+  cuts: [G]
+```
+
+### `concentration`
+
+Herfindahl-Hirschman index of of shares on the cut.  
+`role: addon` · `enabled: on`
+
+```yaml
+hhi:
+  op: concentration
+  of: current_value
+  cuts: [G]
+```
+
+### `abc_class`
+
+String A/B/C class from cumulative share (default 80/95).  
+`role: addon` · `enabled: on`
+
+```yaml
+cls:
+  op: abc_class
+  of: current_value
+  cuts: [G]
+```
+
+### `pareto_flag`
+
+1 if the group is inside the leading cumulative-share band.  
+`role: addon` · `enabled: on`
+
+```yaml
+top80:
+  op: pareto_flag
+  of: current_value
+  share: 80
+  cuts: [G]
+```
+
+### `normalize`
+
+of / max(of) or of / sum(of) on the cut.  
+`role: addon` · `enabled: on`
+
+```yaml
+scaled:
+  op: normalize
+  of: current_value
+  method: max
+  cuts: [G]
+```
+
+### `annualize`
+
+Scale of to a year using periods_per_year / n.  
+`role: addon` · `enabled: on`
+
+```yaml
+annual:
+  op: annualize
+  of: current_value
+  n: 1
+```
+
+### `vs_prior_window`
+
+Trailing window vs the same window shifted by offset.  
+`role: addon` · `enabled: on`
+
+```yaml
+win_yoy:
+  op: vs_prior_window
+  of: sotif_value
+  trailing: { months: 3 }
+  offset: { years: 1 }
+```
+
+### `delta_contribution`
+
+Current minus lagged of (or minus vs).  
+`role: addon` · `enabled: on`
+
+```yaml
+delta:
+  op: delta_contribution
+  of: current_value
+  offset: { years: 1 }
+```
+
+### `baseline_index`
+
+of / vs × 100. vs may be a measure or lagged of.  
+`role: addon` · `enabled: on`
+
+```yaml
+idx:
+  op: baseline_index
+  of: current_value
+  offset: { years: 1 }
+```
+
+### `band`
+
+Factor or offset band around of. Bind expands to {key}_low and {key}_high unless emit: names a single side.  
+`role: addon` · `enabled: on`
+
+```yaml
+value_band:
+  op: band
+  of: current_value
+  method: factor
+  low: 0.8
+  high: 1.2
+```
+
+### `envelope`
+
+Alias of band — dual keys {key}_low / {key}_high.  
+`role: addon` · `enabled: on`
+
+```yaml
+value_env:
+  op: envelope
+  of: current_value
+  low: 0.9
+  high: 1.1
+```
+
+### `compound_growth`
+
+(end/start)^(1/n) − 1 over a fixed N periods. Use hook:cagr for a trailing observed series (mutually exclusive shapes — pick one).  
+`role: addon` · `enabled: on`
+
+```yaml
+growth_12:
+  op: compound_growth
+  of: sotif_value
+  n: 12
+```
+
+### `seasonal_adjust`
+
+Deseasonalize current × overall mean / same-month mean in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+adj:
+  op: seasonal_adjust
+  of: sotif_value
+  trailing: { months: 36 }
+```
+
 ## Column functions (`base_measures.op`)
 
 ### `value` (aliases: identity)
@@ -771,6 +1033,196 @@ Integer days since 1970-01-01.
 epoch:
   columns: [order_date]
   op: epoch_day
+```
+
+### `weighted_product`
+
+Row-wise product of columns.  
+`role: addon` · `enabled: on`
+
+```yaml
+wp:
+  columns: [qty, price]
+  op: weighted_product
+```
+
+### `safe_divide`
+
+Numerator / denominator; zero denominator is null.  
+`role: addon` · `enabled: on`
+
+```yaml
+rate:
+  columns: [shipped, ordered]
+  op: safe_divide
+```
+
+### `clip`
+
+Clamp value into [lo, hi].  
+`role: addon` · `enabled: on`
+
+```yaml
+capped:
+  columns: [amount, lo, hi]
+  op: clip
+```
+
+### `parse_date`
+
+Parse a column as a timestamp.  
+`role: addon` · `enabled: on`
+
+```yaml
+dt:
+  columns: [date_text]
+  op: parse_date
+```
+
+### `parse_number`
+
+Parse a column as a float.  
+`role: addon` · `enabled: on`
+
+```yaml
+n:
+  columns: [amount_text]
+  op: parse_number
+```
+
+### `trim`
+
+Strip whitespace.  
+`role: addon` · `enabled: on`
+
+```yaml
+clean:
+  columns: [region]
+  op: trim
+```
+
+### `upper`
+
+Uppercase.  
+`role: addon` · `enabled: on`
+
+```yaml
+up:
+  columns: [region]
+  op: upper
+```
+
+### `lower`
+
+Lowercase.  
+`role: addon` · `enabled: on`
+
+```yaml
+lo:
+  columns: [region]
+  op: lower
+```
+
+### `substring`
+
+Slice text from start for length (0-based).  
+`role: addon` · `enabled: on`
+
+```yaml
+code:
+  expr: "substring(reason_code, 0, 4)"
+```
+
+### `left`
+
+Left n characters.  
+`role: addon` · `enabled: on`
+
+```yaml
+prefix:
+  expr: "left(reason_code, 4)"
+```
+
+### `right`
+
+Right n characters.  
+`role: addon` · `enabled: on`
+
+```yaml
+suffix:
+  expr: "right(reason_code, 2)"
+```
+
+### `replace`
+
+Replace old with new in a string column.  
+`role: addon` · `enabled: on`
+
+```yaml
+swapped:
+  expr: "replace(region, 'NA', 'US')"
+```
+
+### `concat`
+
+Concatenate string columns.  
+`role: addon` · `enabled: on`
+
+```yaml
+label:
+  expr: "concat(region, reason_code)"
+```
+
+### `hash_bucket`
+
+Stable 0..n-1 bucket from the value.  
+`role: addon` · `enabled: on`
+
+```yaml
+bucket:
+  expr: "hash_bucket(supplier_name, 10)"
+```
+
+### `json_extract`
+
+Pandas JSON path extract on a string column.  
+`role: addon` · `enabled: on`
+
+```yaml
+field:
+  expr: "json_extract(payload, '$.a')"
+```
+
+### `coalesce_date`
+
+First non-null parseable date.  
+`role: addon` · `enabled: on`
+
+```yaml
+when:
+  columns: [ship_date, order_date]
+  op: coalesce_date
+```
+
+### `is_between_dates`
+
+1 if value is in [start, end].  
+`role: addon` · `enabled: on`
+
+```yaml
+in_range:
+  columns: [event_month, start_date, end_date]
+  op: is_between_dates
+```
+
+### `flag_in_set`
+
+1 if value equals any following argument.  
+`role: addon` · `enabled: on`
+
+```yaml
+is_na:
+  expr: "flag_in_set(region, 'NA', 'EU')"
 ```
 
 ## Measure functions (`measures.fn`)
@@ -1147,6 +1599,126 @@ epoch:
   inputs: [ship_date]
 ```
 
+### `geomean_scalars`
+
+Geometric mean of positive measure scalars.  
+`role: addon` · `enabled: on`
+
+```yaml
+g:
+  op: fn
+  fn: geomean_scalars
+  inputs: [a, b]
+```
+
+### `weighted_avg_scalars`
+
+Weighted average of (value, weight) pairs.  
+`role: addon` · `enabled: on`
+
+```yaml
+w:
+  op: fn
+  fn: weighted_avg_scalars
+  inputs: [a, wa, b, wb]
+```
+
+### `harmonic_mean` (aliases: harmonic_mean_scalars)
+
+Harmonic mean of positive scalars.  
+`role: addon` · `enabled: on`
+
+```yaml
+h:
+  op: fn
+  fn: harmonic_mean
+  inputs: [a, b]
+```
+
+### `min_max_spread`
+
+max - min of the inputs.  
+`role: addon` · `enabled: on`
+
+```yaml
+spread:
+  op: fn
+  fn: min_max_spread
+  inputs: [a, b]
+```
+
+### `ratio_safe`
+
+Numerator / denominator; zero denominator is null.  
+`role: addon` · `enabled: on`
+
+```yaml
+r:
+  op: fn
+  fn: ratio_safe
+  inputs: [a, b]
+```
+
+### `bps_change`
+
+Percent change in basis points.  
+`role: addon` · `enabled: on`
+
+```yaml
+bps:
+  op: fn
+  fn: bps_change
+  inputs: [current_value, previous]
+```
+
+### `log_change`
+
+ln(current / previous).  
+`role: addon` · `enabled: on`
+
+```yaml
+lc:
+  op: fn
+  fn: log_change
+  inputs: [current_value, previous]
+```
+
+### `if_between`
+
+1 if value is in [lo, hi].  
+`role: addon` · `enabled: on`
+
+```yaml
+in_band:
+  op: fn
+  fn: if_between
+  inputs: [current_value, lo, hi]
+```
+
+### `all_null`
+
+1 if every input is null.  
+`role: addon` · `enabled: on`
+
+```yaml
+missing:
+  op: fn
+  fn: all_null
+  inputs: [a, b]
+```
+
+### `any_null`
+
+1 if any input is null.  
+`role: addon` · `enabled: on`
+
+```yaml
+some_missing:
+  op: fn
+  fn: any_null
+  inputs: [a, b]
+```
+
 ## Hooks (`measures.hook`)
 
 ### `seasonal_index`
@@ -1426,4 +1998,208 @@ next_month:
   of: sotif_value
   trailing: { months: 12 }
   periods_ahead: 1
+```
+
+### `autocorrelation`
+
+Lag-1 Pearson correlation of consecutive observed period values.  
+`role: addon` · `enabled: on`
+
+```yaml
+ac1:
+  op: hook
+  hook: autocorrelation
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `rsi`
+
+Wilder RSI of period-to-period changes.  
+`role: addon` · `enabled: on`
+
+```yaml
+rsi14:
+  op: hook
+  hook: rsi
+  of: sotif_value
+  trailing: { months: 14 }
+```
+
+### `bollinger`
+
+%b of the last value in a k-sigma band around the window mean (k default 2).  
+`role: addon` · `enabled: on`
+
+```yaml
+bb:
+  op: hook
+  hook: bollinger
+  of: sotif_value
+  trailing: { months: 12 }
+  k: 2
+```
+
+### `exponential_decay_sum`
+
+Sum v_i × decay^(age). decay default 0.5.  
+`role: addon` · `enabled: on`
+
+```yaml
+decayed:
+  op: hook
+  hook: exponential_decay_sum
+  of: sotif_value
+  trailing: { months: 12 }
+  decay: 0.5
+```
+
+### `theil_sen_slope`
+
+Median of pairwise slopes of value vs observed period index.  
+`role: addon` · `enabled: on`
+
+```yaml
+robust_slope:
+  op: hook
+  hook: theil_sen_slope
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `changepoint`
+
+1-based index of the mean-shift split in the trailing window.  
+`role: addon` · `enabled: on`
+
+```yaml
+shift:
+  op: hook
+  hook: changepoint
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `outlier_count`
+
+Count of observed values with |z| > k (default 3).  
+`role: addon` · `enabled: on`
+
+```yaml
+outliers:
+  op: hook
+  hook: outlier_count
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `percentile_rank_series`
+
+Percentile rank (0–100) of the last observed value in the window.  
+`role: addon` · `enabled: on`
+
+```yaml
+pr:
+  op: hook
+  hook: percentile_rank_series
+  of: sotif_value
+  trailing: { months: 12 }
+```
+
+### `weighted_ewma`
+
+EWMA with explicit alpha (default 2/(N+1)).  
+`role: addon` · `enabled: on`
+
+```yaml
+smooth:
+  op: hook
+  hook: weighted_ewma
+  of: sotif_value
+  trailing: { months: 12 }
+  alpha: 0.3
+```
+
+### `run_rate`
+
+Last observed value annualized by the KPI grain.  
+`role: addon` · `enabled: on`
+
+```yaml
+annualized:
+  op: hook
+  hook: run_rate
+  of: sotif_value
+  trailing: { months: 3 }
+```
+
+### `target_trajectory`
+
+Last / linear path from first observed to value: target.  
+`role: addon` · `enabled: on`
+
+```yaml
+pace:
+  op: hook
+  hook: target_trajectory
+  of: sotif_value
+  trailing: { months: 12 }
+  value: 100
+```
+
+### `forecast_confidence`
+
+Linear projection ± k × stdev. Bind expands to {key}_low / {key}_high unless emit: names one side.  
+`role: addon` · `enabled: on`
+
+```yaml
+fc:
+  op: hook
+  hook: forecast_confidence
+  of: sotif_value
+  trailing: { months: 12 }
+  k: 1.96
+```
+
+### `seasonal_decompose`
+
+Seasonal factor at the anchor month (same-month mean / overall mean).  
+`role: addon` · `enabled: on`
+
+```yaml
+seas:
+  op: hook
+  hook: seasonal_decompose
+  of: sotif_value
+  trailing: { months: 36 }
+```
+
+### `cohort_retention`
+
+Share of entities first seen at entry_period that are still present at the anchor.  
+`role: addon` · `enabled: on`
+
+```yaml
+retain:
+  op: hook
+  hook: cohort_retention
+  of: sotif_value
+  trailing: { months: 12 }
+  cohort_column: supplier_name
+  entry_period: "2025-01-01"
+```
+
+### `survival_rate`
+
+Share of entities that entered on or before entry_period still present at the anchor.  
+`role: addon` · `enabled: on`
+
+```yaml
+survive:
+  op: hook
+  hook: survival_rate
+  of: sotif_value
+  trailing: { months: 12 }
+  cohort_column: supplier_name
+  entry_period: "2025-01-01"
 ```

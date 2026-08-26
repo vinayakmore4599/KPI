@@ -109,6 +109,16 @@ class Window(OpPlugin):
     name = "window"
     requires_time = True
     shiftable = True
+    extra_keys = frozenset({"align"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        align = str(common.raw.get("align") or "calendar").strip().lower()
+        if align not in {"calendar", "periods"}:
+            raise BindError(
+                f"measures.{key} align: must be calendar or periods (got {align!r})."
+            )
+        return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "align": align}})
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         support.require_base_of(spec, kpi)
@@ -158,6 +168,21 @@ class Trend(OpPlugin):
     requires_time = True
     cut_restricted = True
     emits_trend = True
+    extra_keys = frozenset({"partition_by", "group_by"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        raw = dict(common.raw)
+        parts = support.parse_partition_by(key, "trend", raw) if (
+            raw.get("partition_by") is not None or raw.get("group_by")
+        ) else ()
+        return OutputSpec(
+            **{
+                **spec.__dict__,
+                "rank_group_by": parts,
+                "params": {**spec.params, "partition_by": parts},
+            }
+        )
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         support.require_base_of(spec, kpi)
@@ -165,6 +190,8 @@ class Trend(OpPlugin):
         if kpi.time is None:
             raise BindError(f"measures.{spec.key} (trend) needs a time: block.")
         support.assert_window_range(spec, kpi)
+        if spec.rank_group_by:
+            support.assert_partition_keys(spec, kpi)
 
     def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
         return support.window_lookback_periods(spec, time, anchor)
@@ -826,7 +853,16 @@ class Hook(OpPlugin):
                 plan = dc_replace(plan, anchor=anchor)
             except CatalogError:
                 pass
-        value = run(name, ctx.series, kpi=ctx.kpi, plan=plan, spec=ctx.spec)
+        value = run(
+            name,
+            ctx.series,
+            kpi=ctx.kpi,
+            plan=plan,
+            spec=ctx.spec,
+            detail=ctx.detail,
+            combo=ctx.combo,
+            group_dims=ctx.group_dims,
+        )
         log_measure_calc(
             cut=ctx.cut, key=ctx.spec.key, op="hook", combo=_combo(ctx), result=value, hook=name
         )
@@ -1083,3 +1119,392 @@ class FilteredCompare(OpPlugin):
                 },
             }
         )
+
+
+class ExpandingWindow(Window):
+    """Window from span start (or YTD if no span) through the anchor."""
+
+    name = "expanding_window"
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        if spec.window_range:
+            return spec
+        return OutputSpec(**{**spec.__dict__, "window_range": "cumulative"})
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        if ctx.kpi.time is None or ctx.plan is None:
+            raise CatalogError(
+                f"{ctx.spec.key} is an expanding_window measure; this KPI has no time column."
+            )
+        sel = support.effective_selection(ctx)
+        if not sel:
+            return None
+        end = sel[-1]
+        start = ctx.plan.span_start or sel[0]
+        base = support.base_measure(ctx.kpi, ctx.spec.of)
+        if base.agg in NON_ADDITIVE_AGGS:
+            value = support.agg_detail(
+                ctx.detail, ctx.kpi, base, ctx.group_dims, ctx.combo, start, end
+            )
+        else:
+            value = support.window_value(ctx.series, ctx.kpi, ctx.spec, start, end)
+        support.log_base_calc(
+            ctx.spec, ctx.cut, _combo(ctx), value, ctx.series, ctx.kpi, start=start, end=end
+        )
+        return value
+
+
+class ShiftedTrend(Trend):
+    """Trend whose axis is shifted by offset:."""
+
+    name = "shifted_trend"
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        super().validate(spec, kpi)
+        if not _offset_nonzero(spec.offset):
+            raise BindError(f"measures.{spec.key} op=shifted_trend requires a non-zero offset.")
+
+
+class Rate(OpPlugin):
+    """of / vs, or of / n (trailing length when n is omitted)."""
+
+    name = "rate"
+    shiftable = True
+    extra_keys = frozenset({"vs", "n"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        raw = dict(common.raw)
+        vs = str(raw["vs"]).strip() if raw.get("vs") else None
+        n = raw.get("n")
+        if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n < 1):
+            raise BindError(f"measures.{key} op=rate n: must be an integer >= 1.")
+        return OutputSpec(**{**spec.__dict__, "params": {**spec.params, "vs": vs, "n": n}})
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        support.require_base_of(spec, kpi)
+        vs = spec.params.get("vs")
+        if vs:
+            known = {b.name for b in kpi.base_measures} | {m.key for m in kpi.measures}
+            if vs not in known:
+                raise BindError(f"measures.{spec.key} vs={vs!r} is not a measure or base.")
+
+    def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
+        return tuple(n for n in (spec.of, spec.params.get("vs")) if n)
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        deeper = seen | {spec.key}
+        child = 0
+        if spec.of and spec.of in by_key:
+            child = lookback_for(by_key[spec.of], by_key, time, anchor=anchor, seen=deeper)
+        vs = spec.params.get("vs")
+        if vs and vs in by_key:
+            child = max(
+                child,
+                lookback_for(by_key[vs], by_key, time, anchor=anchor, seen=deeper),
+            )
+        return child
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        num = ctx.evaluate(
+            ctx.catalog.get(ctx.spec.of or "")
+            or OutputSpec(key=ctx.spec.of or ctx.spec.key, kind="point", of=ctx.spec.of)
+        )
+        vs = ctx.spec.params.get("vs")
+        if vs:
+            den = ctx.evaluate(
+                ctx.catalog.get(vs) or OutputSpec(key=str(vs), kind="point", of=str(vs))
+            )
+        else:
+            den = ctx.spec.params.get("n") or ctx.spec.trailing_months or 1
+        if num is None or den in (None, 0):
+            value = None
+        else:
+            value = float(num) / float(den)
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="rate",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"numerator": num, "denominator": den},
+        )
+        return value
+
+
+class CumulativePoint(Window):
+    """Running aggregate from period-to-date start through the anchor."""
+
+    name = "cumulative_point"
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        return OutputSpec(**{**spec.__dict__, "window_range": spec.window_range or "cumulative"})
+
+
+class NPeriodAvg(Window):
+    """Mean of per-period values over the trailing window."""
+
+    name = "n_period_avg"
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        super().validate(spec, kpi)
+        if spec.trailing_months is None and not spec.trailing_from:
+            raise BindError(
+                f"measures.{spec.key} op=n_period_avg requires trailing: (the length)."
+            )
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        if ctx.kpi.time is None or ctx.plan is None:
+            raise CatalogError(f"{ctx.spec.key} is n_period_avg; this KPI has no time column.")
+        sel = support.effective_selection(ctx)
+        if not sel:
+            return None
+        start, end = support.window_bounds(sel[-1], ctx.spec, ctx.kpi)
+        from kpi_engine.dates import period_range_inclusive
+
+        values: list[float] = []
+        for period in period_range_inclusive(start, end, ctx.kpi.time):
+            item = support.point_value(ctx.series, ctx.kpi, ctx.spec.of, period)
+            if item is not None:
+                values.append(float(item))
+        value = sum(values) / len(values) if values else None
+        support.log_base_calc(
+            ctx.spec, ctx.cut, _combo(ctx), value, ctx.series, ctx.kpi, start=start, end=end
+        )
+        return value
+
+
+class WeightedWindow(Window):
+    """Trailing window weighted by another base (period of × period weight)."""
+
+    name = "weighted_window"
+    extra_keys = frozenset({"align", "weight"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        weight = common.raw.get("weight")
+        if not weight:
+            raise BindError(f"measures.{key} op=weighted_window requires weight: a base measure.")
+        return OutputSpec(
+            **{**spec.__dict__, "params": {**spec.params, "weight": str(weight)}}
+        )
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        super().validate(spec, kpi)
+        weight = spec.params.get("weight")
+        known = {b.name for b in kpi.base_measures}
+        if weight not in known:
+            raise BindError(
+                f"measures.{spec.key} weight={weight!r} is not a base measure."
+            )
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        if ctx.kpi.time is None or ctx.plan is None:
+            raise CatalogError(
+                f"{ctx.spec.key} is a weighted_window measure; this KPI has no time column."
+            )
+        sel = support.effective_selection(ctx)
+        if not sel:
+            return None
+        start, end = support.window_bounds(sel[-1], ctx.spec, ctx.kpi)
+        from kpi_engine.dates import period_range_inclusive
+
+        weight_name = str(ctx.spec.params.get("weight"))
+        num = 0.0
+        den = 0.0
+        any_row = False
+        for period in period_range_inclusive(start, end, ctx.kpi.time):
+            of_val = support.point_value(ctx.series, ctx.kpi, ctx.spec.of, period)
+            w_val = support.point_value(ctx.series, ctx.kpi, weight_name, period)
+            if of_val is None or w_val in (None, 0):
+                continue
+            any_row = True
+            num += float(of_val) * float(w_val)
+            den += float(w_val)
+        value = (num / den) if any_row and den else None
+        support.log_base_calc(
+            ctx.spec, ctx.cut, _combo(ctx), value, ctx.series, ctx.kpi, start=start, end=end
+        )
+        return value
+
+
+class SnapshotCompare(OpPlugin):
+    """Compare two current scalars (diff or pct). No offset required."""
+
+    name = "snapshot_compare"
+    extra_keys = frozenset({"vs", "mode"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        raw = dict(common.raw)
+        vs = str(raw["vs"]).strip() if raw.get("vs") else (
+            spec.operands[1] if len(spec.operands) > 1 else None
+        )
+        of = spec.of or (spec.operands[0] if spec.operands else None)
+        mode = str(raw.get("mode") or "pct").strip().lower()
+        if mode not in {"pct", "diff", "pct_change"}:
+            raise BindError(
+                f"measures.{key} op=snapshot_compare mode must be pct or diff."
+            )
+        return OutputSpec(
+            **{
+                **spec.__dict__,
+                "of": of,
+                "params": {**spec.params, "vs": vs, "mode": mode},
+            }
+        )
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        support.require_measure_or_base_of(spec, kpi)
+        vs = spec.params.get("vs")
+        if not vs:
+            raise BindError(f"measures.{spec.key} op=snapshot_compare requires vs: (or of: [a, b]).")
+        known = {b.name for b in kpi.base_measures} | {m.key for m in kpi.measures}
+        if vs not in known:
+            raise BindError(f"measures.{spec.key} vs={vs!r} is not a measure or base.")
+
+    def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
+        return tuple(n for n in (spec.of, spec.params.get("vs")) if n)
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        deeper = seen | {spec.key}
+        return max(
+            (
+                lookback_for(by_key[n], by_key, time, anchor=anchor, seen=deeper)
+                for n in self.dependencies(spec)
+                if n in by_key
+            ),
+            default=0,
+        )
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        left = ctx.evaluate(
+            ctx.catalog.get(ctx.spec.of or "")
+            or OutputSpec(key=ctx.spec.of or ctx.spec.key, kind="point", of=ctx.spec.of)
+        )
+        vs = str(ctx.spec.params.get("vs"))
+        right = ctx.evaluate(
+            ctx.catalog.get(vs) or OutputSpec(key=vs, kind="point", of=vs)
+        )
+        mode = ctx.spec.params.get("mode") or "pct"
+        if left is None or right is None:
+            value = None
+        elif mode == "diff":
+            value = float(left) - float(right)
+        elif right == 0:
+            value = None
+        else:
+            value = float(left - right) / float(right)
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op="snapshot_compare",
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"left": left, "right": right},
+        )
+        return value
+
+
+class Band(OpPlugin):
+    """Factor or offset band around `of:`; bind clones `_low` / `_high` keys."""
+
+    name = "band"
+    extra_keys = frozenset({"low", "high", "emit", "method", "side", "vs"})
+    shiftable = True
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        raw = dict(common.raw)
+        method = str(raw.get("method") or "factor").strip().lower()
+        if method not in {"factor", "offset"}:
+            raise BindError(
+                f"measures.{key} op={self.name} method: must be factor or offset."
+            )
+        low, high = raw.get("low"), raw.get("high")
+        if low is None or high is None:
+            raise BindError(
+                f"measures.{key} op={self.name} requires numeric low: and high:."
+            )
+        try:
+            low_n, high_n = float(low), float(high)
+        except (TypeError, ValueError) as exc:
+            raise BindError(
+                f"measures.{key} op={self.name} low:/high: must be numbers."
+            ) from exc
+        side = str(raw["side"]).strip().lower() if raw.get("side") else None
+        emit = raw.get("emit")
+        return OutputSpec(
+            **{
+                **spec.__dict__,
+                "params": {
+                    **spec.params,
+                    "method": method,
+                    "low": low_n,
+                    "high": high_n,
+                    **({"side": side} if side else {}),
+                    **({"emit": emit} if emit is not None else {}),
+                    **({"vs": str(raw["vs"])} if raw.get("vs") else {}),
+                },
+            }
+        )
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        support.require_measure_or_base_of(spec, kpi)
+        vs = spec.params.get("vs")
+        if vs:
+            known = {b.name for b in kpi.base_measures} | {m.key for m in kpi.measures}
+            if vs not in known:
+                raise BindError(
+                    f"measures.{spec.key} vs={vs!r} is not a measure or base."
+                )
+
+    def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
+        return tuple(n for n in (spec.of, spec.params.get("vs")) if n)
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        deeper = seen | {spec.key}
+        return max(
+            (
+                lookback_for(by_key[n], by_key, time, anchor=anchor, seen=deeper)
+                for n in self.dependencies(spec)
+                if n in by_key
+            ),
+            default=0,
+        )
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        centre = ctx.evaluate(
+            ctx.catalog.get(ctx.spec.of or "")
+            or OutputSpec(key=ctx.spec.of or ctx.spec.key, kind="point", of=ctx.spec.of)
+        )
+        side = ctx.spec.params.get("side") or "low"
+        method = ctx.spec.params.get("method") or "factor"
+        bound = ctx.spec.params.get("low") if side == "low" else ctx.spec.params.get("high")
+        if centre is None or bound is None:
+            value = None
+        elif method == "offset":
+            value = float(centre) + float(bound)
+        else:
+            value = float(centre) * float(bound)
+        log_measure_calc(
+            cut=ctx.cut,
+            key=ctx.spec.key,
+            op=self.name,
+            combo=_combo(ctx),
+            result=value,
+            of=ctx.spec.of,
+            inputs={"centre": centre, "side": side},
+        )
+        return value
+
+    def periods(self, spec, kpi, plan):
+        return support.current_period_meta(kpi, plan)
+
+
+class Envelope(Band):
+    name = "envelope"

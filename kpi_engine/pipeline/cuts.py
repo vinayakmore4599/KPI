@@ -21,7 +21,7 @@ When to use
 
 from __future__ import annotations
 
-from kpi_engine.contracts import BaseMeasure, CutSpec, KpiSpec
+from kpi_engine.contracts import BaseMeasure, CutSpec, KpiSpec, extra_retrieve_columns
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import norm_name
 from kpi_engine.runlog import traced
@@ -29,12 +29,16 @@ from kpi_engine.runlog import traced
 
 @traced
 def emitted_cuts(kpi: KpiSpec) -> tuple[CutSpec, ...]:
-    """Walk default_cut (or locked output_cut) and also_emit."""
-    root = kpi.locked_cut or kpi.default_cut
-    return emitted_cuts_from(kpi, (root,))
+    """Walk default_cut (or locked output_cut) and also_emit.
+
+    Honors ``only_cut`` / ``emit_cuts`` when stamped on the KPI.
+    """
+    return plan_emitted_cuts(kpi, tuple(m.key for m in kpi.measures))
 
 
-def emitted_cuts_from(kpi: KpiSpec, roots: tuple[str, ...]) -> tuple[CutSpec, ...]:
+def emitted_cuts_from(
+    kpi: KpiSpec, roots: tuple[str, ...], *, walk_also: bool = True
+) -> tuple[CutSpec, ...]:
     """Walk these cut names and also_emit. Used per extract pipeline.
 
     A cut with pack_also_emit false is emitted without walking its also_emit.
@@ -51,7 +55,7 @@ def emitted_cuts_from(kpi: KpiSpec, roots: tuple[str, ...]) -> tuple[CutSpec, ..
         if cut is None:
             raise BindError(f"Unknown cut {name!r}. Declared: {sorted(by_name)}.")
         names.append(name)
-        if not cut.pack_also_emit:
+        if not walk_also or not cut.pack_also_emit:
             return
         for extra in cut.also_emit:
             walk(extra)
@@ -59,6 +63,35 @@ def emitted_cuts_from(kpi: KpiSpec, roots: tuple[str, ...]) -> tuple[CutSpec, ..
     for root in roots:
         walk(str(root))
     return tuple(by_name[n] for n in names)
+
+
+def plan_emitted_cuts(kpi: KpiSpec, keys: tuple[str, ...]) -> tuple[CutSpec, ...]:
+    """Locked precedence: only_cut > emit_cuts ∩ walk > locked_cut > default_cut > also_emit."""
+    if kpi.only_cut is not None:
+        return emitted_cuts_from(kpi, (kpi.only_cut,), walk_also=False)
+
+    if kpi.locked_cut is not None:
+        walked = emitted_cuts_from(kpi, (kpi.locked_cut,))
+    else:
+        by_key = {m.key: m for m in kpi.measures}
+        roots: list[str] = []
+        for key in keys:
+            spec = by_key.get(key)
+            named = spec.cuts if spec is not None and spec.cuts is not None else (kpi.default_cut,)
+            roots.extend(str(name) for name in named)
+        if not roots:
+            roots = [kpi.default_cut]
+        walked = emitted_cuts_from(kpi, tuple(dict.fromkeys(roots)))
+
+    if kpi.emit_cuts:
+        allow = set(kpi.emit_cuts)
+        walked = tuple(cut for cut in walked if cut.name in allow)
+        if not walked:
+            raise BindError(
+                f"parameters.emit_cuts {list(kpi.emit_cuts)} does not intersect "
+                "the walked cuts for this request."
+            )
+    return walked
 
 
 def effective_group_by(cut: CutSpec, kpi: KpiSpec | None) -> tuple[str, ...]:
@@ -140,10 +173,8 @@ def extract_grain(
         for name in effective_group_by(cut, kpi):
             add(rename.get(name, name))
     for base in bases:
-        if base.where is not None:
-            add(base.where.column)
-        for extra_where in base.also_where:
-            add(extra_where.column)
+        for col in extra_retrieve_columns(base):
+            add(col)
     for name in extra:
         add(rename.get(name, name))
     return tuple(names)

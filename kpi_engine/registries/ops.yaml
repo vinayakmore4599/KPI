@@ -503,3 +503,290 @@ filtered_compare:
       mode: yoy
   module: kpi_engine.capabilities.ops.combo
   attr: FilteredCompare
+
+expanding_window:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Aggregate from span start (or year start) through the anchor.
+  example: |
+    ytd_expanding:
+      op: expanding_window
+      of: sotif_value
+  module: kpi_engine.capabilities.ops.combo
+  attr: ExpandingWindow
+
+shifted_trend:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Trend series shifted by offset.
+  example: |
+    trend_ly:
+      op: shifted_trend
+      of: sotif_value
+      trailing: { months: 12 }
+      offset: { years: 1 }
+      cuts: [G]
+  module: kpi_engine.capabilities.ops.combo
+  attr: ShiftedTrend
+
+rate:
+  role: addon
+  enabled: true
+  aliases: []
+  description: of / vs, or of / n.
+  example: |
+    per_period:
+      op: rate
+      of: sotif_value
+      n: 3
+  module: kpi_engine.capabilities.ops.combo
+  attr: Rate
+
+cumulative_point:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Period-to-date (cumulative) aggregate of a base at the anchor.
+  example: |
+    ytd:
+      op: cumulative_point
+      of: sotif_value
+  module: kpi_engine.capabilities.ops.combo
+  attr: CumulativePoint
+
+n_period_avg:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Mean of per-period values over trailing N.
+  example: |
+    avg_3m:
+      op: n_period_avg
+      of: sotif_value
+      trailing: { months: 3 }
+  module: kpi_engine.capabilities.ops.combo
+  attr: NPeriodAvg
+
+weighted_window:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Trailing window weighted by another base measure.
+  example: |
+    wavg_3m:
+      op: weighted_window
+      of: sotif_value
+      weight: sotif_value
+      trailing: { months: 3 }
+  module: kpi_engine.capabilities.ops.combo
+  attr: WeightedWindow
+
+snapshot_compare:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Compare two current scalars (pct or diff) without an offset.
+  example: |
+    vs_target:
+      op: snapshot_compare
+      of: current_value
+      vs: value_3m
+      mode: pct
+  module: kpi_engine.capabilities.ops.combo
+  attr: SnapshotCompare
+
+bottom_n:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1 if the group is in the bottom n of of on the cut.
+  example: |
+    worst:
+      op: bottom_n
+      of: current_value
+      n: 1
+      cuts: [G]
+  module: kpi_engine.capabilities.ops.cut
+  attr: BottomN
+
+rank_pct_change:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Rank groups by period percent change of of.
+  example: |
+    movers:
+      op: rank_pct_change
+      of: current_value
+      offset: { years: 1 }
+      cuts: [G]
+  module: kpi_engine.capabilities.ops.cut
+  attr: RankPctChange
+
+concentration:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Herfindahl-Hirschman index of of shares on the cut.
+  example: |
+    hhi:
+      op: concentration
+      of: current_value
+      cuts: [G]
+  module: kpi_engine.capabilities.ops.cut
+  attr: Concentration
+
+abc_class:
+  role: addon
+  enabled: true
+  aliases: []
+  description: String A/B/C class from cumulative share (default 80/95).
+  example: |
+    cls:
+      op: abc_class
+      of: current_value
+      cuts: [G]
+  module: kpi_engine.capabilities.ops.cut
+  attr: AbcClass
+
+pareto_flag:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1 if the group is inside the leading cumulative-share band.
+  example: |
+    top80:
+      op: pareto_flag
+      of: current_value
+      share: 80
+      cuts: [G]
+  module: kpi_engine.capabilities.ops.cut
+  attr: ParetoFlag
+
+normalize:
+  role: addon
+  enabled: true
+  aliases: []
+  description: of / max(of) or of / sum(of) on the cut.
+  example: |
+    scaled:
+      op: normalize
+      of: current_value
+      method: max
+      cuts: [G]
+  module: kpi_engine.capabilities.ops.cut
+  attr: Normalize
+
+annualize:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Scale of to a year using periods_per_year / n.
+  example: |
+    annual:
+      op: annualize
+      of: current_value
+      n: 1
+  module: kpi_engine.capabilities.ops.period
+  attr: Annualize
+
+vs_prior_window:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Trailing window vs the same window shifted by offset.
+  example: |
+    win_yoy:
+      op: vs_prior_window
+      of: sotif_value
+      trailing: { months: 3 }
+      offset: { years: 1 }
+  module: kpi_engine.capabilities.ops.period
+  attr: VsPriorWindow
+
+delta_contribution:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Current minus lagged of (or minus vs).
+  example: |
+    delta:
+      op: delta_contribution
+      of: current_value
+      offset: { years: 1 }
+  module: kpi_engine.capabilities.ops.period
+  attr: DeltaContribution
+
+baseline_index:
+  role: addon
+  enabled: true
+  aliases: []
+  description: of / vs × 100. vs may be a measure or lagged of.
+  example: |
+    idx:
+      op: baseline_index
+      of: current_value
+      offset: { years: 1 }
+  module: kpi_engine.capabilities.ops.period
+  attr: BaselineIndex
+
+band:
+  role: addon
+  enabled: true
+  aliases: []
+  description: >
+    Factor or offset band around of. Bind expands to {key}_low and {key}_high
+    unless emit: names a single side.
+  example: |
+    value_band:
+      op: band
+      of: current_value
+      method: factor
+      low: 0.8
+      high: 1.2
+  module: kpi_engine.capabilities.ops.combo
+  attr: Band
+
+envelope:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Alias of band — dual keys {key}_low / {key}_high.
+  example: |
+    value_env:
+      op: envelope
+      of: current_value
+      low: 0.9
+      high: 1.1
+  module: kpi_engine.capabilities.ops.combo
+  attr: Envelope
+
+compound_growth:
+  role: addon
+  enabled: true
+  aliases: []
+  description: >
+    (end/start)^(1/n) − 1 over a fixed N periods. Use hook:cagr for a trailing
+    observed series (mutually exclusive shapes — pick one).
+  example: |
+    growth_12:
+      op: compound_growth
+      of: sotif_value
+      n: 12
+  module: kpi_engine.capabilities.ops.period
+  attr: CompoundGrowth
+
+seasonal_adjust:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Deseasonalize current × overall mean / same-month mean in the trailing window.
+  example: |
+    adj:
+      op: seasonal_adjust
+      of: sotif_value
+      trailing: { months: 36 }
+  module: kpi_engine.capabilities.ops.period
+  attr: SeasonalAdjust

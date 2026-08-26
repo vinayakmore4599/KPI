@@ -1,0 +1,53 @@
+# Gold pattern: from_cut scalar reuse + versus_cut share (Phase 2).
+#
+kpi_id: 90002
+version: 1
+model: sotif
+
+time:
+  column: event_month
+  grain: month
+  filter_code: reporting_month
+  calendar: gregorian
+
+dimensions:
+  - { name: reason_code, from: reason_code }
+  - { name: region, from: region }
+  - { name: supplier, from: supplier_name }
+
+default_dimensions: [reason_code]
+
+base_measures:
+  sotif_value:
+    sql: amount
+    agg: sum
+
+cuts:
+  - name: G
+    group_by: []
+    exclude_from_grain: [region]
+    ignore_filters: [region]
+    also_emit: [R]
+  - name: R
+    group_by: [region]
+    ignore_filters: []
+
+default_cut: G
+row_set: span_union
+
+measures:
+  reason_code:
+    kind: dimension
+  current_value:
+    of: sotif_value
+    op: point
+  g_value:
+    of: sotif_value
+    op: point
+    from_cut: G
+    cuts: [R]
+  share_vs_g:
+    of: current_value
+    op: percent_of_total
+    versus_cut: G
+    cuts: [R]

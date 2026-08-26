@@ -36,7 +36,9 @@ from typing import Any
 import yaml
 
 from kpi_engine.contracts import (
+    ALLOWED_AGGS,
     GRAIN_NAMES,
+    MASK_MAX_DEPTH,
     PERIOD_PART_NAMES,
     OVER_FNS,
     AdaptedRequest,
@@ -60,6 +62,7 @@ from kpi_engine.contracts import (
     ParameterSpec,
     PhysicalSource,
     TimeSpec,
+    where_fingerprint,
 )
 from kpi_engine.exceptions import BindError
 from kpi_engine.identifiers import (
@@ -80,7 +83,13 @@ from kpi_engine.pipeline.fn_apply import (
     column_op_error,
 )
 from kpi_engine.pipeline.compose import parse_compose_block
-from kpi_engine.pipeline.filter_ops import FILTER_ARITY, assert_filter_arity, canonicalize_op
+from kpi_engine.pipeline.filter_ops import (
+    FILTER_ARITY,
+    REGEXP_OPS,
+    assert_filter_arity,
+    assert_regexp_pattern,
+    canonicalize_op,
+)
 from kpi_engine.pipeline.loader import ensure_loaded
 from kpi_engine.pipeline.op_protocol import CommonMeasureFields
 from kpi_engine.pipeline.op_registry import get_op, require_op
@@ -225,6 +234,28 @@ def load_kpi(
             load_model=lambda mid: load_model(mid, root),
             check_columns=assert_pack_columns,
         )
+    return kpi
+
+
+def bind_request(kpi: KpiSpec, request: AdaptedRequest | None = None) -> KpiSpec:
+    """Overlay effective time grain, then desugar compare so lookback sees offsets.
+
+    ``load_kpi`` keeps ``op: compare`` as sugar. ``compute`` and ``validate`` call this
+    after parameter overlay so ``mom`` / ``wow`` / ``qoq`` check the request grain.
+    """
+    del request
+    from kpi_engine.pipeline.parameters import declared_time_grain
+    from kpi_engine.pipeline.time_planner import apply_request_time
+
+    kpi = apply_request_time(kpi, declared_time_grain(kpi))
+    measures = _desugar_compare(kpi.measures, time=kpi.time)
+    _assert_no_sugar_kinds_remain(measures)
+    kpi = replace(kpi, measures=measures)
+    for spec in kpi.measures:
+        get_op(spec.kind).validate(spec, kpi)
+    _assert_from_cut_grains(kpi)
+    if kpi.time is None:
+        _assert_snapshot_measures(kpi.measures)
     return kpi
 
 
@@ -464,10 +495,18 @@ def resolve_requested_graph(
     keys = list(requested)
     if requested and kpi.green_when is not None:
         keys.append(kpi.green_when.of)
-    if requested and kpi.having is not None:
+    if requested:
         from kpi_engine.pipeline.predicates import predicate_names
 
-        keys.extend(predicate_names(kpi.having.predicates))
+        if kpi.having is not None:
+            keys.extend(predicate_names(kpi.having.predicates))
+        by_measure = {m.key: m for m in kpi.measures}
+        extra: list[str] = []
+        for key in list(keys):
+            spec = by_measure.get(key)
+            if spec is not None and spec.having is not None:
+                extra.extend(predicate_names(spec.having.predicates))
+        keys.extend(extra)
     emit = tuple(dict.fromkeys(fold_measure_keys(kpi, tuple(keys))))
     by_key = {m.key: m for m in kpi.measures}
     by_base = {b.name: b for b in kpi.base_measures}
@@ -559,6 +598,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
     )
     if not measures:
         raise BindError("measures cannot be empty.")
+    measures = _expand_emit_clones(measures)
     clash = sorted(param_names & {m.key for m in measures})
     if clash:
         raise BindError(
@@ -567,12 +607,18 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         )
     default_model = str(raw.get("model") or "") or None
     measures, bases = _desugar_filtered(measures, bases, default_model=default_model)
-    measures = _desugar_compare(measures, time=time)
-    _assert_no_sugar_kinds_remain(measures)
+    leftover = [spec.key for spec in measures if spec.kind in _FILTERED_KINDS]
+    if leftover:
+        raise BindError(f"internal desugar left sugar kinds on {leftover}.")
     _assert_base_pipeline(tuple(bases), default_model=default_model)
     measures, bases = _rewrite_measure_filters(
         measures, bases, cuts, filter_specs, dimensions
     )
+    by_cut_defaults = _parse_default_measures_by_cut(
+        raw.get("default_measures_by_cut"), cuts, measures
+    )
+    measures = _apply_default_measures_by_cut(measures, by_cut_defaults)
+    _assert_cut_rollups(cuts)
     _assert_measure_graph(measures, tuple(bases), dimensions)
     if time is None:
         _assert_snapshot_measures(measures)
@@ -618,7 +664,11 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
         default_dimensions=default_dimensions,
         request_grain=default_dimensions,
         identity_grain=identity_grain,
+        omit_null_rows=bool(raw.get("omit_null_rows")),
+        default_measures_by_cut=by_cut_defaults,
         having=having,
+        sort=_parse_sort(raw.get("sort"), measures, dimensions),
+        max_rows=_parse_max_rows(raw.get("max_rows")),
     )
     for spec in kpi.measures:
         if spec.trailing_from == "data_points" and data_points is None:
@@ -626,6 +676,7 @@ def _parse_kpi(raw: dict[str, Any], expected_id: int | str) -> KpiSpec:
                 f"measures.{spec.key} trailing.from: data_points needs a top-level data_points:."
             )
         get_op(spec.kind).validate(spec, kpi)
+    _assert_from_cut_grains(kpi)
     from kpi_engine.capabilities.ops.support import assert_last_n_consumers
 
     assert_last_n_consumers(kpi)
@@ -955,22 +1006,7 @@ def _parse_base_measure(
             agg = spec.get("agg") or "sum"
     else:
         agg = spec.get("agg")
-    allowed = {
-        "sum",
-        "avg",
-        "count",
-        "min",
-        "max",
-        "count_distinct",
-        "median",
-        "percentile",
-        "first",
-        "last",
-        "stddev",
-        "variance",
-        "mode",
-    }
-    if agg is not None and agg not in allowed:
+    if agg is not None and agg not in ALLOWED_AGGS:
         raise BindError(f"Unknown agg {agg!r} on {name}.")
     percentile = spec.get("percentile")
     pvalue = None
@@ -982,7 +1018,22 @@ def _parse_base_measure(
             raise BindError(f"base_measures.{name}.percentile must be in 0-1 or 0-100.")
     if agg == "percentile" and pvalue is None:
         raise BindError(f"base_measures.{name} agg=percentile requires percentile:.")
-    where = _parse_where(name, spec.get("where"))
+    where, also = _flatten_and_where(
+        _parse_where(name, spec.get("where")),
+        _parse_also_where(name, spec.get("also_where")),
+    )
+    weight_raw = spec.get("weight_column")
+    weight_column = None
+    if agg == "weighted_avg":
+        if not weight_raw:
+            raise BindError(
+                f"base_measures.{name} agg=weighted_avg requires weight_column:."
+            )
+        weight_column = require_ident(str(weight_raw), what="weight_column")
+    elif weight_raw:
+        raise BindError(
+            f"base_measures.{name} weight_column: is only valid with agg=weighted_avg."
+        )
     model_id = spec.get("model")
     measure = BaseMeasure(
         name=require_ident(str(name), what="base measure"),
@@ -999,6 +1050,8 @@ def _parse_base_measure(
         over=over,
         replace=replace_col,
         agg_ok=agg_ok,
+        also_where=also,
+        weight_column=weight_column,
     )
     from kpi_engine.pipeline.row_pipeline import assert_window_agg
 
@@ -1011,7 +1064,20 @@ def _parse_lookup(name: str, raw: Any) -> LookupSpec | None:
         return None
     if not isinstance(raw, dict):
         raise BindError(f"base_measures.{name}.lookup must be an object.")
-    column = require_ident(str(raw.get("column") or ""), what="lookup.column")
+    keys = _parse_name_list(raw.get("keys"), f"base_measures.{name}.lookup.keys")
+    column_raw = raw.get("column")
+    if keys:
+        column = keys[0]
+    elif column_raw:
+        column = require_ident(str(column_raw), what="lookup.column")
+    else:
+        raise BindError(
+            f"base_measures.{name}.lookup needs column: or keys:."
+        )
+    if keys and column_raw:
+        raise BindError(
+            f"base_measures.{name}.lookup cannot set both column: and keys:."
+        )
     mapping_raw = raw.get("map")
     if not isinstance(mapping_raw, dict) or not mapping_raw:
         raise BindError(f"base_measures.{name}.lookup needs a non-empty map:.")
@@ -1022,7 +1088,29 @@ def _parse_lookup(name: str, raw: Any) -> LookupSpec | None:
         raise BindError(
             f"base_measures.{name}.lookup cannot set both strict: true and default:."
         )
-    return LookupSpec(column=column, mapping=mapping, default=default, strict=strict)
+    valid_from = (
+        require_ident(str(raw["valid_from"]), what="lookup.valid_from")
+        if raw.get("valid_from")
+        else None
+    )
+    valid_to = (
+        require_ident(str(raw["valid_to"]), what="lookup.valid_to")
+        if raw.get("valid_to")
+        else None
+    )
+    as_of = str(raw["as_of"]).strip() if raw.get("as_of") else None
+    if as_of and as_of != "anchor":
+        as_of = require_ident(as_of, what="lookup.as_of")
+    return LookupSpec(
+        column=column,
+        mapping=mapping,
+        default=default,
+        strict=strict,
+        keys=keys,
+        valid_from=valid_from,
+        valid_to=valid_to,
+        as_of=as_of,
+    )
 
 
 def _parse_over(name: str, raw: Any) -> OverSpec | None:
@@ -1120,7 +1208,11 @@ def _assert_base_pipeline(
 
 
 def _parse_having(
-    raw: Any, measures: tuple[OutputSpec, ...], dimensions: tuple[str, ...]
+    raw: Any,
+    measures: tuple[OutputSpec, ...],
+    dimensions: tuple[str, ...],
+    *,
+    check_measures: bool = True,
 ) -> HavingSpec | None:
     if raw is None:
         return None
@@ -1155,13 +1247,99 @@ def _parse_having(
     else:
         raise BindError("having must be a list of predicates or an object.")
     by_key = {m.key for m in measures}
-    for name in predicate_names(predicates):
-        if name not in by_key:
-            raise BindError(
-                f"having of={name!r} is not a measure key. Declared: {sorted(by_key)}."
-            )
-    assert_scalar_ofs(predicates, measures, what="having")
+    if check_measures:
+        for name in predicate_names(predicates):
+            if name not in by_key:
+                raise BindError(
+                    f"having of={name!r} is not a measure key. Declared: {sorted(by_key)}."
+                )
+        assert_scalar_ofs(predicates, measures, what="having")
     return HavingSpec(predicates=predicates, match=match, then_group_by=then_group_by)
+
+
+_DUAL_EMIT_KINDS = frozenset({"band", "envelope"})
+_DUAL_EMIT_HOOKS = frozenset({"forecast_confidence"})
+
+
+def _expand_emit_clones(measures: tuple[OutputSpec, ...]) -> tuple[OutputSpec, ...]:
+    """Clone band / envelope / forecast_confidence into `_low` / `_high` keys."""
+    out: list[OutputSpec] = []
+    seen = {spec.key for spec in measures}
+    for spec in measures:
+        dual = spec.kind in _DUAL_EMIT_KINDS or (
+            spec.kind == "hook" and spec.hook in _DUAL_EMIT_HOOKS
+        )
+        if not dual or spec.params.get("side"):
+            out.append(spec)
+            continue
+        emit = spec.params.get("emit") or ("low", "high")
+        if isinstance(emit, str):
+            emit = (emit,)
+        sides = [str(item).strip().lower() for item in emit]
+        unknown = [side for side in sides if side not in {"low", "high"}]
+        if unknown:
+            raise BindError(
+                f"measures.{spec.key} emit: must be low and/or high (got {unknown})."
+            )
+        if not sides:
+            raise BindError(f"measures.{spec.key} emit: cannot be empty.")
+        if len(sides) == 1:
+            out.append(replace(spec, params={**spec.params, "side": sides[0]}))
+            continue
+        for side in ("low", "high"):
+            if side not in sides:
+                continue
+            new_key = f"{spec.key}_{side}"
+            if new_key in seen:
+                raise BindError(
+                    f"measures.{new_key} collides with dual-key expand of {spec.key}."
+                )
+            out.append(
+                replace(spec, key=new_key, params={**spec.params, "side": side})
+            )
+            seen.add(new_key)
+    return tuple(out)
+
+
+def _parse_sort(
+    raw: Any, measures: tuple[OutputSpec, ...], dimensions: tuple[str, ...]
+) -> tuple[tuple[str, str], ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise BindError("sort: must be a list of { key, order } objects.")
+    known = {m.key for m in measures} | set(dimensions) | {"output_cut"}
+    out: list[tuple[str, str]] = []
+    for i, item in enumerate(raw):
+        if isinstance(item, str):
+            key, order = item, "asc"
+        elif isinstance(item, dict):
+            key = str(item.get("key") or "").strip()
+            order = str(item.get("order") or "asc").strip().lower()
+        else:
+            raise BindError(f"sort[{i}] must be a key string or {{ key, order }}.")
+        if not key:
+            raise BindError(f"sort[{i}] needs key:.")
+        if order not in {"asc", "desc"}:
+            raise BindError(f"sort[{i}].order must be asc or desc.")
+        if key not in known:
+            raise BindError(
+                f"sort key {key!r} is not a measure or dimension. Known: {sorted(known)}."
+            )
+        out.append((key, order))
+    return tuple(out)
+
+
+def _parse_max_rows(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise BindError("max_rows must be a positive integer.") from exc
+    if value < 1:
+        raise BindError("max_rows must be a positive integer.")
+    return value
 
 
 def _parse_column_args(name: str, raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -1203,10 +1381,15 @@ def _rewrite_measure_filters(
             raise BindError(
                 f"measures.{spec.key} versus_cut {spec.versus_cut!r} is not a declared cut."
             )
+        if spec.from_cut and spec.from_cut not in cut_names:
+            raise BindError(
+                f"measures.{spec.key} from_cut {spec.from_cut!r} is not a declared cut."
+            )
     _assert_versus_cut_acyclic(measures, cut_names)
     rewritten: list[OutputSpec] = []
     for spec in measures:
         extra_where = spec.where
+        extra_also = spec.also_where
         skip = spec.ignore_filters
         if skip:
             for code in skip:
@@ -1222,7 +1405,7 @@ def _rewrite_measure_filters(
                             f"measures.{spec.key}.ignore_filters names unknown "
                             f"filter {code!r}."
                         )
-        if extra_where is None and not skip:
+        if extra_where is None and not extra_also and not skip:
             rewritten.append(spec)
             continue
         of = spec.of
@@ -1247,6 +1430,8 @@ def _rewrite_measure_filters(
                 where = extra_where
             else:
                 also = also + (extra_where,)
+        if extra_also:
+            also = also + extra_also
         clone = replace(
             source,
             name=clone_name,
@@ -1280,7 +1465,7 @@ def _assert_versus_cut_acyclic(measures: tuple[OutputSpec, ...], cut_names: set[
         if state.get(node) == 1:
             cycle = trail[trail.index(node) :] + [node]
             raise BindError(
-                f"percent_of_total versus_cut cycle: {' -> '.join(cycle)}."
+                f"versus_cut cycle: {' -> '.join(cycle)}."
             )
         state[node] = 1
         trail.append(node)
@@ -1321,16 +1506,44 @@ def _mark_cut_derived(measures: tuple[OutputSpec, ...]) -> tuple[OutputSpec, ...
     )
 
 
-def _parse_where(name: str, raw: Any) -> MeasureWhere | None:
-    """Parse where: { column, op, values } for a Pandas mask."""
+def _parse_where(name: str, raw: Any, *, depth: int = 0) -> MeasureWhere | None:
+    """Parse a leaf or compound Pandas mask (max nesting depth 3)."""
     if raw is None:
         return None
     if not isinstance(raw, dict):
         raise BindError(f"base_measures.{name}.where must be an object.")
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise BindError(f"base_measures.{name}.where must be an object.")
+    if depth > MASK_MAX_DEPTH:
+        raise BindError(
+            f"base_measures.{name}.where nesting exceeds {MASK_MAX_DEPTH}."
+        )
+    compounds = [key for key in ("or", "and", "not") if key in raw]
+    if len(compounds) > 1:
+        raise BindError(
+            f"base_measures.{name}.where cannot mix {compounds} on the same node."
+        )
+    if compounds:
+        leftover = [key for key in raw if key != compounds[0]]
+        if leftover:
+            raise BindError(
+                f"base_measures.{name}.where {compounds[0]}: cannot mix with {leftover}."
+            )
+        kind = compounds[0]
+        if kind == "not":
+            child = _parse_where(name, raw["not"], depth=depth + 1)
+            if child is None:
+                raise BindError(f"base_measures.{name}.where not: needs a mask.")
+            return MeasureWhere(kind="not", children=(child,))
+        items = raw[kind]
+        if not isinstance(items, (list, tuple)) or not items:
+            raise BindError(
+                f"base_measures.{name}.where {kind}: must be a non-empty list."
+            )
+        children = tuple(_parse_where(name, item, depth=depth + 1) for item in items)
+        if any(child is None for child in children):
+            raise BindError(
+                f"base_measures.{name}.where {kind}: entries cannot be empty."
+            )
+        return MeasureWhere(kind=kind, children=children)  # type: ignore[arg-type]
     column = require_ident(str(raw.get("column") or ""), what="where.column")
     try:
         op = canonicalize_op(raw.get("op") or "in")
@@ -1338,20 +1551,63 @@ def _parse_where(name: str, raw: Any) -> MeasureWhere | None:
         op = str(raw.get("op") or "in").strip().lower()
     if op not in WHERE_OPS:
         raise BindError(f"base_measures.{name}.where.op must be {WHERE_OPS_HELP}.")
-    values_raw = raw.get("values")
-    if values_raw is None and "value" in raw:
-        if FILTER_ARITY.get(op) == 2:
+    expected = FILTER_ARITY.get(op)
+    if expected == 0:
+        if "value" in raw:
             raise BindError(
-                f"base_measures.{name}.where op={op} requires values: [lo, hi], not value:."
+                f"base_measures.{name}.where op={op} does not take value:."
             )
-        values_raw = [raw["value"]]
-    if values_raw is None:
-        raise BindError(f"base_measures.{name}.where needs values:.")
-    if not isinstance(values_raw, (list, tuple)):
-        values_raw = [values_raw]
-    values = tuple(values_raw)
+        values_raw = raw.get("values")
+        if values_raw is not None and not (
+            isinstance(values_raw, (list, tuple)) and len(values_raw) == 0
+        ):
+            raise BindError(
+                f"base_measures.{name}.where op={op} does not take values:."
+            )
+        values: tuple[Any, ...] = ()
+    else:
+        values_raw = raw.get("values")
+        if values_raw is None and "value" in raw:
+            if expected == 2:
+                raise BindError(
+                    f"base_measures.{name}.where op={op} requires values: [lo, hi], not value:."
+                )
+            values_raw = [raw["value"]]
+        if values_raw is None:
+            raise BindError(f"base_measures.{name}.where needs values:.")
+        if not isinstance(values_raw, (list, tuple)):
+            values_raw = [values_raw]
+        values = tuple(values_raw)
     assert_filter_arity(op, values, code=f"base_measures.{name}.where")
-    return MeasureWhere(column=column, op=op, values=values)
+    if op in REGEXP_OPS and values:
+        assert_regexp_pattern(values[0], code=f"base_measures.{name}.where")
+    return MeasureWhere(column=column, op=op, values=values, kind="leaf")
+
+
+def _parse_also_where(name: str, raw: Any) -> tuple[MeasureWhere, ...]:
+    """Parse ``also_where:`` as a list of masks."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise BindError(f"base_measures.{name}.also_where must be a list.")
+    out: list[MeasureWhere] = []
+    for item in raw:
+        parsed = _parse_where(name, item)
+        if parsed is None:
+            raise BindError(f"base_measures.{name}.also_where entries cannot be empty.")
+        out.append(parsed)
+    return tuple(out)
+
+
+def _flatten_and_where(
+    where: MeasureWhere | None, also: tuple[MeasureWhere, ...]
+) -> tuple[MeasureWhere | None, tuple[MeasureWhere, ...]]:
+    """``where: { and: [...] }`` is equivalent to ``where`` + ``also_where``."""
+    while where is not None and where.kind == "and":
+        kids = where.children
+        where = kids[0]
+        also = kids[1:] + also
+    return where, also
 
 
 def _parse_parameters(raw: Any) -> tuple[ParameterSpec, ...]:
@@ -1623,6 +1879,28 @@ def _assert_measure_graph(
 
     for spec in measures:
         walk(spec.key, [])
+    list_bases = {b.name for b in bases if b.agg in {"list_agg", "string_agg"}}
+    if list_bases:
+        for spec in measures:
+            of_names = [n for n in (spec.of, *spec.operands, *spec.inputs) if n]
+            hit = [n for n in of_names if n in list_bases]
+            if hit and spec.kind != "point":
+                raise BindError(
+                    f"measures.{spec.key} of={hit[0]!r} is list_agg/string_agg; "
+                    "only op: point may echo it (empty window is null)."
+                )
+    from kpi_engine.pipeline.predicates import assert_scalar_ofs, predicate_names
+
+    for spec in measures:
+        if spec.having is None:
+            continue
+        for name in predicate_names(spec.having.predicates):
+            if name not in by_key:
+                raise BindError(
+                    f"measures.{spec.key}.having of={name!r} is not a measure key. "
+                    f"Declared: {sorted(by_key)}."
+                )
+        assert_scalar_ofs(spec.having.predicates, measures, what=f"measures.{spec.key}.having")
 
 
 def _assert_snapshot_measures(measures: tuple[OutputSpec, ...]) -> None:
@@ -1670,6 +1948,20 @@ def _parse_filters(raw: Any) -> tuple[FilterApplySpec, ...]:
                 f"filters.{code}.optional: false is not supported. "
                 "All row filters are optional; omit the key or send [] to skip."
             )
+        required = bool(spec.get("required", False))
+        if required and "default" in spec:
+            raise BindError(
+                f"filters.{code} cannot set both required: true and default:."
+            )
+        default = None
+        if "default" in spec:
+            raw_default = spec.get("default")
+            if isinstance(raw_default, (list, tuple)):
+                default = tuple(raw_default)
+            elif raw_default is None:
+                default = ()
+            else:
+                default = (raw_default,)
         out.append(
             FilterApplySpec(
                 code=str(code),
@@ -1680,6 +1972,8 @@ def _parse_filters(raw: Any) -> tuple[FilterApplySpec, ...]:
                 compose_template=parse_compose_block(
                     spec.get("compose"), what=f"filters.{code}.compose"
                 ),
+                required=required,
+                default=default,
             )
         )
     return tuple(out)
@@ -1744,6 +2038,16 @@ def _parse_cut(raw: Any, dimensions: tuple[str, ...] = ()) -> CutSpec:
     group_by = _dim_list("group_by", "cut group_by")
     exclude = _dim_list("exclude_from_grain", "cut exclude_from_grain")
     ignore = tuple(str(x) for x in raw.get("ignore_filters") or [])
+    inherit = tuple(str(x) for x in raw.get("inherit_filters") or [])
+    reset = tuple(str(x) for x in raw.get("reset_filters") or [])
+    overlap = sorted(
+        {norm_name(x) for x in ignore} & {norm_name(x) for x in inherit}
+    )
+    if overlap:
+        raise BindError(
+            f"cuts.{name} lists {overlap[0]!r} in both inherit_filters and "
+            "ignore_filters."
+        )
     also = tuple(str(x) for x in raw.get("also_emit") or [])
     pack_also_emit = True
     if "pack_also_emit" in raw:
@@ -1759,7 +2063,136 @@ def _parse_cut(raw: Any, dimensions: tuple[str, ...] = ()) -> CutSpec:
         also_emit=also,
         exclude_from_grain=exclude,
         pack_also_emit=pack_also_emit,
+        inherit_filters=inherit,
+        reset_filters=reset,
+        rollup_from=str(raw["rollup_from"]).strip() if raw.get("rollup_from") else None,
+        rollup_dims=_dim_list("rollup_dims", "cut rollup_dims") if raw.get("rollup_dims") else (),
     )
+
+
+def _parse_default_measures_by_cut(
+    raw: Any, cuts: tuple[CutSpec, ...], measures: tuple[OutputSpec, ...]
+) -> dict[str, tuple[str, ...]]:
+    """Parse default_measures_by_cut: {cut: [measure keys]}."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise BindError(
+            "default_measures_by_cut must be an object mapping cut names to measure keys."
+        )
+    cut_names = {c.name for c in cuts}
+    measure_keys = {m.key for m in measures}
+    out: dict[str, tuple[str, ...]] = {}
+    for cut, keys in raw.items():
+        name = str(cut)
+        if name not in cut_names:
+            raise BindError(f"default_measures_by_cut.{name} is not a declared cut.")
+        if not isinstance(keys, (list, tuple)):
+            raise BindError(
+                f"default_measures_by_cut.{name} must be a list of measure keys."
+            )
+        parsed: list[str] = []
+        seen: set[str] = set()
+        for item in keys:
+            key = str(item)
+            if key not in measure_keys:
+                raise BindError(
+                    f"default_measures_by_cut.{name} names unknown measure {key!r}."
+                )
+            if key in seen:
+                continue
+            parsed.append(key)
+            seen.add(key)
+        out[name] = tuple(parsed)
+    return out
+
+
+def _apply_default_measures_by_cut(
+    measures: tuple[OutputSpec, ...], by_cut: Mapping[str, tuple[str, ...]]
+) -> tuple[OutputSpec, ...]:
+    """Fill measures.*.cuts from default_measures_by_cut when cuts: is omitted."""
+    listed: dict[str, list[str]] = {}
+    for cut, keys in by_cut.items():
+        for key in keys:
+            listed.setdefault(key, []).append(cut)
+    out: list[OutputSpec] = []
+    for spec in measures:
+        if spec.cuts is not None:
+            out.append(spec)
+            continue
+        names = listed.get(spec.key)
+        if not names:
+            out.append(spec)
+            continue
+        out.append(replace(spec, cuts=tuple(names)))
+    return tuple(out)
+
+
+def _assert_cut_rollups(cuts: tuple[CutSpec, ...]) -> None:
+    """rollup_from must name a declared cut and must not cycle."""
+    by_name = {c.name: c for c in cuts}
+    deps: dict[str, str] = {}
+    for cut in cuts:
+        if not cut.rollup_from:
+            continue
+        if cut.rollup_from not in by_name:
+            raise BindError(
+                f"cuts.{cut.name}.rollup_from {cut.rollup_from!r} is not a declared cut."
+            )
+        if cut.rollup_from == cut.name:
+            raise BindError(f"cuts.{cut.name}.rollup_from cannot name itself.")
+        deps[cut.name] = cut.rollup_from
+    state: dict[str, int] = {}
+
+    def walk(node: str, trail: list[str]) -> None:
+        if state.get(node) == 2:
+            return
+        if state.get(node) == 1:
+            cycle = trail[trail.index(node) :] + [node]
+            raise BindError(f"cuts rollup_from cycle: {' -> '.join(cycle)}.")
+        state[node] = 1
+        trail.append(node)
+        nxt = deps.get(node)
+        if nxt:
+            walk(nxt, trail)
+        trail.pop()
+        state[node] = 2
+
+    for name in deps:
+        walk(name, [])
+
+
+def _assert_from_cut_grains(kpi: KpiSpec) -> None:
+    """from_cut must be coarser or equal; scalar measures only."""
+    from kpi_engine.pipeline.cuts import effective_group_by
+    from kpi_engine.pipeline.op_registry import get_op
+
+    by_cut = {c.name: c for c in kpi.cuts}
+    time_col = kpi.time.column if kpi.time else ""
+    for spec in kpi.measures:
+        if not spec.from_cut:
+            continue
+        plugin = get_op(spec.kind)
+        if plugin.emits_trend or plugin.phase == "cut":
+            raise BindError(
+                f"measures.{spec.key} from_cut: is only valid on scalar combo measures, "
+                f"not op={spec.kind}."
+            )
+        src = by_cut[spec.from_cut]
+        src_dims = {
+            n for n in effective_group_by(src, kpi) if n != time_col
+        }
+        targets = spec.cuts if spec.cuts is not None else (kpi.default_cut,)
+        for name in targets:
+            dest = by_cut[name]
+            dest_dims = {
+                n for n in effective_group_by(dest, kpi) if n != time_col
+            }
+            if not src_dims.issubset(dest_dims):
+                raise BindError(
+                    f"measures.{spec.key} from_cut {spec.from_cut!r} is finer than "
+                    f"cut {name!r}; finer-to-coarser reuse is illegal."
+                )
 
 
 def _parse_relation(
@@ -1869,6 +2302,9 @@ def _parse_trailing(key: str, raw: Any) -> tuple[int | None, str | None, str | N
     return trailing, trailing_unit, trailing_from
 
 
+_VERSUS_CUT_KINDS = frozenset(
+    {"percent_of_total", "rank", "contribution", "bottom_n"}
+)
 _SUGAR_KINDS = frozenset(
     {
         "compare",
@@ -1899,21 +2335,7 @@ _COMPARE_GRAIN = {
     "qoq": "quarter",
 }
 _SUGAR_PARAM_KEYS = frozenset({"mode", "versus", "column", "agg", "percentile", "model"})
-_ALLOWED_AGGS = {
-    "sum",
-    "avg",
-    "count",
-    "min",
-    "max",
-    "count_distinct",
-    "median",
-    "percentile",
-    "first",
-    "last",
-    "stddev",
-    "variance",
-    "mode",
-}
+_ALLOWED_AGGS = ALLOWED_AGGS
 
 
 def _assert_not_reserved_ident(name: str, *, what: str) -> None:
@@ -1940,9 +2362,7 @@ def _clear_sugar_params(spec: OutputSpec, **keep: Any) -> dict[str, Any]:
 
 def _where_key(where: MeasureWhere | None) -> tuple[Any, ...] | None:
     """Canonical mask for synthetic-base dedupe."""
-    if where is None:
-        return None
-    return (where.column, where.op, where.values)
+    return where_fingerprint(where)
 
 
 def _assert_no_sugar_kinds_remain(measures: tuple[OutputSpec, ...]) -> None:
@@ -2036,7 +2456,14 @@ def _desugar_filtered(
                 )
             if agg != "percentile":
                 pvalue = None
-            dedupe_key = (ident, agg, _where_key(spec.where), default_model or "", pvalue)
+            dedupe_key = (
+                ident,
+                agg,
+                _where_key(spec.where),
+                tuple(_where_key(item) for item in spec.also_where),
+                default_model or "",
+                pvalue,
+            )
             base_name = shared.get(dedupe_key)
             if base_name is None:
                 base_name = f"__{spec.key}__base"
@@ -2051,6 +2478,7 @@ def _desugar_filtered(
                     model_id=default_model,
                     percentile=pvalue,
                     where=spec.where,
+                    also_where=spec.also_where,
                 )
                 bases.append(clone)
                 by_base[base_name] = clone
@@ -2061,6 +2489,7 @@ def _desugar_filtered(
                 of=base_name,
                 offset=offset,
                 where=None,
+                also_where=(),
                 params=params,
             )
         rewrites.append(
@@ -2215,7 +2644,10 @@ def _parse_measure(
             parameter_types=dict(param_types or {}),
         ),
     )
-    where = _parse_where(key, raw.get("where")) if raw.get("where") is not None else None
+    where, also_where = _flatten_and_where(
+        _parse_where(key, raw.get("where")) if raw.get("where") is not None else None,
+        _parse_also_where(key, raw.get("also_where")),
+    )
     ignore_raw = raw.get("ignore_filters")
     ignore_filters: tuple[str, ...] = ()
     if ignore_raw is not None:
@@ -2223,15 +2655,35 @@ def _parse_measure(
             raise BindError(f"measures.{key}.ignore_filters must be a list.")
         ignore_filters = tuple(str(c).strip() for c in ignore_raw if str(c).strip())
     versus_cut = str(raw["versus_cut"]).strip() if raw.get("versus_cut") else None
-    if versus_cut and spec.kind != "percent_of_total":
+    from_cut = str(raw["from_cut"]).strip() if raw.get("from_cut") else None
+    if versus_cut and spec.kind not in _VERSUS_CUT_KINDS:
         raise BindError(
-            f"measures.{key} versus_cut: is only valid on op: percent_of_total."
+            f"measures.{key} versus_cut: is only valid on share-like ops "
+            f"({sorted(_VERSUS_CUT_KINDS)}), not {spec.kind!r}."
+        )
+    if from_cut and versus_cut:
+        raise BindError(
+            f"measures.{key} cannot set both from_cut: and versus_cut:."
+        )
+    measure_having = None
+    if raw.get("having") is not None:
+        if isinstance(raw.get("having"), dict) and "then_group_by" in raw["having"]:
+            raise BindError(
+                f"measures.{key}.having cannot set then_group_by "
+                "(KPI-level having drops groups; measure having only nulls this key)."
+            )
+        measure_having = _parse_having(
+            raw.get("having"), (), (), check_measures=False
         )
     return replace(
         spec,
         where=where,
+        also_where=also_where,
         ignore_filters=ignore_filters,
         versus_cut=versus_cut or None,
+        from_cut=from_cut or None,
+        having=measure_having,
+        required=bool(raw.get("required")),
     )
 
 

@@ -237,8 +237,12 @@ There are **four** overlays (not one grammar). Do not add a fifth (`select:`, `u
 
 1. Reserved `parameters.time_grain` — pick from `time.grains` (feeds `apply_request_time`).
 2. Reserved `parameters.output_cut` — start the `also_emit` walk at that cut. A YAML `default` is **not** a lock (G still packs R). Sending the parameter on the context is. Set `cuts[].pack_also_emit: false` to emit only that root. 3004 does **not** declare this. Hosts that want one grain send `output_cut` on the request.
-3. `when:` on `model`, `measures.<key>`, or `base_measures.<name>` only.
-4. `from_param:` on an allowlist (see below). Never the YAML key `from` (that stays `trailing.from: data_points` / `dimension.from`).
+3. Reserved `parameters.only_cut` — emit that cut only (no `also_emit` walk).
+4. Reserved `parameters.emit_cuts` — allowlist; intersected with the walked cuts.
+5. `when:` on `model`, `measures.<key>`, or `base_measures.<name>` only.
+6. `from_param:` on an allowlist (see below). Never the YAML key `from` (that stays `trailing.from: data_points` / `dimension.from`).
+
+**Cut control precedence:** `only_cut` > `emit_cuts` ∩ walk > `locked_cut` root > `default_cut` > `also_emit`. `output_cut` remains a walk root, not a hard lock, unless `only_cut` is set.
 
 ### Request grain (`context.selected_dimensions`)
 
@@ -416,7 +420,11 @@ rebate_pct:
 
 Keys are compared after `str()` + strip. Unknown → `default` if set, else null. `strict: true` cannot combine with `default:`; any unknown key at eval is CatalogError. Mutually exclusive with `expr:` / `over:` / `sql:` / `columns:`+`op` on the same base.
 
-The `column:` named in `lookup:` must be in the **cut grain** for that lookup to see mixed keys. Fold with `agg: first` or `agg: max` (not an average of mapped numbers). Mixed keys in one group fall through to `default` / null. A G cut that nulls `region` does not look up a worldwide average — use `op: constant` + `by:` + `default:` for region targets (see §5.3a).
+**Composite keys.** `lookup.keys: [a, b]` (cannot also set `column:`). The map key is `a|b`.
+
+**Effective-dated lookup.** `valid_from` / `valid_to` (inclusive range). Default as-of is the **request anchor**. Override with `as_of: row_column` or `as_of: anchor`.
+
+The `column:` / `keys:` named in `lookup:` must be in the **cut grain** for that lookup to see mixed keys. Fold with `agg: first` or `agg: max` (not an average of mapped numbers). Mixed keys in one group fall through to `default` / null. A G cut that nulls `region` does not look up a worldwide average — use `op: constant` + `by:` + `default:` for region targets (see §5.3a).
 
 ### 4.2 `over:` — entity windows on pre-fold rows
 
@@ -455,6 +463,12 @@ Caps: `OVER_ROW_CAP` (500,000 detail rows) and `OVER_PARTITION_CAP` (50,000 dist
 | `stddev` | Pandas over raw rows | recomputing from rows | `null` (also `null` on a single row) |
 | `variance` | Pandas over raw rows | recomputing from rows | `null` (also `null` on a single row) |
 | `mode` | Pandas over raw rows | recomputing from rows | `null` (ties → smallest) |
+| `geomean` | Pandas over raw rows | recomputing from rows | `null` |
+| `harmonic_mean` | Pandas over raw rows | recomputing from rows | `null` |
+| `any` / `all` | Pandas over raw rows | recomputing from rows | `null` (empty / all-null); 0 = false, nonzero = true |
+| `weighted_avg` | Pandas `__wsum` / `__wcount` | adding both parts, then dividing | `null` (null/zero weight excluded) |
+| `list_agg` | Pandas over raw rows | recomputing from rows | `null` (empty). Cap 1000 items; overflow CatalogError. Only `op: point` may `of:` this base. |
+| `string_agg` | Pandas over raw rows | recomputing from rows | `null` (empty). Joined with `,`; cap 64KB; overflow CatalogError. Only `op: point`. |
 
 Three behaviours worth knowing before you pick an aggregation:
 
@@ -558,6 +572,8 @@ qtd_ly:
   op: window
   range: qtd
   offset: { years: 1 }     # same as point: offset is backwards
+  align: calendar          # default; `periods` counts grain steps instead of calendar units
+
 
 value_next_3m:
   of: sotif_value
@@ -740,6 +756,14 @@ having:
 
 `then_group_by` must be a subset of that cut’s **pre-having** effective grain (empty list = one worldwide survivor row). Survivors are identified by fine-grain keys → filter `cut_monthly` / `cut_detail` → re-collapse to `then_group_by` → re-run combo then cut ops. Do **not** sum already-computed avgs/margins.
 
+**Measure `having:`** (on one `measures:` key) uses the same predicate grammar but **does not drop the row**. A failing predicate nulls that measure only. KPI having still drops groups first. Measure having cannot set `then_group_by`.
+
+**Measure `required: true`.** If the value is null at response time, the engine adds a `notes` entry `required_measure_null` and sets `quality_flags.required_measure_null`. Not BindError (runtime data, not YAML).
+
+**`sort:` / `max_rows`.** Top-level. `sort: [{ key: current_value, order: desc }]`. `max_rows` trims after sort, before host pagination. `quality_flags` is a mutable dict on the response (`empty_result`, `required_measure_null`, `having_dropped`).
+
+**Trend pagination.** `output.trend_page` / `trend_page_size` slice **each trend measure array**. Shared `trend_axes` stay full length.
+
 HAVING sees the same combo scalars the client would have seen (post densify/`fill_zero`). Zero-filled sparse groups can fail `gt: 0`. `apply: result` stays dim-only and runs **after** having/rollup/cut ops.
 
 ### 5.3e `predicate` — 1/0 flag (does not drop)
@@ -854,7 +878,7 @@ See §10.3. The function must be listed in `registries/hooks.yaml`.
 
 `diff` and `pct_change` are **platform**. They evaluate the same `of:` at the current selection vs the selection shifted by `offset`. Prefer `op: compare` presets when authoring (bind-time sugar; §5.10) — those expand to these kinds. `lag` / `lead` / `index` / `diff` / `pct_change` may `of:` a base or a shiftable measure (`point`, `window`, `fn`, `expr`, …). They cannot shift `trend`, `hook`, `rank`, or a row helper (`agg` omitted).
 
-Cut-phase add-ons (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_share`, `running_total`, `running_avg`, `contribution`, `gap_to_leader`, `gap_to_avg`, `zscore`, `top_n`) and other period add-ons (`lag`, `lead`, `index`, `vs_target`, `threshold`) are allowlisted. YAML keys are kind-specific (`tiles`, `n`, `vs`, `cmp`, `offset`). Copy the example from [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). Do not invent a name that is not in the registry.
+Cut-phase add-ons (`ntile`, `dense_rank`, `row_number`, `percent_rank`, `cumulative_share`, `running_total`, `running_avg`, `contribution`, `gap_to_leader`, `gap_to_avg`, `zscore`, `top_n`, `bottom_n`, `rank_pct_change`, `concentration`, `abc_class`, `pareto_flag`, `normalize`) and other period/combo add-ons (`lag`, `lead`, `index`, `vs_target`, `threshold`, `expanding_window`, `shifted_trend`, `rate`, `cumulative_point`, `n_period_avg`, `weighted_window`, `snapshot_compare`, `annualize`, `vs_prior_window`, `delta_contribution`, `baseline_index`, `band`, `envelope`, `compound_growth`, `seasonal_adjust`) are allowlisted. `band` / `envelope` / `hook: forecast_confidence` expand to `{key}_low` / `{key}_high` unless `emit: low` or `emit: high`. `compound_growth` is a fixed N periods; `hook: cagr` is a trailing observed series — pick one. Copy the example from [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md). Do not invent a name that is not in the registry.
 
 ### 5.10 Bind-time sugar (`compare`, `filtered_*`) — expand-only
 
@@ -899,7 +923,7 @@ Do not combine a named preset with `versus:` (use `mode: pct_change` or `mode: d
 
 **Window compare.** `{ op: compare, of: value_3m, mode: yoy }` is the 3-month window vs the **same window one year earlier**, not a window of YoY. Unshiftable `of:` (`trend`, `rank`, `percent_of_total`) is BindError.
 
-**Filtered rules.** `where:` required; same ops as base `where:` (no `like`). `column:` xor `of:` a base with `agg:`. `agg:` only on the `column:` path (default `sum`). Optional `model:` on `filtered_*` is rejected. `ignore_filters:` stays on the measure. `cuts:` pass through (only trend/rank/`percent_of_total` honor them). Snapshot: `filtered_point` only.
+**Filtered rules.** `where:` required; same ops as base `where:` (including `like`, `regexp`, `or`/`and`/`not`). `column:` xor `of:` a base with `agg:`. `agg:` only on the `column:` path (default `sum`). Optional `model:` on `filtered_*` is rejected. `ignore_filters:` stays on the measure. `cuts:` pass through (only trend/rank/`percent_of_total` honor them). Snapshot: `filtered_point` only.
 
 Gold [3004.yaml](kpi_config/kpis/sotif/3004.yaml) stays two `point` + `growth_pct` because those keys are host-requested. Do not rewrite it to `compare`.
 
@@ -931,13 +955,20 @@ default_cut: G
 | `group_by` | Extra dimensions this cut always adds (must not overlap `default_dimensions`) |
 | `exclude_from_grain` | Request dims this cut drops. Dim-named `ignore_filters` must match this list both ways |
 | `ignore_filters` | Filter codes or column names this cut ignores |
+| `inherit_filters` | This cut must apply these codes (BindError if also in `ignore_filters`). Does not pull them into DuckDB if another emitted cut ignores them |
+| `reset_filters` | This cut skips these codes (unioned into ignore for this cut only) |
 | `also_emit` | Other cuts to return in the same response (chains are followed, cycles are safe) |
 | `pack_also_emit` | Default `true`. When `false`, a walk that starts at this cut does not follow `also_emit` |
+| `rollup_from` | Re-fold this cut from the named **child cut's monthly frame**. `rollup_dims` optional. Cycle is BindError. Distinct from `having.then_group_by`. |
 | `default_cut` | The cut the walk starts from when `output_cut` is not on the context; defaults to the first declared cut |
 | `default_dimensions` | Grain when `selected_dimensions` is omitted. Required. `[]` is worldwide |
 | `identity_grain` | Optional. Subset of `dimensions`. Helpers may be `op: point` `of` only when every emitted cut equals this grain |
+| `default_measures_by_cut` | Top-level. Fills `measures.*.cuts` when a measure omits `cuts:` |
+| `omit_null_rows` | Top-level. Drop rows where every requested **scalar** is JSON null. `0` and `false` stay. Trends are ignored unless only trends were requested. |
 
-**How `ignore_filters` works.** A filter ignored by *any* **emitted** cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Default `apply: extract` is legal with `ignore_filters`; at request time `split_filters` promotes it to calc when that cut is emitted. Sending `parameters.output_cut: G` still walks `also_emit` unless that cut sets `pack_also_emit: false`. If only R is emitted (`output_cut: R`, or G with `pack_also_emit: false`), region can stay extract. Do not combine `ignore_filters` with `apply: result`. The response reports where each filter ran under `applied_filters`, cut-level skips under `ignored_filters`, and present-but-blank keys under `skipped_filters`. A dim-named ignore token must also appear in `exclude_from_grain`, and the reverse.
+**`from_cut` vs `versus_cut`.** `from_cut` reuses a **scalar** from another cut, joined on **shared dims** (coarser → finer broadcast; finer → coarser is BindError). Cannot combine with `versus_cut`. The source cut is silent if it is not emitted. `versus_cut` is share-like only (`percent_of_total`, `rank`, `contribution`, `bottom_n`) — not `diff` / `pct_change`.
+
+**How `ignore_filters` works.** A filter ignored by *any* **emitted** cut is kept out of the DuckDB `WHERE` clause and applied per-cut in Pandas (`apply: calc`). That is what lets `region=NA` narrow the R rows while G still reports worldwide from the same scan. Default `apply: extract` is legal with `ignore_filters`; at request time `split_filters` promotes it to calc when that cut is emitted. Sending `parameters.output_cut: G` still walks `also_emit` unless that cut sets `pack_also_emit: false` or the request sets `only_cut`. If only R is emitted (`output_cut: R`, or G with `pack_also_emit: false`), region can stay extract. Do not combine `ignore_filters` with `apply: result`. The response reports where each filter ran under `applied_filters`, cut-level skips under `ignored_filters`, and present-but-blank keys under `skipped_filters`. A dim-named ignore token must also appear in `exclude_from_grain`, and the reverse.
 
 Every cut re-aggregates the spine from scratch, so a global average is a true weighted average, not a mean of regional averages. Non-additive ops (median, percentile, first, last, count_distinct) evaluate on fact rows at the cut keys, not on rolled sums.
 
@@ -1015,6 +1046,8 @@ Undeclared context codes stay `IN` at extract, unless an emitted cut lists them 
 | `not_between` | `NOT BETWEEN` | exactly two |
 | `is_null` | `IS NULL`, `isnull` | none (context key present = apply) |
 | `is_not_null` | `IS NOT NULL`, `notnull` | none |
+| `regexp` | `regex` | exactly one string, ≤ 256 chars, case-sensitive |
+| `regexp_insensitive` | `iregexp` | exactly one string, case-insensitive |
 
 `DAY <= @EffectiveDay` is `op: lte` with one context value. Null column values do not pass comparisons; use `is_null` to keep nulls.
 
@@ -1464,6 +1497,9 @@ pytest -q
 | `measures.<k> cuts '…' is not on this extract` | That cut's `group_by` is not on the base's model | Set `cuts:` to a grain those columns have, or retrieve them |
 | `measures.<k> names unknown hook '<x>'` | Hook not in `registries/hooks.yaml` | Add the function under `capabilities/hooks/` and a registry row |
 | `Filter '<x>' is hierarchical (input_text=heir)` | Hierarchy not expanded | Fix in the context builder |
+| `list_agg/string_agg` / `only op: point` | Window/fn of a list base | Echo with `op: point` only; empty window is null |
+| `multi_view v1 allows one kpi_id` | Different KPI per view | Same `execution.kpi_id` for every view (v1) |
+| `parameters.only_cut` / `emit_cuts` | Unknown cut name | Declare the cut; send `only_cut` / `emit_cuts` as reserved parameters |
 | `output.page must be >= 1` | Paging from 0 | Pages are 1-based |
 | `is a row helper` | Helper used as `of` without identity grain, or on a coarser cut | Set `identity_grain` and emit only that grain, or add `agg:` |
 | `last_n is a JSON list` | Numeric op consumed `last_n` | Keep `last_n` on `op: point` |
@@ -1489,7 +1525,8 @@ Known boundaries, so you do not design around something that is not there:
 - Rank a lagged measure (`rank of lag`); do not `lag { of: rank }`. Put `offset:` on a trend rather than `lag { of: trend }`.
 - Physical joins support `inner`, `left` and `right`. Anything else belongs in a `kind: sql` model.
 - KPI `base_measures.sql` is a column name or a Pandas formula. DuckDB `SUM(` / `LAG(` belong in a `kind: sql` **model** when you opt into SQL extract shaping — not in KPI YAML.
-- Non-additive aggregations (`median` / `percentile` / `count_distinct` / `stddev` / `variance` / `mode`) fold the **post-pipeline** fact series, not the pre-CASE columns.
+- Non-additive aggregations (`median` / `percentile` / `count_distinct` / `stddev` / `variance` / `mode` / `geomean` / `harmonic_mean` / `any` / `all`) fold the **post-pipeline** fact series, not the pre-CASE columns. Large G/R extracts with those aggs (or compound `or`/`like` measure masks) keep detail in Pandas — prefer a `kind: sql` model that pre-aggregates (GROUPING SETS is not in the engine).
+- Measure `where:` / `also_where` / `or`/`not` evaluate in Pandas on detail. DuckDB **SELECT**s mask columns; it does not compile that AST into extract `WHERE`.
 - `expr:` CASE is Pandas, not DuckDB. No `SUM(CASE)`, `LIKE`, `IN ('A','B')`, or simple `CASE status WHEN 'O'`. `columns:` + `op:` stays numeric.
 - Host ownership (ADLS, auth, jobs, context builder) stays outside `compute(context)`.
 - We do not claim identical IEEE bits across pandas versions; post-extract stable sort + `_kpi_row_id` makes window order deterministic.

@@ -141,14 +141,64 @@ def compute_cuts(
     dropped_groups: list[dict[str, Any]] = []
     totals: dict[tuple[str, str], float] = {}
 
-    versus_targets = {measures[k].versus_cut for k in need if measures[k].versus_cut}
+    versus_targets = {measures[k].versus_cut for k in eval_need if measures[k].versus_cut}
+    from_cut_targets = {measures[k].from_cut for k in eval_need if measures[k].from_cut}
     by_cut = {c.name: c for c in kpi.cuts}
     emitted_names = {c.name for c in emitted}
-    for name in versus_targets:
-        if name in emitted_names or name not in by_cut:
+    silent_names = (versus_targets | from_cut_targets) - emitted_names
+    from_cut_store: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    monthly_cache: dict[str, pd.DataFrame] = {}
+
+    def monthly_for(cut: CutSpec) -> pd.DataFrame:
+        if cut.name in monthly_cache:
+            return monthly_cache[cut.name]
+        if cut.rollup_from and cut.rollup_from in by_cut:
+            child_m = monthly_for(by_cut[cut.rollup_from])
+            override = list(cut.rollup_dims) if cut.rollup_dims else None
+            result = _cut_monthly(
+                child_m, cut, deferred_filters, kpi, group_dims_override=override
+            )
+        else:
+            result = _cut_monthly(monthly, cut, deferred_filters, kpi)
+        monthly_cache[cut.name] = result
+        return result
+
+    def remember_from_cut(cut_name: str, group_dims: list[str], cut_rows: list) -> None:
+        for key in eval_need:
+            if measures[key].from_cut != cut_name:
+                continue
+            from_cut_store[(cut_name, key)] = [
+                {**{dim: row.get(dim) for dim in group_dims}, key: row.get(key)}
+                for row in cut_rows
+            ]
+
+    def overlay_from_cut(cut: CutSpec, group_dims: list[str], cut_rows: list) -> None:
+        for key in eval_need:
+            spec = measures[key]
+            if not spec.from_cut:
+                continue
+            src_rows = from_cut_store.get((spec.from_cut, key), [])
+            src = by_cut.get(spec.from_cut)
+            if src is None:
+                continue
+            src_dims = list(cut_group_dims(src, kpi.time.column if kpi.time else "", kpi))
+            shared = [dim for dim in src_dims if dim in group_dims]
+            if not shared:
+                value = src_rows[0].get(key) if src_rows else None
+                for row in cut_rows:
+                    row[key] = value
+                continue
+            index = {
+                tuple(row.get(dim) for dim in shared): row.get(key) for row in src_rows
+            }
+            for row in cut_rows:
+                row[key] = index.get(tuple(row.get(dim) for dim in shared))
+
+    for name in silent_names:
+        if name not in by_cut:
             continue
         silent = by_cut[name]
-        silent_monthly = _cut_monthly(monthly, silent, deferred_filters, kpi)
+        silent_monthly = monthly_for(silent)
         silent_detail = (
             apply_cut_filters(detail, silent, deferred_filters)
             if detail is not None
@@ -166,9 +216,22 @@ def compute_cuts(
         of_keys = sorted(
             {
                 measures[k].of
-                for k in need
+                for k in eval_need
                 if measures[k].versus_cut == name and measures[k].of
             }
+        )
+        extra_vs = [
+            measures[k].params.get("vs")
+            for k in eval_need
+            if measures[k].versus_cut == name and measures[k].kind == "contribution"
+        ]
+        from_keys = sorted(
+            k for k in eval_need if measures[k].from_cut == name
+        )
+        silent_need = list(
+            dict.fromkeys(
+                [*of_keys, *[v for v in extra_vs if v], *from_keys]
+            )
         )
         silent_rows = _evaluate_combos(
             combo_frame,
@@ -179,16 +242,17 @@ def compute_cuts(
             kpi,
             plan,
             measures,
-            of_keys,
+            silent_need,
             [],
             {},
         )
-        _store_versus_totals(silent_rows, name, need, measures, totals)
+        _store_versus_totals(silent_rows, name, eval_need, measures, totals)
+        remember_from_cut(name, silent_dims, silent_rows)
 
-    ordered = _order_cuts_by_versus(emitted, need, measures)
+    ordered = _order_cuts_by_versus(emitted, eval_need, measures)
 
     for cut in ordered:
-        cut_monthly = _cut_monthly(monthly, cut, deferred_filters, kpi)
+        cut_monthly = monthly_for(cut)
         cut_detail = apply_cut_filters(detail, cut, deferred_filters) if detail is not None else None
         group_dims = list(cut_group_dims(cut, kpi.time.column if kpi.time else "", kpi))
         if cut_monthly.empty and not group_dims:
@@ -253,6 +317,8 @@ def compute_cuts(
                 group_dims = list(kpi.having.then_group_by)
                 trend_keys, cut_phase_keys = _phase_keys(need, measures, cut, kpi)
         _store_versus_totals(cut_rows, cut.name, eval_need, measures, totals)
+        remember_from_cut(cut.name, group_dims, cut_rows)
+        overlay_from_cut(cut, group_dims, cut_rows)
         for key in cut_phase_keys:
             spec = measures[key]
             if spec.kind == "percent_of_total":
@@ -267,11 +333,14 @@ def compute_cuts(
                 cut_rows, spec, group_dims, totals=totals
             )
         _apply_cut_derived(cut_rows, eval_need, measures)
+        _apply_measure_having(cut_rows, eval_need, measures)
         if hidden:
             for row in cut_rows:
                 for key in hidden:
                     row.pop(key, None)
         rows.extend(cut_rows)
+    if kpi.omit_null_rows:
+        rows = _omit_null_rows(rows, requested_keys, measures)
     return rows, trend_axes, dropped_groups
 
 
@@ -630,16 +699,23 @@ def _cut_monthly(
     cut: CutSpec,
     deferred: tuple[BoundFilter, ...],
     kpi: KpiSpec,
+    group_dims_override: list[str] | None = None,
 ) -> pd.DataFrame:
     """Filter then re-aggregate the monthly frame to this cut's group_by."""
     from kpi_engine.capabilities.ops.support import monthly_fact_columns
 
     work = apply_cut_filters(monthly, cut, deferred)
     time_col = kpi.time.column if kpi.time is not None else None
-    dims = list(cut_group_dims(cut, time_col or "", kpi))
+    dims = (
+        list(group_dims_override)
+        if group_dims_override is not None
+        else list(cut_group_dims(cut, time_col or "", kpi))
+    )
     value_cols = monthly_fact_columns(kpi)
     extra = [f"{m.name}__sum" for m in kpi.base_measures if m.agg == "avg"]
     extra += [f"{m.name}__count" for m in kpi.base_measures if m.agg == "avg"]
+    extra += [f"{m.name}__wsum" for m in kpi.base_measures if m.agg == "weighted_avg"]
+    extra += [f"{m.name}__wcount" for m in kpi.base_measures if m.agg == "weighted_avg"]
     cols = [c for c in [*value_cols, *extra, "_observed"] if c in work.columns]
     if work.empty:
         return work
@@ -752,6 +828,62 @@ def _json_value(value: Any) -> Any:
     return value
 
 
+def _apply_measure_having(
+    cut_rows: list[dict[str, Any]],
+    eval_need: list[str],
+    measures: dict[str, OutputSpec],
+) -> None:
+    """Null a measure when its having: predicate fails. Does not drop the row."""
+    from kpi_engine.pipeline.predicates import eval_predicate_list
+
+    for key in eval_need:
+        spec = measures.get(key)
+        if spec is None or spec.having is None:
+            continue
+        for row in cut_rows:
+            if not eval_predicate_list(spec.having.predicates, spec.having.match, row):
+                row[key] = None
+
+
+def _omit_null_rows(
+    rows: list[dict[str, Any]], requested: list[str], measures: dict[str, OutputSpec]
+) -> list[dict[str, Any]]:
+    """Drop rows where every requested scalar is JSON null (0/false stay)."""
+    scalar_keys = [
+        key
+        for key in requested
+        if key in measures and not get_op(measures[key].kind).emits_trend
+    ]
+    check = scalar_keys if scalar_keys else [
+        key for key in requested if key in measures
+    ]
+    if not check:
+        return rows
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        if all(_cell_is_json_null(row.get(key)) for key in check):
+            continue
+        kept.append(row)
+    return kept
+
+
+def _cell_is_json_null(cell: Any) -> bool:
+    if cell is None:
+        return True
+    try:
+        if pd.isna(cell):
+            return True
+    except (TypeError, ValueError):
+        pass
+    if isinstance(cell, dict) and "value" in cell:
+        return _cell_is_json_null(cell.get("value"))
+    if isinstance(cell, list):
+        if not cell:
+            return True
+        return all(_cell_is_json_null(item) for item in cell)
+    return False
+
+
 def _numeric_row(value: Any) -> float | None:
     """Coerce a result-row cell to float, or None."""
     if value is None:
@@ -792,7 +924,7 @@ def _combo_inputs_for(need, measures) -> list[str]:
 
 
 def _store_versus_totals(cut_rows, cut_name, need, measures, totals) -> None:
-    """Record this cut's of-measure totals for percent_of_total.versus_cut."""
+    """Record this cut's of-measure totals for versus_cut consumers."""
     of_keys = {
         measures[k].of
         for k in need
@@ -803,11 +935,29 @@ def _store_versus_totals(cut_rows, cut_name, need, measures, totals) -> None:
             v for v in (_numeric_row(r.get(of_key)) for r in cut_rows) if v is not None
         ]
         totals[(cut_name, of_key)] = float(sum(values))
+    for key in need:
+        spec = measures.get(key)
+        if spec is None or spec.versus_cut != cut_name or spec.kind != "contribution":
+            continue
+        vs = spec.params.get("vs")
+        deltas: list[float] = []
+        for row in cut_rows:
+            current = _numeric_row(row.get(spec.of))
+            baseline = _numeric_row(row.get(vs))
+            if current is not None and baseline is not None:
+                deltas.append(float(current) - float(baseline))
+        totals[(cut_name, f"__contrib_{spec.of}_{vs}")] = float(sum(deltas))
 
 
 def _order_cuts_by_versus(emitted, need, measures) -> list:
-    """Emit versus_cut targets before consumers. Cycles keep original order."""
-    targets = {measures[k].versus_cut for k in need if measures[k].versus_cut}
+    """Emit versus_cut / from_cut sources before consumers. Cycles keep original order."""
+    targets = set()
+    for key in need:
+        spec = measures[key]
+        if spec.versus_cut:
+            targets.add(spec.versus_cut)
+        if spec.from_cut:
+            targets.add(spec.from_cut)
     first = [c for c in emitted if c.name in targets]
     rest = [c for c in emitted if c.name not in targets]
     return first + rest

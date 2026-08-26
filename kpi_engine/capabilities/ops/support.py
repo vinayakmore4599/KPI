@@ -112,6 +112,10 @@ def window_bounds(anchor: date, spec: OutputSpec, kpi: KpiSpec) -> tuple[date, d
             "full_year": year_start(ref, kpi.time),
         }[kind], period_end(ref, kind, kpi.time)
     n = spec.trailing_months or 1
+    if spec.params.get("align") == "periods":
+        from dataclasses import replace as _replace
+
+        spec = _replace(spec, trailing_unit=None)
     if kind == "leading":
         start, end = _count_window(ref, n, spec, kpi, leading=True)
         return start, end
@@ -365,6 +369,12 @@ def value_from_row(row: pd.Series, base) -> Any:
         if pd.isna(total) or pd.isna(count) or count == 0:
             return None
         return float(total / count)
+    if base.agg == "weighted_avg":
+        total = row.get(f"{base.name}__wsum")
+        weight = row.get(f"{base.name}__wcount")
+        if pd.isna(total) or pd.isna(weight) or weight == 0:
+            return None
+        return float(total / weight)
     if base.name not in row.index:
         return None
     value = row[base.name]
@@ -439,6 +449,12 @@ def selection_value(
         if count == 0:
             return None
         return float(total / count)
+    if base.agg == "weighted_avg":
+        total = window[f"{base.name}__wsum"].sum(min_count=1)
+        weight = window[f"{base.name}__wcount"].sum(min_count=1)
+        if pd.isna(total) or pd.isna(weight) or weight == 0:
+            return None
+        return float(total / weight)
     col = base.name
     if col not in window.columns:
         return None
@@ -464,6 +480,12 @@ def window_value(
         if count == 0:
             return None
         return float(total / count)
+    if measure.agg == "weighted_avg":
+        total = window[f"{measure.name}__wsum"].sum(min_count=1)
+        weight = window[f"{measure.name}__wcount"].sum(min_count=1)
+        if pd.isna(total) or pd.isna(weight) or weight == 0:
+            return None
+        return float(total / weight)
     col = measure.name
     if measure.agg == "min":
         return _num_or_none(window[col].min())
@@ -545,6 +567,12 @@ def trend_slot_value(
         if pd.isna(total) or pd.isna(count) or count == 0:
             return None
         return float(total / count)
+    if measure.agg == "weighted_avg":
+        total = row.get(f"{measure.name}__wsum")
+        weight = row.get(f"{measure.name}__wcount")
+        if pd.isna(total) or pd.isna(weight) or weight == 0:
+            return None
+        return float(total / weight)
     return _num_or_none(row[measure.name])
 
 
@@ -611,6 +639,10 @@ def trend_arithmetic_base_values(
     return axis, columns
 
 
+LIST_AGG_MAX_ITEMS = 1000
+STRING_AGG_MAX_BYTES = 65536
+
+
 def agg_detail(
     detail: pd.DataFrame | None,
     kpi: KpiSpec,
@@ -620,8 +652,8 @@ def agg_detail(
     start: date,
     end: date,
     periods: tuple[date, ...] | None = None,
-) -> float | None:
-    """count_distinct / median / percentile from row-level rows in [start, end]."""
+) -> Any:
+    """Non-additive aggs from row-level rows in [start, end]. Empty window is null."""
     if detail is None or detail.empty:
         return None
     work = detail
@@ -682,7 +714,64 @@ def agg_detail(
         if modes.empty:
             return None
         return _num_or_none(modes.iloc[0])
+    if base.agg == "geomean":
+        numeric = pd.to_numeric(series, errors="coerce")
+        pos = numeric[numeric > 0]
+        if pos.empty:
+            return None
+        import math
+
+        return _num_or_none(math.exp(float(pos.map(math.log).mean())))
+    if base.agg == "harmonic_mean":
+        numeric = pd.to_numeric(series, errors="coerce")
+        pos = numeric[numeric > 0]
+        if pos.empty:
+            return None
+        return _num_or_none(len(pos) / (1.0 / pos).sum())
+    if base.agg == "any":
+        numeric = pd.to_numeric(series, errors="coerce").dropna()
+        if numeric.empty:
+            return None
+        return 1.0 if bool((numeric != 0).any()) else 0.0
+    if base.agg == "all":
+        numeric = pd.to_numeric(series, errors="coerce").dropna()
+        if numeric.empty:
+            return None
+        return 1.0 if bool((numeric != 0).all()) else 0.0
+    if base.agg in {"list_agg", "string_agg"}:
+        return _list_or_string_agg(series, base.agg)
     return None
+
+
+def _list_or_string_agg(series: pd.Series, agg: str) -> Any:
+    """Ordered non-null values; list_agg cap 1000, string_agg cap 64KB."""
+    items: list[Any] = []
+    for value in series.tolist():
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            continue
+        if isinstance(value, pd.Timestamp):
+            items.append(value.date().isoformat())
+        elif hasattr(value, "item") and not isinstance(value, (bytes, str)):
+            try:
+                items.append(value.item())
+            except (ValueError, AttributeError):
+                items.append(value)
+        else:
+            items.append(value)
+        if len(items) > LIST_AGG_MAX_ITEMS:
+            raise CatalogError(
+                f"{agg} overflow: more than {LIST_AGG_MAX_ITEMS} items in one group."
+            )
+    if not items:
+        return None
+    if agg == "list_agg":
+        return items
+    text = ",".join("" if part is None else str(part) for part in items)
+    if len(text.encode("utf-8")) > STRING_AGG_MAX_BYTES:
+        raise CatalogError(
+            f"string_agg overflow: joined length exceeds {STRING_AGG_MAX_BYTES} bytes."
+        )
+    return text
 
 
 def dense_rank(values: list[Any], *, descending: bool) -> list[int | None]:
@@ -889,7 +978,11 @@ def used_points(
         work = work[(ts >= pd.Timestamp(start)) & (ts <= pd.Timestamp(end))]
     out: list[dict[str, Any]] = []
     time_col = kpi.time.column if kpi.time is not None else None
-    has_col = base.name in work.columns or f"{base.name}__sum" in work.columns
+    has_col = (
+        base.name in work.columns
+        or f"{base.name}__sum" in work.columns
+        or f"{base.name}__wsum" in work.columns
+    )
     if not has_col:
         return []
     for _, row in work.iterrows():
@@ -1140,6 +1233,9 @@ def monthly_fact_columns(
             continue
         if measure.agg == "avg":
             cols.extend([f"{measure.name}__sum", f"{measure.name}__count"])
+            continue
+        if measure.agg == "weighted_avg":
+            cols.extend([f"{measure.name}__wsum", f"{measure.name}__wcount"])
             continue
         cols.append(measure.name)
     return cols

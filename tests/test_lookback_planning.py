@@ -17,7 +17,7 @@ import pytest
 
 from kpi_engine.contracts import Offset, OutputSpec, TimeSpec
 from kpi_engine.pipeline.adapter import adapt
-from kpi_engine.pipeline.binder import fold_measure_keys, load_kpi
+from kpi_engine.pipeline.binder import bind_request, fold_measure_keys, load_kpi
 from kpi_engine.pipeline.time_planner import (
     claim_month_filter,
     lookback_for,
@@ -212,7 +212,7 @@ def test_compare_mode_yoy_lookback_is_twelve_months(extra_config):
         measures={"yoy": {"op": "compare", "of": "sotif_value", "mode": "yoy"}},
     )
     write_yaml(extra_config / "kpis" / "9211.yaml", spec)
-    kpi = load_kpi(9211, extra_config)
+    kpi = bind_request(load_kpi(9211, extra_config))
     assert max_lookback_months(kpi, ("yoy",)) == 12
 
 
@@ -229,7 +229,7 @@ def test_filtered_compare_lookback_is_twelve_months(extra_config):
         },
     )
     write_yaml(extra_config / "kpis" / "9212.yaml", spec)
-    kpi = load_kpi(9212, extra_config)
+    kpi = bind_request(load_kpi(9212, extra_config))
     assert max_lookback_months(kpi, ("late_yoy",)) == 12
 
 

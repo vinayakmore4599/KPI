@@ -15,7 +15,8 @@ Follow this skill whenever you create or edit KPI/model YAML in this repo.
 
 1. **[kpi-yaml-ai-prep.md](../../kpi-yaml-ai-prep.md)** — bind-ready contract. Read fully before emitting YAML.
 2. **[kpi_engine/registries/CAPABILITIES.md](../../kpi_engine/registries/CAPABILITIES.md)** — live op/fn/hook names (wins over static lists).
-3. Gold examples: [kpi_config/kpis/sotif/3004.yaml](../../kpi_config/kpis/sotif/3004.yaml), [kpi_config/models/sotif/sotif.yaml](../../kpi_config/models/sotif/sotif.yaml).
+3. Gold examples: [kpi_config/kpis/sotif/3004.yaml](../../kpi_config/kpis/sotif/3004.yaml), [kpi_config/models/sotif/sotif.yaml](../../kpi_config/models/sotif/sotif.yaml), [kpi_config/patterns/](../../kpi_config/patterns/) (`mask_and_weighted`, `cross_cut`, `core_ops`).
+4. Semantics lock: [docs/capability-contract.md](../../docs/capability-contract.md).
 
 For key-by-key detail: [kpi-yaml-reference.md](../../kpi-yaml-reference.md).
 
@@ -24,11 +25,13 @@ For key-by-key detail: [kpi-yaml-reference.md](../../kpi-yaml-reference.md).
 - **Two layers:** model = DuckDB extract only; KPI = time/dims/cuts/measures. Never put `agg:`/`op:` in model files or SQL in KPI files.
 - **Ratios:** two `base_measures` with `agg: sum` (or appropriate agg), then measure-level `expr`/`fn`/`arithmetic`. Never `agg: avg` on a per-row ratio.
 - **Offset/trailing keys:** plural only — `years`, `months`, `quarters`, `weeks`, `days`, `periods`. Singular (`year:`, `month:`) is BindError.
-- **Cuts:** `group_by` = extras only. Pair `ignore_filters: [dim]` with `exclude_from_grain: [dim]`.
-- **Shares:** `op: percent_of_total`, not `fn: percent`.
+- **Cuts:** `group_by` = extras only. Pair `ignore_filters: [dim]` with `exclude_from_grain: [dim]`. Precedence: `only_cut` > `emit_cuts` ∩ walk > `locked_cut` > `default_cut` > `also_emit`.
+- **Shares:** `op: percent_of_total`, not `fn: percent`. Another cut's total: `versus_cut:`. Scalar reuse: `from_cut:` (not both).
 - **Period compare:** `op: compare` + `mode:` on a named base. Physical-column mask: `filtered_*` + `column:`. Filter + compare in one key: `filtered_compare`. Not `compare` + `column:`.
 - **Trends of ratios:** `op: trend_arithmetic`, not `op: trend` on a composite.
 - **Closed names only** — if not in CAPABILITIES.md, stop and report the gap; do not invent ops.
+- **Masks:** `where:` / `also_where` share filter ops (`like`, `regexp`, `or`/`and`/`not`). Max nesting 3.
+- **Host filters:** `required: true` (omit/`[]` = BindError). `default:` only when the key is absent. Not both on one filter.
 
 ## Output format
 

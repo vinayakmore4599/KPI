@@ -303,3 +303,232 @@ projection:
       periods_ahead: 1
   module: kpi_engine.capabilities.hooks.impl
   attr: projection
+
+autocorrelation:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Lag-1 Pearson correlation of consecutive observed period values.
+  example: |
+    ac1:
+      op: hook
+      hook: autocorrelation
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: autocorrelation
+
+rsi:
+  role: addon
+  enabled: true
+  aliases: []
+  extra_keys: [n]
+  description: Wilder RSI of period-to-period changes.
+  example: |
+    rsi14:
+      op: hook
+      hook: rsi
+      of: sotif_value
+      trailing: { months: 14 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: rsi
+
+bollinger:
+  role: addon
+  enabled: true
+  aliases: []
+  extra_keys: [k]
+  description: "%b of the last value in a k-sigma band around the window mean (k default 2)."
+  example: |
+    bb:
+      op: hook
+      hook: bollinger
+      of: sotif_value
+      trailing: { months: 12 }
+      k: 2
+  module: kpi_engine.capabilities.hooks.impl
+  attr: bollinger
+
+exponential_decay_sum:
+  role: addon
+  enabled: true
+  aliases: []
+  extra_keys: [decay]
+  description: Sum v_i × decay^(age). decay default 0.5.
+  example: |
+    decayed:
+      op: hook
+      hook: exponential_decay_sum
+      of: sotif_value
+      trailing: { months: 12 }
+      decay: 0.5
+  module: kpi_engine.capabilities.hooks.impl
+  attr: exponential_decay_sum
+
+theil_sen_slope:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Median of pairwise slopes of value vs observed period index.
+  example: |
+    robust_slope:
+      op: hook
+      hook: theil_sen_slope
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: theil_sen_slope
+
+changepoint:
+  role: addon
+  enabled: true
+  aliases: []
+  description: 1-based index of the mean-shift split in the trailing window.
+  example: |
+    shift:
+      op: hook
+      hook: changepoint
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: changepoint
+
+outlier_count:
+  role: addon
+  enabled: true
+  aliases: []
+  extra_keys: [k]
+  description: Count of observed values with |z| > k (default 3).
+  example: |
+    outliers:
+      op: hook
+      hook: outlier_count
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: outlier_count
+
+percentile_rank_series:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Percentile rank (0–100) of the last observed value in the window.
+  example: |
+    pr:
+      op: hook
+      hook: percentile_rank_series
+      of: sotif_value
+      trailing: { months: 12 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: percentile_rank_series
+
+weighted_ewma:
+  role: addon
+  enabled: true
+  aliases: []
+  extra_keys: [alpha]
+  description: EWMA with explicit alpha (default 2/(N+1)).
+  example: |
+    smooth:
+      op: hook
+      hook: weighted_ewma
+      of: sotif_value
+      trailing: { months: 12 }
+      alpha: 0.3
+  module: kpi_engine.capabilities.hooks.impl
+  attr: weighted_ewma
+
+run_rate:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Last observed value annualized by the KPI grain.
+  example: |
+    annualized:
+      op: hook
+      hook: run_rate
+      of: sotif_value
+      trailing: { months: 3 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: run_rate
+
+target_trajectory:
+  role: addon
+  enabled: true
+  aliases: []
+  description: "Last / linear path from first observed to value: target."
+  example: |
+    pace:
+      op: hook
+      hook: target_trajectory
+      of: sotif_value
+      trailing: { months: 12 }
+      value: 100
+  module: kpi_engine.capabilities.hooks.impl
+  attr: target_trajectory
+
+forecast_confidence:
+  role: addon
+  enabled: true
+  aliases: []
+  extra_keys: [k, side, emit, periods_ahead]
+  description: >
+    Linear projection ± k × stdev. Bind expands to {key}_low / {key}_high
+    unless emit: names one side.
+  example: |
+    fc:
+      op: hook
+      hook: forecast_confidence
+      of: sotif_value
+      trailing: { months: 12 }
+      k: 1.96
+  module: kpi_engine.capabilities.hooks.impl
+  attr: forecast_confidence
+
+seasonal_decompose:
+  role: addon
+  enabled: true
+  aliases: []
+  description: Seasonal factor at the anchor month (same-month mean / overall mean).
+  example: |
+    seas:
+      op: hook
+      hook: seasonal_decompose
+      of: sotif_value
+      trailing: { months: 36 }
+  module: kpi_engine.capabilities.hooks.impl
+  attr: seasonal_decompose
+
+cohort_retention:
+  role: addon
+  enabled: true
+  aliases: []
+  extra_keys: [cohort_column, entry_period]
+  description: Share of entities first seen at entry_period that are still present at the anchor.
+  example: |
+    retain:
+      op: hook
+      hook: cohort_retention
+      of: sotif_value
+      trailing: { months: 12 }
+      cohort_column: supplier_name
+      entry_period: "2025-01-01"
+  module: kpi_engine.capabilities.hooks.impl
+  attr: cohort_retention
+
+survival_rate:
+  role: addon
+  enabled: true
+  aliases: []
+  extra_keys: [cohort_column, entry_period]
+  description: Share of entities that entered on or before entry_period still present at the anchor.
+  example: |
+    survive:
+      op: hook
+      hook: survival_rate
+      of: sotif_value
+      trailing: { months: 12 }
+      cohort_column: supplier_name
+      entry_period: "2025-01-01"
+  module: kpi_engine.capabilities.hooks.impl
+  attr: survival_rate

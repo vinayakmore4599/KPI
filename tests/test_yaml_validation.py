@@ -148,8 +148,8 @@ def test_base_measure_shape_and_agg_are_validated(extra_config):
     with pytest.raises(BindError, match="base_measures.sotif_value must be an object"):
         load_kpi(9106, extra_config)
 
-    _write(extra_config, 9107, base_measures={"sotif_value": {"sql": "amount", "agg": "geomean"}})
-    with pytest.raises(BindError, match="Unknown agg 'geomean'"):
+    _write(extra_config, 9107, base_measures={"sotif_value": {"sql": "amount", "agg": "banana"}})
+    with pytest.raises(BindError, match="Unknown agg 'banana'"):
         load_kpi(9107, extra_config)
 
 
@@ -521,16 +521,15 @@ def test_where_between_requires_values_list_not_value(extra_config):
         load_kpi(9401, extra_config)
 
 
-def test_where_rejects_like_even_if_pandas_mask_knows_it(extra_config):
-    """Bind list is source of truth; like is not a base-measure where op (F17)."""
+def test_where_like_is_a_valid_mask_op(extra_config):
+    """Measure masks share pandas_mask ops, including like (Phase 1)."""
     spec = minimal_kpi(9402)
-    spec["base_measures"] = {
-        "mid": {
-            "sql": "amount",
-            "agg": "sum",
-            "where": {"column": "reason_code", "op": "like", "value": "%LATE%"},
-        }
+    spec["base_measures"]["mid"] = {
+        "sql": "amount",
+        "agg": "sum",
+        "where": {"column": "reason_code", "op": "like", "value": "%LATE%"},
     }
     write_yaml(extra_config / "kpis" / "9402.yaml", spec)
-    with pytest.raises(BindError, match="where.op must be"):
-        load_kpi(9402, extra_config)
+    kpi = load_kpi(9402, extra_config)
+    by_name = {b.name: b for b in kpi.base_measures}
+    assert by_name["mid"].where.op == "like"

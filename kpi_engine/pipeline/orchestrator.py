@@ -33,6 +33,7 @@ from kpi_engine.pipeline.adapter import adapt
 from kpi_engine.pipeline.binder import (
     assert_measure_keys,
     bind_datasets,
+    bind_request,
     default_config_dir,
     fold_measure_keys,
     load_kpi,
@@ -55,6 +56,7 @@ from kpi_engine.pipeline.filters import (
     bind_filters,
     columns_for_source_filters,
     filters_on_all_cuts,
+    prepare_host_filters,
     split_filters,
     _is_listed,
 )
@@ -70,16 +72,14 @@ from kpi_engine.pipeline.pipelines import (
     partition_request,
 )
 from kpi_engine.pipeline.relations import join_monthly
-from kpi_engine.pipeline.parameters import declared_time_grain
 from kpi_engine.pipeline.time_planner import (
-    apply_request_time,
     apply_year_basis,
     fill_probed_selection,
     plan_time,
     span_for_keys,
 )
 from kpi_engine.dates import add_periods, iso_period, parse_date, period_label
-from kpi_engine.exceptions import BindError, KPIEngineError, TimePlanError
+from kpi_engine.exceptions import BindError, ContextError, KPIEngineError, TimePlanError
 from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.host_runtime import acquire_connection
 from kpi_engine.pipeline.op_registry import get_op
@@ -114,9 +114,15 @@ def compute(
         log_dir=log_dir,
     )
     try:
-        result = _compute(
-            context, config_dir=config_dir, connection=connection
-        )
+        execution = context.get("execution") if isinstance(context, dict) else None
+        if isinstance(execution, dict) and execution.get("multi_view"):
+            result = _compute_multi_view(
+                context, config_dir=config_dir, connection=connection
+            )
+        else:
+            result = _compute(
+                context, config_dir=config_dir, connection=connection
+            )
         note = write_result_json(
             result, result_log=result_log, result_log_dir=result_log_dir
         )
@@ -128,6 +134,62 @@ def compute(
         raise
     finally:
         end_run()
+
+
+def _compute_multi_view(
+    context: dict[str, Any],
+    *,
+    config_dir: str | Path | None,
+    connection: Any | None,
+) -> dict[str, Any]:
+    """Opt-in envelope: one compute per view_details entry, same kpi_id only."""
+    execution = context.get("execution") or {}
+    views = execution.get("view_details")
+    if not isinstance(views, list) or not views:
+        raise ContextError(
+            "execution.view_details must be a non-empty list when multi_view is true."
+        )
+    fail_fast = bool(execution.get("fail_fast"))
+    kpi_id = execution.get("kpi_id")
+    results: list[dict[str, Any]] = []
+    for i, view in enumerate(views):
+        if not isinstance(view, dict):
+            raise ContextError(f"execution.view_details[{i}] must be an object.")
+        view_id = view.get("view_id")
+        if view_id is None:
+            view_id = str(i)
+        view_kpi = view.get("kpi_id")
+        if view_kpi is not None and view_kpi != kpi_id:
+            message = (
+                "multi_view v1 allows one kpi_id (execution.kpi_id) for every view."
+            )
+            if fail_fast:
+                raise BindError(message)
+            results.append(
+                {
+                    "view_id": view_id,
+                    "ok": False,
+                    "error": {"type": "BindError", "message": message},
+                }
+            )
+            continue
+        sub_exec = {key: value for key, value in execution.items() if key != "multi_view"}
+        sub_exec["view_details"] = [view]
+        sub = {**context, "execution": sub_exec}
+        try:
+            result = _compute(sub, config_dir=config_dir, connection=connection)
+            results.append({"view_id": view_id, "ok": True, "result": result})
+        except Exception as exc:
+            if fail_fast:
+                raise
+            results.append(
+                {
+                    "view_id": view_id,
+                    "ok": False,
+                    "error": {"type": type(exc).__name__, "message": str(exc)},
+                }
+            )
+    return {"multi_view": True, "views": results}
 
 
 def _compute(
@@ -158,6 +220,7 @@ def _compute(
     time_plan, remaining_filters = plan_time(request, kpi)
     kpi = apply_year_basis(kpi, time_plan=time_plan)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
+    remaining_filters = prepare_host_filters(remaining_filters, request.filters, kpi)
     bound, skipped_filters = bind_filters(remaining_filters, kpi, datasets, extract_columns)
     skipped_filters = list(skipped_filters)
     dropped_cuts: list[dict[str, str]] = []
@@ -249,7 +312,10 @@ def _compute(
         page_rows, kpi, time_plan, trend_axes
     )
     notes.extend(wrap_notes)
+    notes.extend(_required_measure_notes(rows, kpi, request.measure_keys))
+    page_rows, trend_page_meta = _paginate_trends(page_rows, request)
     parameters = _parameters(kpi, time_plan)
+    quality_flags = _quality_flags(rows, notes, dropped_groups)
     result = {
         "kpi_id": kpi.kpi_id,
         "request_id": request.request_id,
@@ -267,10 +333,11 @@ def _compute(
         "dropped_groups": dropped_groups,
         "grain_warnings": _grain_warnings(kpi),
         "notes": notes + _time_notes(kpi, time_plan, rows),
+        "quality_flags": quality_flags,
         "trend_axes": trend_axes,
         "trend_labels": _trend_labels(trend_axes, kpi),
         "meta": _response_meta(kpi),
-        "pagination": pagination,
+        "pagination": {**pagination, **trend_page_meta},
         "sql": sqls[0] if sqls else "",
         "sqls": sqls,
         "rows": page_rows,
@@ -328,6 +395,7 @@ def _validate(
     time_plan, remaining = plan_time(request, kpi)
     kpi = apply_year_basis(kpi, time_plan=time_plan)
     extract_columns = _union_extract_columns(models_by_id, datasets, kpi)
+    remaining = prepare_host_filters(remaining, request.filters, kpi)
     bound, skipped_filters = bind_filters(remaining, kpi, datasets, extract_columns)
     skipped_filters = list(skipped_filters)
     dropped_cuts: list[dict[str, str]] = []
@@ -681,7 +749,9 @@ def _extract_all(
         mapped = stabilize_detail(mapped, kpi)
         token = _MEASURE_CALC_FILTERS.set(tuple(measure_calc))
         try:
-            facted = apply_pandas_facts(mapped, sub)
+            facted = apply_pandas_facts(
+                mapped, sub, as_of_default=getattr(plan, "anchor", None)
+            )
         finally:
             _MEASURE_CALC_FILTERS.reset(token)
         detail_parts.append(facted)
@@ -769,7 +839,7 @@ def _apply_host_defaults(
         request = replace(request, measure_keys=kpi.meta.selected_metrics)
     request = replace(request, measure_keys=fold_measure_keys(kpi, request.measure_keys))
     assert_measure_keys(kpi, request.measure_keys)
-    kpi = apply_request_time(kpi, declared_time_grain(kpi))
+    kpi = bind_request(kpi, request)
     requested, _needed = resolve_requested_graph(kpi, request.measure_keys)
     from kpi_engine.capabilities.ops.support import assert_partition_keys_for_request
 
@@ -863,16 +933,55 @@ def _parameters(kpi: KpiSpec, time_plan: TimePlan | None) -> dict[str, Any]:
 
 
 def _sort_rows(rows: list[dict[str, Any]], kpi: KpiSpec) -> list[dict[str, Any]]:
-    """Stable sort: output_cut, then request_grain, then remaining catalog names."""
+    """Stable sort: output_cut, then request_grain, then remaining catalog names.
+
+    YAML `sort:` then overrides that order. `max_rows` trims after sorting.
+    """
     dim_order = list(kpi.request_grain) + [
         name for name in kpi.dimensions if name not in kpi.request_grain
     ]
 
-    def key(row: dict[str, Any]) -> tuple:
-        """Sort key for one result row."""
+    def dim_key(row: dict[str, Any]) -> tuple:
         return (str(row.get("output_cut") or ""), *[str(row.get(d) or "") for d in dim_order])
 
-    return sorted(rows, key=key)
+    rows = sorted(rows, key=dim_key)
+    if kpi.sort:
+        def yaml_key(row: dict[str, Any]) -> tuple:
+            parts: list = []
+            for name, order in kpi.sort:
+                val = row.get(name)
+                if isinstance(val, dict) and "value" in val:
+                    val = val.get("value")
+                missing = val is None
+                comparable: Any = val if val is not None else ""
+                parts.append((missing, _Rev(comparable) if order == "desc" else comparable))
+            return tuple(parts)
+
+        try:
+            rows = sorted(rows, key=yaml_key)
+        except TypeError:
+            rows = sorted(rows, key=lambda row: tuple(
+                (row.get(name) is None, str(row.get(name) or ""))
+                for name, _order in kpi.sort
+            ))
+    if kpi.max_rows is not None:
+        rows = rows[: kpi.max_rows]
+    return rows
+
+
+class _Rev:
+    """Reverse a comparable for mixed asc/desc YAML sort keys."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def __lt__(self, other: "_Rev") -> bool:
+        try:
+            return self.value > other.value
+        except TypeError:
+            return str(self.value) > str(other.value)
 
 
 def _stamp_dimension_roles(
@@ -1006,6 +1115,8 @@ def _wrap_timed_measures(
                 ]
                 continue
             coerced = _coerce_numeric_cell(raw)
+            if isinstance(raw, (list, tuple, str)) and not isinstance(raw, (int, float)):
+                continue
             if not isinstance(coerced, (int, float)) or isinstance(coerced, bool):
                 notes.append(
                     {
@@ -1072,10 +1183,12 @@ def _assert_emitted_includes_default(
 ) -> None:
     """Default / locked cut must stay when this pipeline emits it; extras may drop."""
     names = {cut.name for cut in emitted}
-    required: str | None = kpi.locked_cut
+    required: str | None = kpi.only_cut
     if required is None:
         candidates = {cut.name for cut in cuts_for_keys(kpi, measure_keys)}
-        if kpi.default_cut in candidates:
+        if kpi.locked_cut is not None and kpi.locked_cut in candidates:
+            required = kpi.locked_cut
+        elif kpi.default_cut in candidates:
             required = kpi.default_cut
     if required is not None and required not in names:
         raise BindError(
@@ -1149,6 +1262,76 @@ def _paginate(
         "total_count": total,
         "has_more": end < total,
     }
+
+
+def _paginate_trends(
+    rows: list[dict[str, Any]], request: AdaptedRequest
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Slice each trend measure array. Shared trend_axes stay full-length."""
+    size = request.pagination.trend_page_size
+    if size is None:
+        return rows, {}
+    page = request.pagination.trend_page
+    if page is None:
+        page = 1
+    if page < 1:
+        raise KPIEngineError("output.trend_page must be >= 1.")
+    start = (page - 1) * size
+    end = start + size
+    for row in rows:
+        for key, cell in list(row.items()):
+            if (
+                isinstance(cell, list)
+                and cell
+                and isinstance(cell[0], dict)
+                and "period" in cell[0]
+            ):
+                row[key] = cell[start:end]
+    return rows, {"trend_page": page, "trend_page_size": size}
+
+
+def _required_measure_notes(
+    rows: list[dict[str, Any]], kpi: KpiSpec, requested: tuple[str, ...]
+) -> list[dict[str, str]]:
+    by_key = {m.key: m for m in kpi.measures}
+    keys = requested or tuple(m.key for m in kpi.measures)
+    notes: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for key in keys:
+        spec = by_key.get(key)
+        if spec is None or not spec.required:
+            continue
+        for row in rows:
+            if row.get(key) is not None:
+                continue
+            cut = str(row.get("output_cut") or "")
+            token = (key, cut)
+            if token in seen:
+                continue
+            seen.add(token)
+            notes.append(
+                {
+                    "code": "required_measure_null",
+                    "measure": key,
+                    "detail": cut,
+                }
+            )
+    return notes
+
+
+def _quality_flags(
+    rows: list[dict[str, Any]],
+    notes: list[dict[str, str]],
+    dropped_groups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    flags: dict[str, Any] = {}
+    if not rows:
+        flags["empty_result"] = True
+    if any(note.get("code") == "required_measure_null" for note in notes):
+        flags["required_measure_null"] = True
+    if dropped_groups:
+        flags["having_dropped"] = True
+    return flags
 
 
 def _applied(source_filters, deferred, result_filters) -> list[dict[str, Any]]:

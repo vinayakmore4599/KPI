@@ -7,7 +7,8 @@ Where it is used
     orchestrator.compute / validate as the first step. Tests in test_adapter.py.
 
 Capabilities
-    - Requires execution.kpi_id and exactly one view_details entry.
+    - Requires execution.kpi_id and exactly one view_details entry unless
+      execution.multi_view is true (then compute loops views; same kpi_id).
     - Reads measures_required or measures_requested[].measure_key (projection).
     - Normalizes filter `value` or `values` to a list (default operator IN).
     - Rejects input_text=heir (hierarchy must be expanded upstream).
@@ -16,6 +17,7 @@ Capabilities
     - Reads top-level context.parameters as JSON scalars, lists of scalars,
       or flat dicts of scalars (not filters).
     - Rejects leftover execution.time_grain (grain belongs on parameters).
+    - Reads output.page / page_size / limit and optional trend_page / trend_page_size.
     - Does not claim the month filter; time_planner does that later.
 
 When to use
@@ -267,6 +269,8 @@ def _pagination(raw: Any) -> Pagination:
         page=_optional_int(raw.get("page")),
         page_size=_optional_int(raw.get("page_size")),
         limit=_optional_int(raw.get("limit")),
+        trend_page=_optional_int(raw.get("trend_page")),
+        trend_page_size=_optional_int(raw.get("trend_page_size")),
     )
 
 

@@ -37,6 +37,7 @@ from kpi_engine.contracts import (
     KpiSpec,
     ModelSpec,
     TimePlan,
+    extra_retrieve_columns,
 )
 from kpi_engine.pipeline.filter_ops import sql_predicate
 from kpi_engine.dates import duckdb_parse_time_sql
@@ -327,10 +328,8 @@ def _select_model_columns(
     for measure in kpi.base_measures:
         for col in input_columns(measure, bases):
             add(col)
-        if measure.where is not None:
-            add(measure.where.column)
-        for extra in measure.also_where:
-            add(extra.column)
+        for col in extra_retrieve_columns(measure):
+            add(col)
     if time_col and any(m.agg in {"first", "last"} for m in kpi.base_measures):
         raw_time = _physical_ident(time_col, model, datasets)
         parsed = duckdb_parse_time_sql(
@@ -401,10 +400,7 @@ def _used_column_names(
     bases = _bases_by_name(kpi)
     for measure in kpi.base_measures:
         used.update(norm_name(col) for col in input_columns(measure, bases))
-        if measure.where is not None:
-            used.add(norm_name(measure.where.column))
-        for extra in measure.also_where:
-            used.add(norm_name(extra.column))
+        used.update(norm_name(col) for col in extra_retrieve_columns(measure))
     for item in source_filters:
         used.add(norm_name(item.column))
     return used
@@ -492,10 +488,7 @@ def _assert_sql_projection(
     needed: list[str] = list(grain)
     for measure in kpi.base_measures:
         needed.extend(input_columns(measure, bases))
-        if measure.where is not None:
-            needed.append(measure.where.column)
-        for extra in measure.also_where:
-            needed.append(extra.column)
+        needed.extend(extra_retrieve_columns(measure))
     for col in dict.fromkeys(needed):
         if norm_name(col) in allowed:
             continue
@@ -523,6 +516,14 @@ def _assert_facts_on_context(
     bases = _bases_by_name(kpi)
     for measure in kpi.base_measures:
         for col in input_columns(measure, bases):
+            if norm_name(col) in allowed:
+                continue
+            raise BindError(
+                f"base_measures.{measure.name} needs column {col!r} on "
+                f"context.datasets[].columns or model.output_schema "
+                f"(datasets {aliases})."
+            )
+        for col in extra_retrieve_columns(measure):
             if norm_name(col) in allowed:
                 continue
             raise BindError(

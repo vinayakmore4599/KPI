@@ -35,6 +35,7 @@ from kpi_engine.contracts import (
     IncomingFilter,
     KpiSpec,
     ModelSpec,
+    extra_retrieve_columns,
 )
 from kpi_engine.pipeline.compose import (
     compose_placeholder_names,
@@ -42,7 +43,7 @@ from kpi_engine.pipeline.compose import (
     strip_compose_keys,
 )
 from kpi_engine.pipeline.filter_ops import assert_filter_arity, pandas_mask
-from kpi_engine.exceptions import FilterError, TimePlanError
+from kpi_engine.exceptions import BindError, FilterError, TimePlanError
 from kpi_engine.identifiers import match_name, norm_name
 from kpi_engine.runlog import traced
 
@@ -65,10 +66,7 @@ def columns_for_source_filters(
         if measure.sql:
             cols.add(measure.sql)
         cols.update(measure.columns)
-        if measure.where is not None:
-            cols.add(measure.where.column)
-        for extra in measure.also_where:
-            cols.add(extra.column)
+        cols.update(extra_retrieve_columns(measure))
     cols.update(model.output_schema)
     if kpi.time is not None:
         cols.add(kpi.time.column)
@@ -281,6 +279,43 @@ def _is_blank(values: tuple) -> bool:
     return all(value is None for value in values)
 
 
+def prepare_host_filters(
+    remaining: tuple[IncomingFilter, ...],
+    original: tuple[IncomingFilter, ...],
+    kpi: KpiSpec,
+) -> tuple[IncomingFilter, ...]:
+    """Apply ``required:`` / ``default:`` (absent key only) before bind_filters."""
+    present = {norm_name(item.code) for item in original} | {
+        norm_name(item.raw_key) for item in original
+    }
+    extras: list[IncomingFilter] = []
+    for spec in kpi.filter_specs:
+        key = norm_name(spec.code)
+        hit = next(
+            (
+                item
+                for item in original
+                if norm_name(item.code) == key or norm_name(item.raw_key) == key
+            ),
+            None,
+        )
+        if spec.required:
+            if hit is None or _is_blank(hit.values):
+                raise BindError(
+                    f"filters.{spec.code} is required; omit or [] is not allowed."
+                )
+        if spec.default is not None and key not in present:
+            extras.append(
+                IncomingFilter(
+                    raw_key=spec.code,
+                    code=spec.code,
+                    values=spec.default,
+                    input_text=None,
+                )
+            )
+    return remaining + tuple(extras)
+
+
 def _apply_filter_composes(
     remaining: tuple[IncomingFilter, ...], specs: tuple
 ) -> tuple[tuple[IncomingFilter, ...], list[dict[str, str]]]:
@@ -392,9 +427,9 @@ def _is_listed(item: BoundFilter, names: set[str]) -> bool:
 
 
 def _ignore_names(cut: CutSpec) -> set[str]:
-    """Ignore-filter names in both original and normalized form."""
+    """Ignore-filter names in both original and normalized form (plus reset_filters)."""
     names: set[str] = set()
-    for raw in cut.ignore_filters:
+    for raw in (*cut.ignore_filters, *cut.reset_filters):
         names.add(raw)
         names.add(norm_name(raw))
     return names

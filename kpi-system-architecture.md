@@ -328,7 +328,7 @@ flowchart TB
   MASK --> COMBOS["Unique dimension combos"]
   COMBOS --> EACH["For each combo"]
   EACH --> SER["Slice series for that group"]
-  SER --> COMBO["Combo-phase plugins: point, window, trend, fn, hook, lag, …"]
+  SER --> COMBO["Combo-phase plugins: point, window, trend, trend_arithmetic, fn, hook, lag, …"]
   COMBO --> CUTP["Cut-phase plugins: rank, percent_of_total, ntile, …"]
   CUTP --> DER["Cut-derived arithmetic/fn/expr over rank/share"]
   DER --> HAV["Optional having: drop groups"]
@@ -339,7 +339,7 @@ flowchart TB
 
 | Phase | Typical ops | When they run |
 |---|---|---|
-| Combo | `point`, `window`, `trend`, `arithmetic`, `fn`, `expr`, `hook`, `lag`, `constant` | Per dimension combo, on that group’s time series |
+| Combo | `point`, `window`, `trend`, `trend_arithmetic`, `arithmetic`, `fn`, `expr`, `hook`, `lag`, `constant` | Per dimension combo, on that group’s time series |
 | Cut | `rank`, `percent_of_total`, `ntile`, `dense_rank`, `gap_to_leader`, … | After all combos of the cut exist (needs the full set) |
 | Cut-derived | `arithmetic` / `fn` / `expr` whose inputs are cut-phase | After `apply_to_cut` |
 
@@ -627,7 +627,7 @@ Config files at this step: `kpi_config/kpis/…` (math) and `kpi_config/models/�
 |---|---|
 | `pipeline/calc_engine.py` | `compute_cuts`: per cut, mask, combos, `evaluate` (combo phase), `apply_to_cut` (cut phase), cut-derived arithmetic, `having:`. Memo on `(measure_key, anchor, selection)`. |
 | `pipeline/predicates.py` | Evaluate `having:` / `op: predicate` lists on a finished row. |
-| `capabilities/ops/combo.py` | Combo-phase kinds: `point`, `window`, `trend`, `arithmetic`, `fn`, `expr`, `constant`, `dimension`, `hook`, `predicate`. |
+| `capabilities/ops/combo.py` | Combo-phase kinds: `point`, `window`, `trend`, `trend_arithmetic`, `arithmetic`, `fn`, `expr`, `constant`, `dimension`, `hook`, `predicate`. |
 | `capabilities/ops/period.py` | Combo-phase period/compare: `lag`, `lead`, `index`, `diff`, `pct_change`, `vs_target`, `threshold`. |
 | `capabilities/ops/cut.py` | Cut-phase kinds: `rank`, `percent_of_total`, `ntile`, `dense_rank`, `gap_to_leader`, … |
 | `capabilities/ops/support.py` | Shared helpers (`window_bounds`, `require_base_of`, densify fact columns). Plugins import this, not `calc_engine`. |

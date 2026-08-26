@@ -57,8 +57,39 @@ def test_constant_requires_a_number(extra_config):
         load_kpi(9841, extra_config)
     except BindError as exc:
         assert "constant" in str(exc)
+        assert "requires `value:`" in str(exc)
     else:
         raise AssertionError("expected BindError")
+
+
+def test_constant_null_binds_and_returns_null(parquet_path, extra_config):
+    """YAML value: null is a JSON null, not a bind error."""
+    spec = minimal_kpi(
+        98411,
+        measures={
+            "current_value": {"of": "sotif_value", "op": "point", "offset": {"months": 0}},
+            "target": {"op": "constant", "value": None},
+            "filled": {
+                "op": "fn",
+                "fn": "coalesce",
+                "inputs": ["target", "current_value"],
+            },
+        },
+    )
+    write_yaml(extra_config / "kpis" / "98411.yaml", spec)
+    kpi = load_kpi(98411, extra_config)
+    by_key = {m.key: m for m in kpi.measures}
+    assert by_key["target"].constant is None
+    ctx = make_context(
+        parquet_path,
+        measures=["current_value", "target", "filled"],
+        supplier=["ABC"],
+        kpi_id=98411,
+    )
+    result = compute(ctx, config_dir=extra_config)
+    row = find_row(result, cut="R", reason="LATE_SUPPLIER", region="NA")
+    assert row["target"] is None
+    assert row["filled"] == 30.0
 
 
 def test_rank_desc_across_reason_codes_on_cut_g(parquet_path, extra_config):

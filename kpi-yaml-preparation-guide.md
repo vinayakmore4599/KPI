@@ -146,6 +146,7 @@ Do not mix `expr:` with `columns:` / `op:` / `sql:` on the same base measure.
 | Trailing N months (or periods) as **one number** | `op: window` + `trailing: { months: N }` + `inclusive: true`. Do not add N point keys by hand |
 | YTD / QTD / MTD / WTD | `op: window` + `range: ytd` (etc.). `qtd` is not trailing 3. `wtd` needs `time.grain: day` |
 | Graph / sparkline / last 12 months as an **array** | `op: trend` + `trailing:`. Restrict `cuts: [default]` if the payload would explode |
+| Graph of a **ratio of two totals** each period (S-OTIF %) | `op: trend_arithmetic` + `expr:` over two `sum` bases. Not `trend of` a composite |
 | Ratio / share **on the same row** (already aggregated) | `op: expr` or `op: fn` (`divide`, `percent`, `subtract`, …) |
 | This group as % of **all groups on this cut** | `op: percent_of_total` (not `fn: percent`) |
 | Rank groups | `op: rank` + `order: desc` or `asc` |
@@ -170,7 +171,7 @@ Do not mix `expr:` with `columns:` / `op:` / `sql:` on the same base measure.
 
 **Window `range:`:** `trailing`, `leading`, `cumulative`, `ytd`, `mtd`, `qtd`, `wtd`, `full_month`, `full_quarter`, `full_year`.
 
-**Measure `op:` (closed list):** `point`, `window`, `trend`, `arithmetic`, `fn`, `expr`, `constant`, `dimension`, `predicate`, `hook`, `rank`, `percent_of_total`, `ntile`, `dense_rank`, `row_number`, `cumulative_share`, `running_total`, `contribution`, `lag`, `lead`, `index`, `vs_target`, `threshold`, `percent_rank`, `gap_to_leader`, `gap_to_avg`, `zscore`, `running_avg`, `top_n`, `diff`, `pct_change`.
+**Measure `op:` (closed list):** `point`, `window`, `trend`, `trend_arithmetic`, `arithmetic`, `fn`, `expr`, `constant`, `dimension`, `predicate`, `hook`, `rank`, `percent_of_total`, `ntile`, `dense_rank`, `row_number`, `cumulative_share`, `running_total`, `contribution`, `lag`, `lead`, `index`, `vs_target`, `threshold`, `percent_rank`, `gap_to_leader`, `gap_to_avg`, `zscore`, `running_avg`, `top_n`, `diff`, `pct_change`.
 
 Use `op: fn` when operand names must not be swapped (`inputs:`). Use `op: arithmetic` for `left`/`right` or `of: [a, b]`. Use `op: expr` for nested `+ - * /` and CASE over **measure keys**.
 
@@ -334,6 +335,7 @@ Work down this list and stop at the first row that fits.
 | One period’s value (current, last year, last quarter) | `measures` + `op: point` | A window of length 1 unless you really want window null/zero rules |
 | Trailing / leading / YTD / QTD total or avg | `op: window` (`range: qtd` is quarter-to-date, not trailing 3) | Summing several `point` measures by hand |
 | A graph series | `op: trend` (axis in `trend_axes`, English labels in `trend_labels`) | Returning many `point` keys |
+| Per-period ratio of two **aggregated** bases | `op: trend_arithmetic` + `expr:` | `trend of` a composite, or `agg: sum` of a row ratio |
 | Same KPI at day / week / month | `time.grains` + `data_points` map; host sends `parameters.time_grain` | Changing `trailing: { months: 3 }` to mean “3 weeks” |
 | Positive / Negative / Neutral | `op: fn` + `fn: sign_label` | A `green` flag (that is `green_when`) |
 | Row is on the good side of a bar | top-level `green_when` | `sign_label` or a host-side compare |
@@ -343,7 +345,7 @@ Work down this list and stop at the first row that fits.
 | Share **within** a parent dimension | `op: percent_of_total` + `partition_by:` | A second `group_by` on the measure (that is the cut) |
 | Rank reasons / regions | `op: rank` (same shape as `percent_of_total`) | Sorting in the host after the fact if you need engine ranks |
 | Nested formula over **other measures** | `op: expr` | `base_measures.expr` (that is per-row, then aggregated) |
-| A fixed target / goal | `op: constant` | Hard-coding the number in every `expr` |
+| A fixed target / goal | `op: constant` (`value: null` is allowed) | Hard-coding the number in every `expr` |
 | Quartiles, Pareto, running totals, vs-leader | add-on cut ops (`ntile`, `cumulative_share`, `gap_to_leader`, …) | Hand-ranking in the host |
 | Same measure at another period | `op: lag` / `lead` / `diff` / `pct_change` / `index` | A second `point` plus arithmetic when a period op already exists |
 | Series stats (EWMA, hit rate, CAGR) | `op: hook` + a name from [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) | Editing `pipeline/` per KPI |
@@ -732,6 +734,7 @@ Every host `measure_key` must be a key here. `op:` and `kind:` are the same fiel
 | `point` | `of:` base, `offset:` | scalar | One period |
 | `window` | `of:` base, `trailing:` or `range:` | scalar | 3m / 6m / 12m / YTD / next N |
 | `trend` | `of:` base, `trailing:` | array | Graph |
+| `trend_arithmetic` | `of:` bases + `expr:`/`fn:`, or zip of trends | array | Per-period ratio of totals (not `trend of` a composite) |
 | `arithmetic` | `fn:` + `left`/`right` or `of: [a, b, …]` | scalar | YoY, ratio, n-ary math |
 | `fn` | `fn:` + `inputs:` | scalar | Named function over measures |
 | `expr` | `expr:` | scalar | Nested `+ - * /` over measures |
@@ -818,7 +821,22 @@ trend_n:
 
 Fixed-length array. Shared x-axis is `trend_axes` (ISO period starts) plus `trend_labels` (fixed English: `23 Mar`, `2026-W30`, `Jul 2026`, `2026-Q1`, `2026`). Same keys and lengths; two days in the same week stay distinct. Labels are not locale-dependent. Empty `sum`/`count` slots are `0`; others `null`. Cap: **50,000 cells** (rows × length) per cut. A day pick plus a large `data_points` widens the extract spine; the cap still applies.
 
-`cuts:` is honoured for **trend**, **rank**, and **percent_of_total** only.
+`cuts:` is honoured for **trend**, **trend_arithmetic**, **rank**, and **percent_of_total** only.
+
+### 8.3a `trend_arithmetic` — per-period ratio of totals
+
+Do not `op: trend` a composite (`current_period_value`). For S-OTIF % each month:
+
+```yaml
+sotif_pct_trend:
+  op: trend_arithmetic
+  of: [total_po, supplier_driven_po]
+  expr: (total_po - supplier_driven_po) / total_po
+  trailing: { months: 12 }
+  cuts: [G]
+```
+
+Previous year: same block plus `offset: { years: 1 }`. Series-zip of two trends is allowed when windows and `cuts:` match; the parent must not set `trailing:`. `/0` and null operands leave a null slot. Do not `agg: sum` a row-level ratio.
 
 ### 8.4 `arithmetic` — built-in measure functions
 

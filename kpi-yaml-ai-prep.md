@@ -54,6 +54,7 @@ Host `selected_dimensions` picks from YAML `dimensions:` (GROUP BY, not math). D
 | Trailing N as **one number** | `op: window` + `trailing: { months: N }` + `inclusive: true` |
 | YTD/QTD/MTD/WTD | `op: window` + `range: ytd` (etc.). `qtd` ≠ trailing 3. `wtd` needs grain `day` |
 | Graph / sparkline array | `op: trend` + `trailing:`. Default cut only unless `cuts:` |
+| Graph of a ratio of two **period totals** | `op: trend_arithmetic` + `expr:` over two `sum` bases. Not `trend of` a composite |
 | Ratio of two **already aggregated** measures | `op: expr` or `op: fn` (`divide`, `percent`, …) |
 | This group as % of all groups on this cut | `op: percent_of_total` (not `fn: percent`) |
 | Share of **another cut’s** total | `percent_of_total` + `versus_cut:` |
@@ -75,7 +76,7 @@ Host `selected_dimensions` picks from YAML `dimensions:` (GROUP BY, not math). D
 
 **`agg:`** `sum` `avg` `count` `count_distinct` `min` `max` `median` `percentile` (+ `percentile:`) `first` `last` `stddev` `variance` `mode`. Non-additive re-read rows. `stddev`/`variance` sample ddof=1 (1 row → null). `mode` ties → smallest. `count` on text = row count.
 
-**`op:` (measures)** `point` `window` `trend` `arithmetic` `fn` `expr` `constant` `dimension` `predicate` `hook` `rank` `percent_of_total` `ntile` `dense_rank` `row_number` `cumulative_share` `running_total` `contribution` `lag` `lead` `index` `vs_target` `threshold` `percent_rank` `gap_to_leader` `gap_to_avg` `zscore` `running_avg` `top_n` `diff` `pct_change`.
+**`op:` (measures)** `point` `window` `trend` `trend_arithmetic` `arithmetic` `fn` `expr` `constant` `dimension` `predicate` `hook` `rank` `percent_of_total` `ntile` `dense_rank` `row_number` `cumulative_share` `running_total` `contribution` `lag` `lead` `index` `vs_target` `threshold` `percent_rank` `gap_to_leader` `gap_to_avg` `zscore` `running_avg` `top_n` `diff` `pct_change`.
 
 Prefer `op: fn` + `inputs:` when order must not swap. `arithmetic` = `left`/`right` or `of: [a,b]`. `expr` = nested `+ - * /` and CASE over **measure keys**. Rank/`percent_of_total` may feed `arithmetic`/`fn`/`expr`; trends/hooks may not consume cut ops.
 

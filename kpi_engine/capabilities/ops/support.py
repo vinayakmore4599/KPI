@@ -451,6 +451,82 @@ def window_value(
     return _num_or_none(window[col].sum())
 
 
+def operand_names(spec: OutputSpec) -> tuple[str, ...]:
+    """`of: [a, b, …]` operands, else `left` / `right`."""
+    if spec.operands:
+        return spec.operands
+    return tuple(n for n in (spec.left, spec.right) if n)
+
+
+def effective_measure_cuts(spec: OutputSpec, kpi: KpiSpec) -> tuple[str, ...]:
+    """cuts: list, or default_cut when omitted."""
+    return spec.cuts if spec.cuts is not None else (kpi.default_cut,)
+
+
+def window_fingerprint(spec: OutputSpec, kpi: KpiSpec) -> tuple[Any, ...]:
+    """Fields two series-mode deps must share to zip."""
+    return (
+        spec.trailing_months,
+        spec.trailing_from,
+        spec.trailing_unit,
+        spec.inclusive,
+        spec.window_range,
+        spec.offset,
+        effective_measure_cuts(spec, kpi),
+    )
+
+
+def parent_declares_window(spec: OutputSpec) -> bool:
+    """True when trailing, range, or a shifting offset is set on this spec."""
+    if spec.trailing_months is not None or spec.trailing_from or spec.window_range:
+        return True
+    offset = spec.offset
+    if offset is None:
+        return False
+    return bool(
+        offset.months or offset.years or offset.days or offset.quarters or offset.weeks
+    )
+
+
+def trend_axis_dates(spec: OutputSpec, kpi: KpiSpec, plan: TimePlan | None) -> list[date]:
+    """Grain steps for a base-mode trend / trend_arithmetic window."""
+    if plan is None or plan.anchor is None or kpi.time is None:
+        return []
+    start, end = window_bounds(plan.anchor, spec, kpi)
+    return list(period_range_inclusive(start, end, kpi.time))
+
+
+def trend_slot_value(
+    series: pd.DataFrame,
+    kpi: KpiSpec,
+    measure,
+    month: date,
+    ts: pd.Series | None,
+    detail: pd.DataFrame | None = None,
+    combo: pd.Series | None = None,
+    group_dims: list[str] | None = None,
+) -> float | None:
+    """One grain slot of a base, same fill as ``trend_values``."""
+    if measure.agg in NON_ADDITIVE_AGGS:
+        return agg_detail(detail, kpi, measure, group_dims or [], combo, month, month)
+    zero_fill = measure.agg in {"sum", "count"}
+    if ts is None:
+        return 0.0 if zero_fill else None
+    hit = series[ts == pd.Timestamp(month)]
+    if hit.empty:
+        return 0.0 if zero_fill else None
+    row = hit.iloc[0]
+    if not bool(row.get("_observed", True)):
+        return 0.0 if zero_fill else None
+    if measure.agg == "avg":
+        total = row.get(f"{measure.name}__sum")
+        count = row.get(f"{measure.name}__count")
+        if pd.isna(total) or pd.isna(count) or count == 0:
+            return None
+        return float(total / count)
+    return _num_or_none(row[measure.name])
+
+
 def trend_values(
     series: pd.DataFrame,
     kpi: KpiSpec,
@@ -463,41 +539,55 @@ def trend_values(
     """Period series for a graph: fixed-length array aligned to a period axis."""
     if plan is None or plan.anchor is None:
         return [], None
-    start, end = window_bounds(plan.anchor, spec, kpi)
-    axis_dates = period_range_inclusive(start, end, kpi.time)
+    axis_dates = trend_axis_dates(spec, kpi, plan)
     axis = [iso_period(d, kpi.time) for d in axis_dates]
     measure = base_measure(kpi, spec.of)
-    values: list[float | None] = []
     ts = (
         pd.to_datetime(series[kpi.time.column])
-        if not series.empty and kpi.time.column in series.columns
+        if not series.empty and kpi.time is not None and kpi.time.column in series.columns
         else None
     )
-    for month in axis_dates:
-        if measure.agg in NON_ADDITIVE_AGGS:
-            values.append(agg_detail(detail, kpi, measure, group_dims or [], combo, month, month))
-            continue
-        if ts is None:
-            values.append(0.0 if measure.agg in {"sum", "count"} else None)
-            continue
-        hit = series[ts == pd.Timestamp(month)]
-        if hit.empty:
-            values.append(0.0 if measure.agg in {"sum", "count"} else None)
-            continue
-        row = hit.iloc[0]
-        if not bool(row.get("_observed", True)):
-            values.append(0.0 if measure.agg in {"sum", "count"} else None)
-            continue
-        if measure.agg == "avg":
-            total = row.get(f"{measure.name}__sum")
-            count = row.get(f"{measure.name}__count")
-            if pd.isna(total) or pd.isna(count) or count == 0:
-                values.append(None)
-            else:
-                values.append(float(total / count))
-            continue
-        values.append(_num_or_none(row[measure.name]))
+    values = [
+        trend_slot_value(
+            series, kpi, measure, month, ts, detail, combo, group_dims
+        )
+        for month in axis_dates
+    ]
     return axis, values
+
+
+def trend_arithmetic_base_values(
+    series: pd.DataFrame,
+    kpi: KpiSpec,
+    spec: OutputSpec,
+    plan: TimePlan | None,
+    names: tuple[str, ...],
+    detail: pd.DataFrame | None = None,
+    combo: pd.Series | None = None,
+    group_dims: list[str] | None = None,
+) -> tuple[list[str], list[list[float | None]]]:
+    """Per-operand slot lists aligned to this spec's trend axis."""
+    if plan is None or plan.anchor is None:
+        return [], [[] for _ in names]
+    axis_dates = trend_axis_dates(spec, kpi, plan)
+    axis = [iso_period(d, kpi.time) for d in axis_dates]
+    ts = (
+        pd.to_datetime(series[kpi.time.column])
+        if not series.empty and kpi.time is not None and kpi.time.column in series.columns
+        else None
+    )
+    columns: list[list[float | None]] = []
+    for name in names:
+        measure = base_measure(kpi, name)
+        columns.append(
+            [
+                trend_slot_value(
+                    series, kpi, measure, month, ts, detail, combo, group_dims
+                )
+                for month in axis_dates
+            ]
+        )
+    return axis, columns
 
 
 def agg_detail(

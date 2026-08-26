@@ -1562,7 +1562,7 @@ def _assert_measure_graph(
             if name in by_key:
                 dep = by_key[name]
                 if get_op(dep.kind).phase == "cut" and get_op(spec.kind).phase != "cut":
-                    if spec.kind in {"trend", "hook"}:
+                    if spec.kind in {"trend", "trend_arithmetic", "hook"}:
                         raise BindError(
                             f"measures.{spec.key} cannot use {name!r} (op={dep.kind}) as an "
                             "input. Trends and hooks cannot consume cut-phase ops."
@@ -1573,8 +1573,9 @@ def _assert_measure_graph(
                             "input. Rank and percent_of_total feed arithmetic, fn, or expr."
                         )
                 continue
-            if get_op(spec.kind).phase == "cut" and name in known_bases:
-                continue
+            if name in known_bases:
+                if spec.kind == "trend_arithmetic" or get_op(spec.kind).phase == "cut":
+                    continue
             if name in helpers:
                 raise BindError(
                     f"measures.{spec.key} of={name!r} is a row helper (no agg:). "

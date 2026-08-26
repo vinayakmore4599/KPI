@@ -344,7 +344,7 @@ class Offset:
 
 @dataclass(frozen=True)
 class OutputSpec:
-    """One requestable measure (point, window, trend, arithmetic, fn, expr, hook, constant, rank, percent_of_total, or dimension)."""
+    """One requestable measure (point, window, trend, trend_arithmetic, arithmetic, fn, expr, hook, constant, rank, percent_of_total, or dimension)."""
 
     key: str
     kind: OpName

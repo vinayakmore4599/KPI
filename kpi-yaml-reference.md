@@ -106,6 +106,7 @@ measures:                    # every measure_key the UI can send
 | One period's value | `op: point` |
 | Trailing / leading / YTD window | `op: window` (`range: trailing` / `leading` / `cumulative`) |
 | An array for a graph | `op: trend` |
+| Per-period ratio of two aggregated bases (S-OTIF %) | `op: trend_arithmetic` |
 | YoY, ratio, same-row share, n-ary add/sub | `op: arithmetic` |
 | Share of **all groups on this cut** | `op: percent_of_total` (see §5.3c) |
 | Rank of groups on a cut | `op: rank` |
@@ -582,7 +583,46 @@ trend_12m:
 - Guardrail: rows × array length may not exceed **50,000 cells** per cut, otherwise the request fails and asks you to narrow `cuts`.
 - `offset:` on a trend shifts the axis window (last year's 12-month trend is `op: trend` + `offset: { years: 1 }`). `lag { of: trend }` stays a bind error; put `offset:` on the trend.
 
-`cuts:` is honoured for **trend**, **rank**, and **percent_of_total**. On other ops it is ignored.
+`cuts:` is honoured for **trend**, **trend_arithmetic**, **rank**, and **percent_of_total**. On other ops it is ignored.
+
+`of:` on `op: trend` must name a **base measure**. A composite (`current_period_value`, `op: expr`, `op: arithmetic`, a window) is a bind error. Do not rename a PO-count trend to a S-OTIF % key.
+
+### 5.3aa `trend_arithmetic` — per-period ratio of totals
+
+Same axis as `trend`, but each slot is `fn` or `expr` over **that period's aggregated bases** (or over two already-aligned trend arrays). This is the stored-procedure ratio-of-totals, not a sum of row-level ratios, and not `trend of` a scalar composite.
+
+```yaml
+# Remove: current_period_trend of: current_period_value  (bind error)
+# Keep debug counts if needed:
+total_po_trend:
+  of: total_po
+  op: trend
+  trailing: { months: 12 }
+  cuts: [G]
+
+# Production S-OTIF % series (0–1). Host requests this key.
+sotif_pct_trend:
+  op: trend_arithmetic
+  of: [total_po, supplier_driven_po]
+  expr: (total_po - supplier_driven_po) / total_po
+  trailing: { months: 12 }
+  inclusive: true
+  cuts: [G]
+
+sotif_pct_trend_ly:            # last year's 12 months, not trend of previous_year_value
+  op: trend_arithmetic
+  of: [total_po, supplier_driven_po]
+  expr: (total_po - supplier_driven_po) / total_po
+  trailing: { months: 12 }
+  offset: { years: 1 }
+  cuts: [G]
+```
+
+- **Base mode:** `of:` names `base_measures` with additive `agg` (`sum` / `count` / `min` / `max` / `avg`). `trailing:` / `range:` / `offset:` live on this measure, same as `trend`.
+- **Series mode:** `of:` names `trend` or `trend_arithmetic` measures with identical trailing/range/offset/cuts. The parent **must not** set `trailing:` / `range:` / `offset:`; it inherits the first operand's axis.
+- Exactly one of `fn:` or `expr:` (no default `fn`). Folded `divide` is left-associative and is **not** `(a − b) / c` — use `expr:` for S-OTIF.
+- Any null operand or divide-by-zero → null **slot**; the array length does not shrink.
+- `parameters.time_grain` rebuckets the spine (month / quarter / year). `trailing: { months: 12 }` stays 12 calendar months; use `trailing: { periods: N }` or `from: data_points` so length follows the pick.
 
 ### 5.3a `constant` — a literal number
 
@@ -592,7 +632,7 @@ target:
   value: 0.98
 ```
 
-The same scalar on every cut combo. Use it as `left` / `right` / `inputs` / `expr` for ratios against a goal. No extract and no lookback.
+The same scalar on every cut combo. Use it as `left` / `right` / `inputs` / `expr` for ratios against a goal. No extract and no lookback. `value: null` is JSON `null`; omitting `value:` is still a bind error. `from_param:` cannot supply null (`int|float` only).
 
 ### 5.3b `rank` — rank values on a cut
 

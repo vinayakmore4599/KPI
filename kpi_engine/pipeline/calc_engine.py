@@ -207,8 +207,8 @@ def compute_cuts(
             if combo_frame.empty:
                 continue
 
-        trend_keys, cut_phase_keys = _phase_keys(eval_need, measures, cut, kpi)
-        _guard_trend_payload(len(combo_frame), trend_keys, measures, cut, kpi)
+        trend_keys, cut_phase_keys = _phase_keys(need, measures, cut, kpi)
+        _guard_trend_payload(len(combo_frame), trend_keys, measures, cut, kpi, plan)
 
         cut_rows = _evaluate_combos(
             combo_frame,
@@ -222,6 +222,7 @@ def compute_cuts(
             eval_need,
             dim_keys,
             trend_axes,
+            axis_keys=set(need),
         )
         if kpi.having is not None:
             kept, dropped = _apply_having(cut_rows, kpi, cut, group_dims)
@@ -250,7 +251,7 @@ def compute_cuts(
                 )
                 trend_axes.update(extra_axes)
                 group_dims = list(kpi.having.then_group_by)
-                trend_keys, cut_phase_keys = _phase_keys(eval_need, measures, cut, kpi)
+                trend_keys, cut_phase_keys = _phase_keys(need, measures, cut, kpi)
         _store_versus_totals(cut_rows, cut.name, eval_need, measures, totals)
         for key in cut_phase_keys:
             spec = measures[key]
@@ -308,6 +309,7 @@ def _evaluate_combos(
     need: list[str],
     dim_keys: list[str],
     trend_axes: dict[str, list[str]],
+    axis_keys: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     cut_rows: list[dict[str, Any]] = []
     time_col = kpi.time.column if kpi.time else ""
@@ -361,7 +363,8 @@ def _evaluate_combos(
             )
             if plugin.emits_trend:
                 axis, values = value
-                trend_axes[key] = axis
+                if axis_keys is None or key in axis_keys:
+                    trend_axes[key] = axis
                 row[key] = values
             else:
                 row[key] = value
@@ -497,6 +500,7 @@ def _rollup_after_having(
         need,
         dim_keys,
         extra_axes,
+        axis_keys=set(need),
     )
     return new_rows, extra_axes
 
@@ -708,18 +712,32 @@ def _guard_trend_payload(
     catalog: dict[str, OutputSpec],
     cut: CutSpec,
     kpi: KpiSpec,
+    plan: TimePlan | None,
 ) -> None:
-    """Fail if row_count × trend length would exceed TREND_CELL_CAP."""
+    """Fail if row_count × actual trend axis length would exceed TREND_CELL_CAP."""
     grain = list(effective_group_by(cut, kpi))
     for key in trend_keys:
-        length = catalog[key].trailing_months or 1
+        spec = catalog[key]
+        length = _trend_axis_length(spec, kpi, plan)
         cells = row_count * length
         if cells > TREND_CELL_CAP:
             raise KPIEngineError(
                 f"Trend {key!r} on cut {cut.name!r} would emit {cells} cells "
-                f"(cap {TREND_CELL_CAP}). Narrow selected_dimensions={list(kpi.request_grain)} "
+                f"(exceeds cap {TREND_CELL_CAP}). Narrow selected_dimensions={list(kpi.request_grain)} "
                 f"or measures.{key}.cuts. effective group_by={grain}."
             )
+
+
+def _trend_axis_length(spec: OutputSpec, kpi: KpiSpec, plan: TimePlan | None) -> int:
+    """Period count from periods(), not trailing_months-or-1."""
+    plugin = get_op(spec.kind)
+    try:
+        meta = plugin.periods(spec, kpi, plan)
+    except BindError:
+        meta = None
+    if meta and meta.get("periods"):
+        return max(len(meta["periods"]), 1)
+    return spec.trailing_months or 1
 
 
 def _json_value(value: Any) -> Any:

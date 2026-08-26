@@ -44,6 +44,20 @@ trend_12m:
   trailing: { months: 12 }
 ```
 
+### `trend_arithmetic`
+
+Per-period fn or expr over base totals or aligned trend series (ratio-of-totals, not a trend of a composite scalar).  
+`role: platform` · `enabled: on`
+
+```yaml
+sotif_pct_trend:
+  op: trend_arithmetic
+  of: [total_po, supplier_driven_po]
+  expr: (total_po - supplier_driven_po) / total_po
+  trailing: { months: 12 }
+  cuts: [G]
+```
+
 ### `arithmetic`
 
 Combine other measures with a registered measure function (default divide).  

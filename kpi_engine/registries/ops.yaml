@@ -37,6 +37,23 @@ trend:
   module: kpi_engine.capabilities.ops.combo
   attr: Trend
 
+trend_arithmetic:
+  role: platform
+  enabled: true
+  aliases: []
+  description: >
+    Per-period fn or expr over base totals or aligned trend series
+    (ratio-of-totals, not a trend of a composite scalar).
+  example: |
+    sotif_pct_trend:
+      op: trend_arithmetic
+      of: [total_po, supplier_driven_po]
+      expr: (total_po - supplier_driven_po) / total_po
+      trailing: { months: 12 }
+      cuts: [G]
+  module: kpi_engine.capabilities.ops.combo
+  attr: TrendArithmetic
+
 arithmetic:
   role: platform
   enabled: true

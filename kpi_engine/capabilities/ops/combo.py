@@ -1,4 +1,4 @@
-"""Combo-phase measure kinds (point, window, trend, arithmetic, fn, expr, constant, dimension, hook).
+"""Combo-phase measure kinds (point, window, trend, trend_arithmetic, arithmetic, fn, expr, constant, dimension, hook).
 
 Split this file by family when it is hard to review — never one file per name.
 """
@@ -208,6 +208,207 @@ class Trend(OpPlugin):
         return support.trend_period_meta(spec, kpi, plan)
 
 
+class TrendArithmetic(OpPlugin):
+    name = "trend_arithmetic"
+    requires_time = True
+    cut_restricted = True
+    emits_trend = True
+    extra_keys = frozenset({"fn", "expr", "left", "right"})
+
+    def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
+        spec = super().parse(key, common)
+        raw = common.raw
+        names = list(support.operand_names(spec))
+        if spec.of and not names:
+            names = [spec.of]
+        if len(names) < 2:
+            raise BindError(
+                f"measures.{key} op=trend_arithmetic requires `of: [a, b, …]` "
+                "or `left:` and `right:`."
+            )
+        has_fn = raw.get("fn") is not None and str(raw.get("fn")).strip() != ""
+        has_expr = raw.get("expr") is not None and str(raw.get("expr")).strip() != ""
+        if has_fn and has_expr:
+            raise BindError(
+                f"measures.{key} op=trend_arithmetic cannot set both `fn:` and `expr:`."
+            )
+        if not has_fn and not has_expr:
+            raise BindError(
+                f"measures.{key} op=trend_arithmetic requires `fn:` or `expr:` "
+                "(there is no default fn)."
+            )
+        fn_name = str(raw["fn"]).strip() if has_fn else None
+        expr = str(raw["expr"]).strip() if has_expr else None
+        if fn_name is not None:
+            from kpi_engine.pipeline.fn_apply import MEASURE_FNS, measure_fn_error
+
+            if fn_name in _DATE_FNS:
+                raise BindError(
+                    f"measures.{key} op=trend_arithmetic cannot use date function "
+                    f"{fn_name!r}."
+                )
+            if fn_name not in MEASURE_FNS:
+                raise BindError(
+                    f"measures.{key} names unknown fn {fn_name!r}. "
+                    f"Registered: {sorted(MEASURE_FNS)}."
+                )
+            problem = measure_fn_error(fn_name, len(names))
+            if problem:
+                raise BindError(f"measures.{key} fn {problem}")
+        if expr is not None:
+            node = parse_expression(expr, what=f"measures.{key}.expr")
+            from kpi_engine.pipeline.fn_apply import MEASURE_FNS
+
+            assert_expr_calls(node, MEASURE_FNS, what=f"measures.{key}.expr")
+            assert_expr_param_usage(
+                node, common.parameter_types, what=f"measures.{key}.expr"
+            )
+            used = [
+                n
+                for n in expression_columns(node)
+                if n not in common.parameter_names
+            ]
+            unknown = [n for n in used if n not in names]
+            if unknown:
+                raise BindError(
+                    f"measures.{key} expr names {unknown[0]!r}, which is not in "
+                    f"of: {names}."
+                )
+            if any(fn in expr for fn in _DATE_FNS):
+                raise BindError(
+                    f"measures.{key} op=trend_arithmetic expr cannot call a date "
+                    "function."
+                )
+        return OutputSpec(
+            **{
+                **spec.__dict__,
+                "operands": tuple(names),
+                "left": raw.get("left"),
+                "right": raw.get("right"),
+                "fn": fn_name,
+                "expr": expr,
+            }
+        )
+
+    def dependencies(self, spec: OutputSpec) -> tuple[str, ...]:
+        return support.operand_names(spec)
+
+    def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
+        names = support.operand_names(spec)
+        bases = {b.name: b for b in kpi.base_measures}
+        by_key = {m.key: m for m in kpi.measures}
+        unknown = [n for n in names if n not in bases and n not in by_key]
+        if unknown:
+            raise BindError(
+                f"measures.{spec.key} of={unknown[0]!r} is not a base measure or "
+                f"trend. Declared base_measures: {sorted(bases)}; "
+                f"measures: {sorted(by_key)}."
+            )
+        base_hits = [n for n in names if n in bases]
+        series_hits = [n for n in names if n in by_key]
+        if base_hits and series_hits:
+            raise BindError(
+                f"measures.{spec.key} op=trend_arithmetic cannot mix base measures "
+                f"{base_hits} with trend measures {series_hits}."
+            )
+        if series_hits:
+            self._validate_series_mode(spec, kpi, names, by_key)
+            return
+        self._validate_base_mode(spec, kpi, names, bases)
+
+    def _validate_base_mode(self, spec, kpi, names, bases) -> None:
+        for name in names:
+            helper = bases[name]
+            if helper.agg is None:
+                raise BindError(
+                    f"measures.{spec.key} of={name!r} is a row helper (no agg:)."
+                )
+            if helper.agg in NON_ADDITIVE_AGGS:
+                raise BindError(
+                    f"measures.{spec.key} of={name!r} agg={helper.agg!r} is "
+                    "non-additive. trend_arithmetic is a ratio of period totals; "
+                    "use sum/count/min/max/avg bases."
+                )
+        if kpi.time is None:
+            raise BindError(f"measures.{spec.key} (trend_arithmetic) needs a time: block.")
+        support.assert_window_range(spec, kpi)
+
+    def _validate_series_mode(self, spec, kpi, names, by_key) -> None:
+        from kpi_engine.pipeline.op_registry import get_op
+
+        for name in names:
+            child = by_key[name]
+            if not get_op(child.kind).emits_trend:
+                raise BindError(
+                    f"measures.{spec.key} of={name!r} is op={child.kind}, not a "
+                    "trend. trend_arithmetic series mode zips trend / "
+                    "trend_arithmetic measures; use base measures with expr: "
+                    "for a ratio of totals."
+                )
+        if support.parent_declares_window(spec):
+            raise BindError(
+                f"measures.{spec.key} op=trend_arithmetic series mode cannot set "
+                "`trailing:`, `range:`, or `offset:` on the parent. Put the window "
+                "on the operand trends; this measure inherits their axis."
+            )
+        first = by_key[names[0]]
+        want = support.window_fingerprint(first, kpi)
+        for name in names[1:]:
+            got = support.window_fingerprint(by_key[name], kpi)
+            if got != want:
+                raise BindError(
+                    f"measures.{spec.key} operands {names[0]!r} and {name!r} "
+                    "must share trailing, range, offset, inclusive, and cuts."
+                )
+
+    def lookback(self, spec, by_key, time, anchor, seen, lookback_for) -> int:
+        names = [n for n in support.operand_names(spec) if n in by_key]
+        if names:
+            return _max_dep_lookback(
+                OutputSpec(**{**spec.__dict__, "operands": tuple(names)}),
+                by_key,
+                time,
+                anchor,
+                seen,
+                lookback_for,
+            )
+        return support.window_lookback_periods(spec, time, anchor)
+
+    def lookforward(self, spec, by_key, seen, lookforward_for, time=None, anchor=None) -> int:
+        names = [n for n in support.operand_names(spec) if n in by_key]
+        if names:
+            return _max_dep_lookforward(
+                OutputSpec(**{**spec.__dict__, "operands": tuple(names)}),
+                by_key,
+                seen,
+                lookforward_for,
+            )
+        return support.window_lookforward_periods(spec, time, anchor)
+
+    def evaluate(self, ctx: EvalCtx) -> Any:
+        if ctx.kpi.time is None or ctx.plan is None:
+            raise CatalogError(
+                f"{ctx.spec.key} is a trend_arithmetic measure; this KPI has no time column."
+            )
+        if ctx.plan.anchor is None:
+            return [], None
+        names = support.operand_names(ctx.spec)
+        by_key = {m.key: m for m in ctx.kpi.measures}
+        if names[0] in by_key:
+            return _zip_trend_operands(ctx, names)
+        return _eval_base_trend_arithmetic(ctx, names)
+
+    def periods(self, spec, kpi, plan):
+        names = support.operand_names(spec)
+        by_key = {m.key: m for m in kpi.measures}
+        if names and names[0] in by_key:
+            from kpi_engine.pipeline.op_registry import get_op
+
+            child = by_key[names[0]]
+            return get_op(child.kind).periods(child, kpi, plan)
+        return support.trend_period_meta(spec, kpi, plan)
+
+
 class Arithmetic(OpPlugin):
     name = "arithmetic"
     extra_keys = frozenset({"fn", "left", "right"})
@@ -374,8 +575,10 @@ class Constant(OpPlugin):
     def parse(self, key: str, common: CommonMeasureFields) -> OutputSpec:
         spec = super().parse(key, common)
         raw = common.raw
-        if raw.get("value") is None:
+        if "value" not in raw:
             raise BindError(f"measures.{key} op=constant requires `value:`.")
+        if raw["value"] is None:
+            return OutputSpec(**{**spec.__dict__, "constant": None})
         try:
             constant = float(raw["value"])
         except (TypeError, ValueError) as exc:
@@ -629,6 +832,83 @@ def _max_dep_lookforward(spec, by_key, seen, lookforward_for) -> int:
         ),
         default=0,
     )
+
+
+def _compose_trend_slot(spec: OutputSpec, names: tuple[str, ...], values: list[Any]) -> Any:
+    """fn or expr over one period's operand scalars."""
+    from kpi_engine.pipeline.fn_apply import call_measure_fn, eval_expr_scalar
+
+    if spec.expr:
+        return eval_expr_scalar(
+            parse_expression(spec.expr, what=f"measures.{spec.key}.expr"),
+            dict(zip(names, values)),
+        )
+    return call_measure_fn(spec.fn or "", values)
+
+
+def _eval_base_trend_arithmetic(ctx: EvalCtx, names: tuple[str, ...]) -> Any:
+    axis, columns = support.trend_arithmetic_base_values(
+        ctx.series,
+        ctx.kpi,
+        ctx.spec,
+        ctx.plan,
+        names,
+        detail=ctx.detail,
+        combo=ctx.combo,
+        group_dims=ctx.group_dims,
+    )
+    if not axis:
+        return [], None
+    values = [
+        _compose_trend_slot(ctx.spec, names, [col[i] for col in columns])
+        for i in range(len(axis))
+    ]
+    log_measure_calc(
+        cut=ctx.cut,
+        key=ctx.spec.key,
+        op="trend_arithmetic",
+        combo=_combo(ctx),
+        result=values,
+        expr=ctx.spec.expr,
+        fn=ctx.spec.fn,
+    )
+    return axis, values
+
+
+def _unpack_trend(raw: Any, key: str) -> tuple[list[str], list[Any]]:
+    if not isinstance(raw, tuple) or len(raw) != 2:
+        raise CatalogError(
+            f"{key} expected a trend (axis, values) pair, got {type(raw).__name__}."
+        )
+    axis, values = raw
+    if values is None:
+        return list(axis or []), []
+    return list(axis or []), list(values)
+
+
+def _zip_trend_operands(ctx: EvalCtx, names: tuple[str, ...]) -> Any:
+    packed = [_unpack_trend(ctx.evaluate(ctx.catalog[n]), n) for n in names]
+    axis = packed[0][0]
+    for name, (other_axis, _) in zip(names[1:], packed[1:]):
+        if other_axis != axis:
+            raise CatalogError(
+                f"{ctx.spec.key} cannot zip {names[0]!r} and {name!r}: "
+                f"axes differ ({len(axis)} vs {len(other_axis)})."
+            )
+    values = [
+        _compose_trend_slot(ctx.spec, names, [col[1][i] for col in packed])
+        for i in range(len(axis))
+    ]
+    log_measure_calc(
+        cut=ctx.cut,
+        key=ctx.spec.key,
+        op="trend_arithmetic",
+        combo=_combo(ctx),
+        result=values,
+        expr=ctx.spec.expr,
+        fn=ctx.spec.fn,
+    )
+    return axis, values
 
 
 def _compose(ctx: EvalCtx, *, kind: str) -> Any:

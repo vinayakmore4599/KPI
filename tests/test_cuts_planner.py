@@ -93,6 +93,21 @@ def test_emit_cuts_intersects_walk():
     assert [c.name for c in emitted_cuts(_kpi(cuts, "G"))] == ["G"]
 
 
+def test_emit_cuts_preserves_default_walk_root_without_locked_cut():
+    """emit_cuts may list also_emit extras only; default_cut walk root stays."""
+    cuts = (
+        CutSpec(
+            name="G",
+            group_by=("reason_code",),
+            ignore_filters=(),
+            also_emit=("R",),
+        ),
+        CutSpec(name="R", group_by=("region",), ignore_filters=(), also_emit=()),
+    )
+    kpi = _kpi(cuts, "G", emit_cuts=("R",))
+    assert [c.name for c in emitted_cuts(kpi)] == ["G", "R"]
+
+
 def test_also_emit_chains_depth_first_and_keeps_the_default_first():
     """G → R → S emits all three, default first, in declaration order."""
     cuts = (

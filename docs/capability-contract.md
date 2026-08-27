@@ -90,7 +90,7 @@ Default (no inherit/reset): unchanged `split_filters` — if **any emitted cut**
 
 `only_cut` > `emit_cuts` ∩ walk > `locked_cut` root > `default_cut` > `also_emit`.
 
-`parameters.output_cut` remains a walk root, not a hard lock, unless `only_cut` is set. **`emit_cuts` never removes the walk root** (`output_cut` / `only_cut`); it only filters `also_emit` extras.
+`parameters.output_cut` remains a walk root, not a hard lock, unless `only_cut` is set. **`emit_cuts` never removes the walk root** (`output_cut` when sent on the context, `only_cut`, or the `default_cut` / measure-key roots that started the walk); it only filters `also_emit` extras.
 
 Dependency cuts for `versus_cut` / `from_cut` are **silent** (computed, not emitted) unless they are also on the walk.
 

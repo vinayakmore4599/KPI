@@ -89,9 +89,15 @@ def plan_emitted_cuts(kpi: KpiSpec, keys: tuple[str, ...]) -> tuple[CutSpec, ...
     if kpi.emit_cuts:
         allow = set(kpi.emit_cuts)
         walked = tuple(cut for cut in walked if cut.name in allow)
-        preserve_root = kpi.only_cut if kpi.only_cut is not None else kpi.locked_cut
-        if preserve_root is not None and preserve_root in walked_before_emit_filter:
-            kept = {cut.name for cut in walked} | {preserve_root}
+        preserve: set[str] = set()
+        if kpi.only_cut is not None:
+            preserve.add(kpi.only_cut)
+        elif kpi.locked_cut is not None:
+            preserve.add(kpi.locked_cut)
+        elif roots:
+            preserve.update(roots)
+        if preserve:
+            kept = {cut.name for cut in walked} | preserve
             by_name = {cut.name: cut for cut in kpi.cuts}
             walked = tuple(
                 by_name[name]

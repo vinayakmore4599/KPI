@@ -102,6 +102,33 @@ def test_yoy_uses_request_period_not_prior_year(parquet_path, config_dir):
     assert g["yoy_month"] == {"value": 2.0, "period": "2026-03-01"}
 
 
+def test_fn_inherits_shifted_input_period(parquet_path, extra_config):
+    """A composite over a previous-month point labels the source month, not the anchor."""
+    from tests.conftest import minimal_kpi, write_yaml
+
+    spec = minimal_kpi(9861)
+    spec["measures"]["previous_period_base"] = {
+        "op": "point",
+        "of": "sotif_value",
+        "offset": {"months": 1},
+    }
+    spec["measures"]["previous_period_doubled"] = {
+        "op": "fn",
+        "fn": "sum",
+        "inputs": ["previous_period_base", "previous_period_base"],
+    }
+    write_yaml(extra_config / "kpis" / "9861.yaml", spec)
+    ctx = make_context(
+        parquet_path,
+        measures=["previous_period_base", "previous_period_doubled"],
+        supplier=["ABC"],
+        kpi_id=9861,
+    )
+    g = find_row(compute(ctx, config_dir=extra_config), cut="G", reason="LATE_SUPPLIER")
+    assert g["previous_period_base"]["period"] == "2026-02-01"
+    assert g["previous_period_doubled"]["period"] == "2026-02-01"
+
+
 def test_index_and_diff_carry_baseline_period(parquet_path, extra_config):
     spec = minimal_kpi(9860)
     spec["measures"]["volume_index"] = {

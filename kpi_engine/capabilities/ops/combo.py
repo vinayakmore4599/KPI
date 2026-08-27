@@ -459,7 +459,8 @@ class Arithmetic(OpPlugin):
         return _compose(ctx, kind="arithmetic")
 
     def periods(self, spec, kpi, plan):
-        return support.current_period_meta(kpi, plan)
+        keys = spec.operands or tuple(n for n in (spec.left, spec.right) if n)
+        return support.composite_period_meta(kpi, plan, keys)
 
 
 class Fn(OpPlugin):
@@ -515,7 +516,7 @@ class Fn(OpPlugin):
         return _compose(ctx, kind="fn")
 
     def periods(self, spec, kpi, plan):
-        return support.current_period_meta(kpi, plan)
+        return support.composite_period_meta(kpi, plan, spec.inputs)
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         _assert_date_fn_inputs(spec, kpi)
@@ -580,7 +581,7 @@ class Expr(OpPlugin):
         return _compose(ctx, kind="expr")
 
     def periods(self, spec, kpi, plan):
-        return support.current_period_meta(kpi, plan)
+        return support.composite_period_meta(kpi, plan, spec.inputs)
 
     def validate(self, spec: OutputSpec, kpi: KpiSpec) -> None:
         _assert_date_fn_inputs(spec, kpi)
@@ -1503,7 +1504,7 @@ class Band(OpPlugin):
         return value
 
     def periods(self, spec, kpi, plan):
-        return support.current_period_meta(kpi, plan)
+        return support.composite_period_meta(kpi, plan, self.dependencies(spec))
 
 
 class Envelope(Band):

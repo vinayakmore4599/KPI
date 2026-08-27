@@ -251,6 +251,36 @@ def current_period_meta(kpi: KpiSpec, plan: TimePlan | None) -> dict[str, Any] |
     return {"period": iso_period(periods[-1], kpi.time)}
 
 
+def composite_period_meta(
+    kpi: KpiSpec,
+    plan: TimePlan | None,
+    input_keys: tuple[str, ...],
+) -> dict[str, Any] | None:
+    """Period cell for fn / arithmetic / expr from input measure periods.
+
+    When every timed input resolves to the same ``period``, use that bucket
+    (e.g. a fn over a previous-month point). When inputs disagree, keep the
+    request anchor (YoY / ratio at the selected month).
+    """
+    from kpi_engine.pipeline.op_registry import get_op
+
+    by_key = {m.key: m for m in kpi.measures}
+    periods_found: list[str] = []
+    for key in input_keys:
+        dep = by_key.get(key)
+        if dep is None:
+            continue
+        meta = get_op(dep.kind).periods(dep, kpi, plan)
+        if meta and meta.get("period"):
+            periods_found.append(str(meta["period"]))
+    if not periods_found:
+        return current_period_meta(kpi, plan)
+    unique = set(periods_found)
+    if len(unique) == 1:
+        return {"period": periods_found[0]}
+    return current_period_meta(kpi, plan)
+
+
 def compare_period_meta(
     spec: OutputSpec, kpi: KpiSpec, plan: TimePlan | None
 ) -> dict[str, Any] | None:

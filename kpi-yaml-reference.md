@@ -512,7 +512,7 @@ Time-using measures on the **returned page** are JSON objects, not bare numbers.
 | `[{period, value}, …]` | `trend`, `trend_arithmetic` | same order as `trend_axes` |
 | scalar / null | cut-phase (`rank`, `ntile`, …), `constant`, missing prior period | `"reason_rank": 1`, `"previous_year_value": null` |
 
-YoY / arithmetic / `fn` / `expr` use the **request** period, never the previous-year bucket. A null PY value stays `null` (no fake period). If wrap cannot attach a period, the number is still returned and `notes` includes `{code: period_wrap_skipped, measure, detail}`.
+YoY / arithmetic / `fn` / `expr` use the **request** period when inputs span different buckets (e.g. current vs previous year). When all timed inputs share one `period`, the composite inherits that bucket (e.g. a fn over a previous-month point). A null PY value stays `null` (no fake period). If wrap cannot attach a period, the number is still returned and `notes` includes `{code: period_wrap_skipped, measure, detail}`.
 
 ### 5.1 `point` — one period
 

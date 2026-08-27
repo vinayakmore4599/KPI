@@ -67,14 +67,16 @@ def emitted_cuts_from(
 
 def plan_emitted_cuts(kpi: KpiSpec, keys: tuple[str, ...]) -> tuple[CutSpec, ...]:
     """Locked precedence: only_cut > emit_cuts ∩ walk > locked_cut > default_cut > also_emit."""
+    roots: list[str] | None = None
     if kpi.only_cut is not None:
-        return emitted_cuts_from(kpi, (kpi.only_cut,), walk_also=False)
-
-    if kpi.locked_cut is not None:
+        walked = emitted_cuts_from(kpi, (kpi.only_cut,), walk_also=False)
+        roots = [kpi.only_cut]
+    elif kpi.locked_cut is not None:
         walked = emitted_cuts_from(kpi, (kpi.locked_cut,))
+        roots = [kpi.locked_cut]
     else:
         by_key = {m.key: m for m in kpi.measures}
-        roots: list[str] = []
+        roots = []
         for key in keys:
             spec = by_key.get(key)
             named = spec.cuts if spec is not None and spec.cuts is not None else (kpi.default_cut,)
@@ -83,9 +85,19 @@ def plan_emitted_cuts(kpi: KpiSpec, keys: tuple[str, ...]) -> tuple[CutSpec, ...
             roots = [kpi.default_cut]
         walked = emitted_cuts_from(kpi, tuple(dict.fromkeys(roots)))
 
+    walked_before_emit_filter = [cut.name for cut in walked]
     if kpi.emit_cuts:
         allow = set(kpi.emit_cuts)
         walked = tuple(cut for cut in walked if cut.name in allow)
+        preserve_root = kpi.only_cut if kpi.only_cut is not None else kpi.locked_cut
+        if preserve_root is not None and preserve_root in walked_before_emit_filter:
+            kept = {cut.name for cut in walked} | {preserve_root}
+            by_name = {cut.name: cut for cut in kpi.cuts}
+            walked = tuple(
+                by_name[name]
+                for name in walked_before_emit_filter
+                if name in kept
+            )
         if not walked:
             raise BindError(
                 f"parameters.emit_cuts {list(kpi.emit_cuts)} does not intersect "

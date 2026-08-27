@@ -33,6 +33,7 @@ def test_only_cut_emits_one_grain(parquet_path, extra_config):
 
 
 def test_emit_cuts_intersects_also_emit(parquet_path, extra_config):
+    """output_cut G + emit_cuts [R] keeps G (walk root) and also_emit R."""
     _write(
         extra_config,
         96002,
@@ -48,7 +49,7 @@ def test_emit_cuts_intersects_also_emit(parquet_path, extra_config):
         parameters={"output_cut": "G", "emit_cuts": ["R"]},
     )
     result = compute(ctx, config_dir=extra_config)
-    assert {row["output_cut"] for row in result["rows"]} == {"R"}
+    assert {row["output_cut"] for row in result["rows"]} == {"G", "R"}
 
 
 def test_from_cut_broadcasts_coarser_scalar(parquet_path, extra_config):

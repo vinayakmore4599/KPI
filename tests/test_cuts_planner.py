@@ -73,7 +73,7 @@ def test_emit_cuts_intersects_walk():
         CutSpec(name="R", group_by=("region",), ignore_filters=(), also_emit=()),
     )
     kpi = _kpi(cuts, "G", locked_cut="G", emit_cuts=("R",))
-    assert [c.name for c in emitted_cuts(kpi)] == ["R"]
+    assert [c.name for c in emitted_cuts(kpi)] == ["G", "R"]
     locked = (
         CutSpec(
             name="G",

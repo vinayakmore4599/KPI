@@ -9,6 +9,7 @@ Related docs:
 - [kpi-yaml-preparation-guide.md](kpi-yaml-preparation-guide.md) — **human deep-dive** (functions, columns vs expressions, when to use what, limits)
 - [kpi-yaml-reference.md](kpi-yaml-reference.md) — **every YAML key, op and aggregation the engine supports**
 - [kpi-system-architecture.md](kpi-system-architecture.md) — **how a request runs** (stages, DuckDB vs Pandas, diagrams)
+- [docs/onboarding/](docs/onboarding/) — **detailed Word onboarding guides** (column fn, measure fn, hook, op)
 - [README.md](README.md) — folders, install, YAML meaning
 - [kpi-framework-plan.md](kpi-framework-plan.md) — architecture and locked decisions
 
@@ -230,6 +231,17 @@ Check [CAPABILITIES.md](kpi_engine/registries/CAPABILITIES.md) first — the nam
 A new **name** is not an engine change. Add the body under `capabilities/` and the allowlist key under `registries/`. Then regenerate `registries/CAPABILITIES.md`. KPI YAML can name it immediately (section 4.3).
 
 Why this is the scaling path (freeze `pipeline/`, grow the catalog), and the exact files per op / hook / function: [kpi-system-architecture.md](kpi-system-architecture.md) §20–§21.
+
+**Detailed onboarding guides (Word + markdown):**
+
+| Extension type | Word | Markdown source |
+|---|---|---|
+| Column function | [onboarding-column-function.docx](docs/onboarding/onboarding-column-function.docx) | [onboarding-column-function.md](docs/onboarding/onboarding-column-function.md) |
+| Measure function | [onboarding-measure-function.docx](docs/onboarding/onboarding-measure-function.docx) | [onboarding-measure-function.md](docs/onboarding/onboarding-measure-function.md) |
+| Hook | [onboarding-hook.docx](docs/onboarding/onboarding-hook.docx) | [onboarding-hook.md](docs/onboarding/onboarding-hook.md) |
+| Op | [onboarding-op.docx](docs/onboarding/onboarding-op.docx) | [onboarding-op.md](docs/onboarding/onboarding-op.md) |
+
+Regenerate Word files: `pip install -e ".[docs]"` then `python scripts/generate_onboarding_docs.py`.
 
 | Change | Do not change |
 |---|---|

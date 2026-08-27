@@ -14,6 +14,8 @@ You onboard a KPI by adding YAML. You should not need to change engine code for 
 
 **How the engine runs (end-to-end flow + diagrams):** [kpi-system-architecture.md](kpi-system-architecture.md)
 
+**Catalog onboarding guides (developers / architects):** [docs/onboarding/](docs/onboarding/) — Word documents for column functions, measure functions, hooks, and ops.
+
 Locked architecture decisions: [kpi-framework-plan.md](kpi-framework-plan.md).
 
 Every Python and YAML file starts with a header covering **what it provides**, **where it is used**, **capabilities**, and **when to change it**.

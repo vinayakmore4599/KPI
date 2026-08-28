@@ -711,7 +711,7 @@ prior_month:
 **Input:** current_value series; reads value at anchor − 1 month  
 **Output:** `{ "value": 120, "period": "2026-06-01" }` (June value when anchor is July)
 
-**Partitioning:** `partition_by` on calendar `op: lag` / `lead` is a **bind error**. For entity-level partitions (per customer, per order), use `over: { partition_by: [...] }` on a **base_measure** (Section 8.4).
+**Partitioning:** `partition_by` on calendar `op: lag` / `lead` is a **bind error**. For entity-level partitions (per customer, per order), use `over: { partition_by: [...] }` on a **base_measure** (Section 8.6).
 
 **Available options (`lag` / `lead`):**
 
@@ -1107,37 +1107,251 @@ JSON ROW
 
 ---
 
-## 8. base_measures — input / output
+## 8. base_measures — input / output / full YAML examples
 
-Base measures are **not** returned to the host. They produce internal columns.
+Base measures are **internal facts** — the host never requests them. Calculated `measures` point at them with `of:`. There are **five definition patterns** plus shared modifiers.
 
-### 8.1 sql + agg
+```text
+Detail rows (DuckDB extract)
+    → row op (columns+op / expr / lookup / over)
+    → agg: fold to monthly grain
+    → densified series
+    → measures.of reads it (point, window, trend, …)
+```
+
+---
+
+### 8.1 Shared optional keys (any pattern)
+
+These can appear on most base measures (when applicable):
+
+```yaml
+base_measures:
+  example:
+    # --- one body pattern (pick exactly one) ---
+    sql: amount                    # OR columns+op OR expr OR lookup OR over
+
+    # --- fold ---
+    agg: sum                       # omit → default sum (sql/columns); omit on helper → row helper
+    percentile: 90                 # required when agg: percentile
+    weight_column: qty             # required when agg: weighted_avg
+
+    # --- row filter (Pandas, before fold) ---
+    where:
+      column: status
+      op: eq                       # eq | ne | gt | gte | lt | lte | in | between | not_between
+      value: closed                # or values: [...]
+    also_where:                    # AND-merged extra masks (same shape as where)
+      - { column: region, op: in, values: [NA, EU] }
+
+    # --- multi-model ---
+    model: shipments               # source model when KPI has model_relations
+
+    # --- advanced ---
+    replace: true                  # overwrite extract column of same name
+    agg_ok: true                   # allow sum|avg|count|count_distinct on over: (else bind error)
+
+    # --- parameter overlay (wrapper, not inside body) ---
+    when:
+      param: Level
+      cases:
+        G: { sql: green_amt, agg: sum }
+        Y: { sql: yellow_amt, agg: sum }
+      else: { sql: red_amt, agg: sum }
+```
+
+**`where` filter ops:** `in`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `like`, `ilike`, `not_like`, `between`, `not_between`, `is_null`, `is_not_null`, `regexp`, `regexp_insensitive` — plus nested `and` / `or` / `not`.
+
+**Allowed `agg` values:**  
+`sum`, `avg`, `count`, `min`, `max`, `count_distinct`, `median`, `percentile`, `first`, `last`, `stddev`, `variance`, `mode`, `geomean`, `harmonic_mean`, `any`, `all`, `weighted_avg`, `list_agg`, `string_agg`
+
+---
+
+### 8.2 `sql:` + `agg:` — direct column fold
 
 **Input:** DuckDB rows with `amount` column  
-**YAML:** `{ sql: amount, agg: sum }`  
-**Output (internal):** monthly column `sotif_value` per combo × month
+**Output (internal):** monthly column per combo × month
 
-**Options:** `sql` (column/expression), `agg` (`sum`, `count`, `avg`, `min`, `max`, `count_distinct`, `percentile`, …), `where`, `model`
+```yaml
+base_measures:
+  sotif_value:
+    sql: amount
+    agg: sum
+    where:
+      column: status
+      op: in
+      values: [O, C]
+    also_where:
+      - { column: amount, op: gt, value: 0 }
+    model: sotif                    # optional: multi-model KPI
+    replace: false                  # optional: default false
 
-### 8.2 Row filter
+  distinct_suppliers:
+    sql: supplier_name
+    agg: count_distinct
 
-**Input:** rows with status column  
-**YAML:** `{ sql: amount, agg: sum, where: { column: status, op: eq, value: closed } }`  
-**Output:** only closed rows contribute to `sotif_value`
+  snapshot_balance:
+    sql: balance
+    agg: last                       # semi-additive: last row in period
 
-**Options:** `where` / nested `and`/`or`/`not`; filter ops: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `like`, `between`, `is_null`, …
+  p90_delay:
+    sql: delay_days
+    agg: percentile
+    percentile: 90                  # 90 or 0.9 both valid
 
-### 8.3 Column op
+  weighted_amount:
+    sql: amount
+    agg: weighted_avg
+    weight_column: qty              # required for weighted_avg
 
-**Input:** `unit_price × quantity` per row  
-**YAML:** `{ columns: { price: unit_price, qty: quantity }, op: multiply, agg: sum }`  
-**Output:** folded `line_total` column
+  open_orders:
+    sql: amount
+    agg: sum
+    where:
+      or:
+        - { column: reason_code, op: like, value: "LATE%" }
+        - { column: reason_code, op: regexp, value: "^OTHER$" }
+        - { column: status, op: is_not_null }
+```
 
-**Options:** `columns` map, `op` (column function from registry), `agg`, `where`
+---
 
-### 8.4 `over:` with `partition_by` (entity windows)
+### 8.3 `columns:` + `op:` + `agg:` — row function then fold
 
-**When:** Running sum, row number, lag on **order rows** before monthly fold — not calendar `op: lag`.
+**Positional columns:**
+
+```yaml
+base_measures:
+  line_total:
+    columns: [unit_price, quantity]
+    op: multiply                    # sum | subtract | multiply | min | max | avg | coalesce | ...
+    agg: sum
+    where:
+      column: line_status
+      op: ne
+      value: cancelled
+    model: orders
+    replace: false
+```
+
+**Named columns (order-safe):**
+
+```yaml
+base_measures:
+  fill_rate_row:
+    columns:
+      numerator: shipped_qty
+      denominator: ordered_qty
+    op: divide                      # zero denominator → null
+    agg: avg
+
+  share_row:
+    columns:
+      part: late_qty
+      whole: total_qty
+    op: percent_of                  # 0–100 scale
+
+  conditional_row:
+    columns:
+      cond: is_late
+      then: late_amount
+      other: zero_amount
+    op: if_else
+    agg: sum
+```
+
+**Built-in column `op` values:**
+
+| `op` | `columns` shape |
+|---|---|
+| `sum`, `subtract`, `multiply`, `min`, `max`, `avg` | list or positional |
+| `divide` | `{numerator, denominator}` |
+| `percent_of` | `{part, whole}` |
+| `coalesce`, `if_null`, `nullif` | 2 columns |
+| `if_else` | `{cond, then, other}` |
+| `zero_if_null`, `null_if_zero`, `is_null`, `is_not_null`, `abs`, `round`, `floor`, `ceil`, `log`, `log10`, `sqrt` | 1 column |
+| `power` | 2 columns (base, exp) |
+| `date_diff`, `date_add`, `epoch_day` | date columns + fn params |
+
+Aliases still work: `add`, `sub`, `mul`, `mean`, `ratio`, `share`, `div`, `identity`. Custom ops register in `registries/functions/column.yaml`.
+
+---
+
+### 8.4 `expr:` — row formula then optional fold
+
+```yaml
+base_measures:
+  harmonic:
+    expr: (col_a * col_b) / (col_a + col_b)
+    agg: sum
+    where:
+      and:
+        - { column: col_a, op: gt, value: 0 }
+        - { column: col_b, op: gt, value: 0 }
+    model: sotif
+
+  # Row helper (no agg) — needs identity_grain: at KPI level
+  row_flag:
+    expr: "is_null(amount) == 0"
+    # no agg → helper only; measures.of must use identity_grain + point offset 0
+```
+
+**Cannot combine** `expr:` with `sql:`, `columns:`, `op:`, `lookup:`, or `over:`.
+
+---
+
+### 8.5 `lookup:` — static map
+
+**Simple map:**
+
+```yaml
+base_measures:
+  platform_fee:
+    lookup:
+      column: payment_method
+      map: { COD: 25, CARD: 10, UPI: 5 }
+      default: 15                   # optional fallback
+      strict: false                 # strict: true → no default, unknown key = error
+    agg: max                        # fold mapped value (first/max, not avg of map)
+```
+
+**Composite key:**
+
+```yaml
+base_measures:
+  tier_rebate:
+    lookup:
+      keys: [customer_tier, region]   # cannot also set column:
+      map:
+        "Gold|NA": 0.05
+        "Gold|EU": 0.04
+        "Silver|NA": 0.02
+      default: 0
+    agg: first
+```
+
+**Effective-dated lookup:**
+
+```yaml
+base_measures:
+  dated_rate:
+    lookup:
+      column: product_code
+      map: { A100: 1.2, B200: 0.9 }
+      default: 1.0
+      valid_from: rate_start_date     # inclusive
+      valid_to: rate_end_date         # inclusive
+      as_of: order_date               # or as_of: anchor (request anchor)
+    agg: max
+```
+
+**Cannot combine** `lookup:` with `sql:`, `columns:`, `op:`, `expr:`, or `over:`.
+
+---
+
+### 8.6 `over:` — entity windows (pre-fold)
+
+Calendar `op: lag` runs on the **densified monthly spine**. Entity sequence / running totals use `over:` on **detail rows before fold**.
 
 **Input (raw detail rows):**
 
@@ -1147,34 +1361,487 @@ Base measures are **not** returned to the host. They produce internal columns.
 | C1 | 2026-05-15 | 50 |
 | C2 | 2026-05-01 | 200 |
 
-**YAML:**
+**`row_number`:**
+
+```yaml
+base_measures:
+  order_seq:
+    over:
+      fn: row_number
+      partition_by: [customer_id]
+      order_by: [order_date, order_id]
+    agg: max
+    agg_ok: false                   # only needed for sum|avg|count|count_distinct on over:
+```
+
+**`running_sum`:**
 
 ```yaml
 base_measures:
   running_final:
     over:
       fn: running_sum
-      of: final_amount
+      of: final_amount              # required for running_sum
       partition_by: [customer_id]
       order_by: [order_date, order_id]
     agg: max
 ```
 
-**Output (internal):** per customer_id partition, running sum ordered by order_date; folded with `agg: max` to monthly grain.
+**`running_avg`:**
 
-**Caps:** 500,000 detail rows; 50,000 distinct partition tuples.
+```yaml
+base_measures:
+  running_avg_spend:
+    over:
+      fn: running_avg
+      of: amount
+      partition_by: [customer_id]
+      order_by: [order_date]
+    agg: last
+```
 
-**Available `over:` options:**
+**`lag` / `lead`:**
+
+```yaml
+base_measures:
+  prior_order_amount:
+    over:
+      fn: lag
+      of: amount
+      n: 1                          # default 1 for lag/lead
+      partition_by: [customer_id]
+      order_by: [order_date, order_id]
+    agg: first
+
+  next_order_amount:
+    over:
+      fn: lead
+      of: amount
+      n: 2
+      partition_by: [customer_id]
+      order_by: [order_date]
+    agg: first
+```
+
+**`rank` / `dense_rank`:**
+
+```yaml
+base_measures:
+  order_rank:
+    over:
+      fn: rank                      # of: optional for rank/dense_rank
+      of: amount
+      partition_by: [customer_id]
+      order_by: [order_date]
+    agg: max
+```
+
+**`last_n` (JSON list):**
+
+```yaml
+base_measures:
+  last_three_orders:
+    over:
+      fn: last_n
+      of: amount
+      n: 3                          # default 1
+      partition_by: [customer_id]
+      order_by: [order_date, order_id]
+    agg: last                       # only first|last|min|max allowed
+```
+
+**`over.fn` allowed values:** `lag`, `lead`, `row_number`, `rank`, `dense_rank`, `running_sum`, `running_avg`, `last_n`
 
 | Key | Required | Values / notes |
 |---|---|---|
-| `fn` | yes | `lag`, `lead`, `row_number`, `rank`, `dense_rank`, `running_sum`, `running_avg`, `last_n` |
-| `of` | usually | Column for window fns (not needed for `row_number`) |
+| `fn` | yes | See list above |
+| `of` | usually | Column for value fns; optional for `rank`/`dense_rank` |
 | `partition_by` | no | Reset window per entity |
 | `order_by` | yes | Sort columns within partition |
-| `n` | with `last_n` | Number of trailing rows to keep |
+| `n` | with `lag`/`lead`/`last_n` | Default 1 |
 
-Fold with `agg:` (`max`, `sum`, `first`, `last`, …) to monthly grain.
+**Cannot combine** `over:` with `sql:`, `columns:`, `op:`, or `expr:`.  
+**Caps:** 500,000 detail rows; 50,000 distinct partition tuples.
+
+---
+
+### 8.7 `when:` overlay — parameter-driven base body
+
+```yaml
+parameters:
+  Level:
+    type: string
+    allowed: [G, Y, R]
+    default: G
+
+base_measures:
+  sotif_value:
+    when:
+      param: Level
+      cases:
+        G: { sql: green_amount, agg: sum, where: { column: tier, op: eq, value: G } }
+        Y: { sql: yellow_amount, agg: sum }
+        R: { sql: red_amount, agg: sum, where: { column: tier, op: in, values: [R, X] } }
+      else: { sql: amount, agg: sum }    # always required
+```
+
+Each case body supports the same keys as a normal base measure.
+
+---
+
+### 8.8 Multi-model example
+
+```yaml
+model: orders
+model_relations:
+  - left: defects
+    right: shipments
+    on: [order_id]
+
+base_measures:
+  defect_count:
+    sql: defect_qty
+    agg: sum
+    model: defects                  # different extract
+    where:
+      column: severity
+      op: gte
+      value: 2
+
+  shipped_qty:
+    sql: shipped_qty
+    agg: sum
+    model: shipments
+    also_where:
+      - { column: status, op: eq, value: SHIPPED }
+```
+
+---
+
+### 8.9 Which keys go together
+
+| Pattern | Required | Optional |
+|---|---|---|
+| **sql** | `sql` | `agg`, `where`, `also_where`, `percentile`, `weight_column`, `model`, `replace`, `when` |
+| **columns+op** | `columns`, `op` | `agg`, `where`, `also_where`, `percentile`, `weight_column`, `model`, `replace`, `when` |
+| **expr** | `expr` | `agg` (omit = helper), `where`, `also_where`, `model`, `when` |
+| **lookup** | `lookup.column/keys`, `lookup.map` | `lookup.default`, `strict`, `valid_from`, `valid_to`, `as_of`, `agg`, `when` |
+| **over** | `over.fn`, `over.order_by` | `over.of`, `partition_by`, `n`, `agg`, `agg_ok`, `when` |
+
+---
+
+### 8.10 Wiring base measures to `measures`
+
+```yaml
+base_measures:
+  sotif_value:
+    sql: amount
+    agg: sum
+
+measures:
+  current_value:
+    of: sotif_value                 # points at base measure name
+    op: point
+    offset: { months: 0 }
+
+  value_3m:
+    of: sotif_value
+    op: window
+    trailing: { months: 3 }
+    inclusive: true
+```
+
+---
+
+### 8.11 `sql:` vs `columns`+`op:` vs `expr:` — when to use what
+
+All three run **per row in Pandas** after DuckDB retrieves physical columns. Folding always happens via `agg:` — never put `SUM()` in KPI YAML.
+
+```text
+DuckDB SELECT (physical columns only)
+        ↓
+Pandas row pipeline  ← sql / columns+op / expr run HERE
+        ↓
+agg: fold to monthly grain
+        ↓
+densified series → measures.of
+```
+
+Pick **exactly one** pattern per base measure name.
+
+| Pattern | What it is | Best for |
+|---|---|---|
+| **`sql:`** | Read one physical column (simple formulas in `sql:` are promoted to expr internally) | “Just sum/count this column” |
+| **`columns:` + `op:`** | Call a **registered row function** with fixed inputs | Named ops with safe semantics (`divide`, `if_else`, custom fns) |
+| **`expr:`** | Free-form row formula; can chain **other base measures** | Nested math, reusing earlier bases, CASE, allowlisted calls |
+
+#### Decision guide
+
+```text
+Single physical column, no row math?
+  └─ sql: + agg:
+
+Need a catalog function with named params / safe divide / if_else / custom op?
+  └─ columns: + op: + agg:
+
+Need nested math, CASE, or reference another base measure?
+  └─ expr: + agg:
+
+Need ratio of two totals (fill rate, margin %)?
+  └─ TWO sql: bases (sum each) → measure expr/arithmetic
+     NOT columns+op divide with agg: avg
+```
+
+#### Same problem, three approaches
+
+**Goal:** monthly total of `unit_price × quantity` for open lines.
+
+**Option A — `sql:`** (when model already exposes the product):
+
+```yaml
+base_measures:
+  open_line_total:
+    sql: line_total               # precomputed in model
+    agg: sum
+    where: { column: status, op: eq, value: open }
+```
+
+**Option B — `columns` + `op:`** (catalog multiply):
+
+```yaml
+base_measures:
+  open_line_total:
+    columns: [unit_price, quantity]
+    op: multiply
+    agg: sum
+    where: { column: status, op: eq, value: open }
+```
+
+**Option C — `expr:`** (formula style):
+
+```yaml
+base_measures:
+  open_line_total:
+    expr: unit_price * quantity
+    agg: sum
+    where: { column: status, op: eq, value: open }
+```
+
+All three can produce the same result. Prefer `sql:` for a bare column, `columns`+`op:` for catalog semantics, `expr:` when the logic may grow or must reference other bases.
+
+#### Comparison table
+
+| | **`sql:`** | **`columns:` + `op:`** | **`expr:`** |
+|---|---|---|---|
+| Reads physical column | Yes (primary) | Via `columns:` | Via identifiers |
+| Row math | Simple only (prefer expr) | Via registered `op` | Full `+ - * /`, CASE, calls |
+| References other bases | No | No | **Yes** |
+| Bind-time arity check | N/A | Yes (per op signature) | Expression parser |
+| Zero-safe divide | Manual | Built into `op: divide` | Manual |
+| Custom logic | No | Register column fn | Write expr |
+| Default `agg:` | `sum` | `sum` | none if helper-shaped |
+
+#### Gold rule: average of ratios ≠ ratio of totals
+
+```yaml
+# WRONG if you want fill rate = total shipped / total ordered
+fill_rate_wrong:
+  columns: { numerator: shipped_qty, denominator: ordered_qty }
+  op: divide
+  agg: avg                        # averages row-level ratios!
+```
+
+| Row | shipped | ordered | row ratio |
+|---|---|---|---|
+| A | 80 | 100 | 0.80 |
+| B | 10 | 50 | 0.20 |
+
+- `agg: avg` on row ratios → **0.50**
+- True fill rate → (80+10)/(100+50) = **0.60**
+
+**Fix:**
+
+```yaml
+base_measures:
+  shipped_total:
+    sql: shipped_qty
+    agg: sum
+  ordered_total:
+    sql: ordered_qty
+    agg: sum
+
+measures:
+  fill_rate:
+    op: expr
+    expr: shipped_total / ordered_total    # ratio of totals
+```
+
+Use `columns`+`op`+`agg: avg` only when **average of row ratios** is the intended metric.
+
+#### Chaining with `expr:` (expr-only)
+
+```yaml
+base_measures:
+  adjusted_row:
+    expr: amount - discount_amount
+    agg: sum
+
+  flagged_row:
+    expr: adjusted_row * tier_multiplier   # references earlier base by name
+    agg: sum
+```
+
+`columns`+`op` and plain `sql:` cannot reference other base measure names.
+
+---
+
+### 8.12 All column-level operation surfaces
+
+Beyond `sql` / `columns`+`op` / `expr`, the engine applies column logic at several layers:
+
+```text
+Layer 0: Model YAML (kind: sql)     — SQL joins, CTEs, derived columns at extract
+Layer 1: KPI filters (apply: extract) — DuckDB WHERE on physical columns
+Layer 2: base_measures where:       — Pandas row mask before fold
+Layer 3: base_measures body         — sql | columns+op | expr | lookup | over
+Layer 4: filtered_* measures        — bind sugar → masked base clone
+Layer 5: dimensions map/from        — rewrite grouping column codes after retrieve
+Layer 6: measures (not row-level)   — point/window/trend on folded series
+```
+
+| Surface | YAML location | Runs when | Example |
+|---|---|---|---|
+| **Model SQL** | `kpi_config/models/*.yaml` `kind: sql` | DuckDB extract | `SUM(amount) AS total` in CTE |
+| **Extract filters** | KPI `filters:` + context filters | DuckDB WHERE | `region IN ('NA')` |
+| **Base `where:`** | `base_measures.*.where` | Pandas, pre-fold | `{column: status, op: eq, value: closed}` |
+| **`columns` + `op:`** | `base_measures.*` | Pandas, per row | `op: multiply` on `[price, qty]` |
+| **`expr:`** | `base_measures.*` | Pandas, per row | `amount - discount` |
+| **`sql:`** | `base_measures.*` | Retrieve + Pandas | `sql: amount` |
+| **`lookup:`** | `base_measures.*` | Pandas, per row | map `payment_method` → fee |
+| **`over:`** | `base_measures.*` | Pandas, per row partition | `running_sum` per customer |
+| **`filtered_*`** | `measures.*` (bind sugar) | Expands to masked base | `filtered_point` + `column:` + `where:` |
+| **Dimension `map:`** | `dimensions[].map` | Pandas, on group keys | `{APAC: ASIA}` rewrite |
+
+#### `lookup:` and `over:` are also column-level
+
+They transform **one row at a time** (or within a row partition) before fold:
+
+```yaml
+base_measures:
+  platform_fee:
+    lookup:
+      column: payment_method
+      map: { COD: 25, CARD: 10 }
+      default: 15
+    agg: max
+
+  running_spend:
+    over:
+      fn: running_sum
+      of: amount
+      partition_by: [customer_id]
+      order_by: [order_date]
+    agg: max
+```
+
+#### `filtered_*` — conditional column ops without a separate base key
+
+Bind-time sugar that clones a masked base from a physical column:
+
+```yaml
+measures:
+  closed_amount:
+    op: filtered_point
+    column: amount
+    agg: sum
+    where: { column: status, op: eq, value: closed }
+
+  closed_3m:
+    op: filtered_window
+    column: amount
+    agg: sum
+    where: { column: status, op: eq, value: closed }
+    trailing: { months: 3 }
+    inclusive: true
+```
+
+Equivalent explicit base + measure:
+
+```yaml
+base_measures:
+  closed_amount_base:
+    sql: amount
+    agg: sum
+    where: { column: status, op: eq, value: closed }
+
+measures:
+  closed_amount:
+    of: closed_amount_base
+    op: point
+```
+
+Use `filtered_*` for one-off conditional facts; use `base_measures.where` when multiple measures share the same mask.
+
+#### Model YAML — SQL column shaping (extract time)
+
+When logic belongs in the extract (joins, eligibility, SQL `LAG`, pre-aggregation):
+
+```yaml
+# kpi_config/models/sotif/sotif.yaml (kind: sql)
+# DuckDB runs SUM(), joins, CASE — NOT in KPI base_measures.sql
+
+base_measures:
+  sotif_value:
+    sql: amount                     # reads the model's output column
+    agg: sum
+```
+
+KPI `base_measures.sql` must **not** contain `SUM()` / subqueries — put that in the model.
+
+#### Dimension column rewrite (grouping keys, not facts)
+
+```yaml
+dimensions:
+  - name: region
+    from: region_code
+    map: { APAC: ASIA, EMEA: EU }
+    default: OTHER
+```
+
+Rewrites the **grouping column** after retrieve; does not create a requestable measure.
+
+#### Registered column functions (`columns` + `op:`)
+
+Full platform catalog in `kpi_engine/registries/functions/column.yaml`:
+
+| Category | Functions |
+|---|---|
+| Pass-through | `value` (alias `identity`) |
+| Math across columns | `sum`, `subtract`, `multiply`, `divide`, `min`, `max`, `avg`, `percent_of`, `safe_divide`, `weighted_product` |
+| Null logic | `coalesce`, `if_null`, `nullif`, `null_if_zero`, `zero_if_null`, `is_null`, `is_not_null`, `if_else` |
+| Unary math | `abs`, `round`, `floor`, `ceil`, `power`, `log`, `log10`, `sqrt`, `clip` |
+| Dates | `date_diff`, `date_add`, `epoch_day`, `coalesce_date`, `is_between_dates`, `parse_date` |
+| Text | `trim`, `upper`, `lower`, `substring`, `left`, `right`, `replace`, `concat` |
+| Other | `parse_number`, `hash_bucket`, `json_extract`, `flag_in_set` |
+
+Some functions are invoked via **`expr:`** calls rather than `columns`+`op:` (e.g. `date_diff(a, b, 'day')`, `substring(col, 0, 4)`, `concat(a, b)`). Both paths use the same column function registry.
+
+Custom functions: register under `capabilities/functions/column/` + `registries/functions/column.yaml`.
+
+#### Two levels of “sum” (common confusion)
+
+| Key | Scope | Example |
+|---|---|---|
+| **`op: sum`** on columns | Adds **across columns in one row** | `ontime + fullqty` per row |
+| **`agg: sum`** | Adds **down rows in the period** | total of all rows in July |
+
+```yaml
+base_measures:
+  line_total:
+    columns: [unit_price, quantity]
+    op: multiply          # op: per row
+    agg: sum              # agg: down rows
+```
 
 ---
 
@@ -1700,14 +2367,18 @@ Every measure op accepts a **shared platform envelope** plus op-specific keys. R
 
 ### 12.7 `base_measures` options
 
+Full YAML examples: **Section 8**. `sql` vs `columns`+`op` vs `expr`: **§8.11**. All column-level surfaces: **§8.12**.
+
 | Pattern | Keys | Notes |
 |---|---|---|
 | SQL fold | `sql`, `agg` | `agg`: `sum`, `count`, `avg`, `min`, `max`, `count_distinct`, `percentile`, … |
-| Row filter | `where` | Same filter ops as measures |
+| Row filter | `where`, `also_where` | Filter ops: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `like`, `between`, `is_null`, … |
 | Column op | `columns`, `op`, `agg` | Column function from registry |
 | Row helper | `expr` / `lookup` / `over` (no `agg`) | Needs `identity_grain:` |
-| Entity window | `over: {fn, of, partition_by, order_by}` | `fn`: see §8.4 |
-| Static map | `lookup: {map, default, valid_from, valid_to}` | Effective-dated optional |
+| Entity window | `over: {fn, of, partition_by, order_by, n}` | `fn`: see §8.6 |
+| Static map | `lookup: {map, default, strict, valid_from, valid_to, as_of}` | Effective-dated optional |
+| Multi-model | `model` | With `model_relations` |
+| Parameter overlay | `when: {param, cases, else}` | Wrapper around base body |
 
 ---
 
@@ -1739,6 +2410,8 @@ Full list with arity: `kpi_engine/registries/functions/measure.yaml` and CAPABIL
 | `{value, period}` missing | Cut-phase op | rank returns bare integer |
 | bind error on `year: 1` | Wrong offset key | Use `years: 1` |
 | partition_by bind error | Dim not on cut grain | See Section 11.2 rules |
+| ratio looks wrong | Used `agg: avg` on row-level divide | Use two sum bases + measure `expr` |
+| helper bind error | `measures.of` points at row helper | Set `identity_grain:` or add `agg:` |
 
 ---
 
